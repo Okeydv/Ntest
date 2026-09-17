@@ -58,9 +58,102 @@ const elements = {
     profileCode: document.getElementById('profile-code'),
     profileAvatar: document.getElementById('profile-avatar'),
     profileAnonBadge: document.getElementById('profile-anon-badge'),
+    emptyNewChatBtn: document.getElementById('empty-new-chat-btn'),
 };
 
+const THEME_KEY = 'nyxo-theme';
+const DEFAULT_AVATAR = '#6D5EFC';
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+// Иконки берутся из спрайта в index.html. className у SVG-элемента — это
+// SVGAnimatedString, присвоить строку нельзя, поэтому класс ставится
+// атрибутом.
+function createIcon(id) {
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('class', 'icon');
+    svg.setAttribute('aria-hidden', 'true');
+    const use = document.createElementNS(SVG_NS, 'use');
+    use.setAttribute('href', '#' + id);
+    svg.appendChild(use);
+    return svg;
+}
+
+/* --- Тема ----------------------------------------------------------------
+   Первичная установка data-theme живёт в theme.js и выполняется до отрисовки;
+   здесь только переключение и запись выбора. */
+
+function applyTheme(theme) {
+    document.documentElement.setAttribute('data-theme', theme);
+    try {
+        localStorage.setItem(THEME_KEY, theme);
+    } catch (e) {
+        // Приватный режим браузера: выбор не сохранится, но тема применится.
+    }
+    const label = theme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему';
+    document.querySelectorAll('[data-theme-toggle]').forEach(btn => {
+        btn.setAttribute('aria-label', label);
+        btn.setAttribute('title', label);
+    });
+}
+
+function setupTheme() {
+    applyTheme(document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark');
+    document.querySelectorAll('[data-theme-toggle]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+            applyTheme(next);
+        });
+    });
+}
+
+/* --- Состояния полей ----------------------------------------------------
+   Раньше любая ошибка показывалась только тостом: он исчезает через три
+   секунды и не говорит, какое поле виновато. Теперь ошибка подсвечивает
+   само поле и подписывается под ним, а тост остаётся для событий уровня
+   экрана. */
+
+function setFieldError(inputId, message) {
+    const input = document.getElementById(inputId);
+    const msg = document.querySelector('.field-msg[data-msg-for="' + inputId + '"]');
+    if (input) {
+        input.classList.add('is-invalid');
+        input.setAttribute('aria-invalid', 'true');
+    }
+    if (msg) {
+        msg.textContent = message;
+        msg.classList.add('is-visible');
+    }
+    return false;
+}
+
+function clearFieldError(input) {
+    if (!input) return;
+    input.classList.remove('is-invalid');
+    input.removeAttribute('aria-invalid');
+    const msg = document.querySelector('.field-msg[data-msg-for="' + input.id + '"]');
+    if (msg) {
+        msg.textContent = '';
+        msg.classList.remove('is-visible');
+    }
+}
+
+function clearFieldErrors(scope) {
+    (scope || document).querySelectorAll('input.is-invalid').forEach(clearFieldError);
+}
+
+function isEmail(value) {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(value);
+}
+
 function init() {
+    setupTheme();
+    // Ошибка снимается, как только пользователь начал править поле: держать
+    // подсветку на поле, которое уже переписывают, — только мешать.
+    document.addEventListener('input', (e) => {
+        if (e.target instanceof HTMLInputElement && e.target.classList.contains('is-invalid')) {
+            clearFieldError(e.target);
+        }
+    });
     checkAuth();
     try {
         setupEventListeners();
@@ -95,11 +188,14 @@ function showApp() {
     elements.app.classList.remove('hidden');
 }
 
+let toastTimer = null;
+
 function showToast(message, type = 'info') {
     elements.toast.textContent = message;
     elements.toast.className = `toast ${type}`;
     elements.toast.classList.remove('hidden');
-    setTimeout(() => elements.toast.classList.add('hidden'), 3000);
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => elements.toast.classList.add('hidden'), 3200);
 }
 
 function getCsrfToken() {
@@ -134,38 +230,60 @@ function setupEventListeners() {
     });
 
     elements.loginBtn.addEventListener('click', async () => {
-        const email = document.getElementById('login-email').value;
+        clearFieldErrors(elements.loginForm);
+        const email = document.getElementById('login-email').value.trim();
         const password = document.getElementById('login-password').value;
+
+        let valid = true;
+        if (!email) valid = setFieldError('login-email', 'Укажите email');
+        else if (!isEmail(email)) valid = setFieldError('login-email', 'Похоже, в адресе опечатка');
+        if (!password) valid = setFieldError('login-password', 'Введите пароль');
+        if (!valid) return;
+
         const data = await api('/api/login', {
             method: 'POST',
             body: JSON.stringify({ email, password }),
         });
         if (data.success) {
             currentUser = data.user;
-            showToast('Вход выполнен!', 'success');
+            showToast('Вход выполнен', 'success');
             showApp();
             loadChats();
         } else {
-            showToast(data.message, 'error');
+            setFieldError('login-password', data.message);
         }
     });
 
     elements.registerBtn.addEventListener('click', async () => {
-        const username = document.getElementById('register-username').value;
-        const email = document.getElementById('register-email').value;
+        clearFieldErrors(elements.registerForm);
+        const username = document.getElementById('register-username').value.trim();
+        const email = document.getElementById('register-email').value.trim();
         const password = document.getElementById('register-password').value;
         const confirmPassword = document.getElementById('register-confirm-password').value;
+
+        let valid = true;
+        if (!username) valid = setFieldError('register-username', 'Укажите имя пользователя');
+        else if (username.length < 2) valid = setFieldError('register-username', 'Минимум 2 символа');
+        if (!email) valid = setFieldError('register-email', 'Укажите email');
+        else if (!isEmail(email)) valid = setFieldError('register-email', 'Похоже, в адресе опечатка');
+        if (!password) valid = setFieldError('register-password', 'Придумайте пароль');
+        else if (password.length < 8) valid = setFieldError('register-password', 'Минимум 8 символов');
+        if (password && confirmPassword !== password) {
+            valid = setFieldError('register-confirm-password', 'Пароли не совпадают');
+        }
+        if (!valid) return;
+
         const data = await api('/api/register', {
             method: 'POST',
             body: JSON.stringify({ username, email, password, confirmPassword }),
         });
         if (data.success) {
             currentUser = data.user;
-            showToast('Регистрация успешна!', 'success');
+            showToast('Регистрация завершена', 'success');
             showApp();
             loadChats();
         } else {
-            showToast(data.message, 'error');
+            setFieldError('register-email', data.message);
         }
     });
 
@@ -173,7 +291,7 @@ function setupEventListeners() {
         const data = await api('/api/register/anonymous', { method: 'POST' });
         if (data.success) {
             currentUser = data.user;
-            showToast('Приватный режим активирован!', 'success');
+            showToast('Приватный режим активирован', 'success');
             showApp();
             loadChats();
         } else {
@@ -191,6 +309,9 @@ function setupEventListeners() {
     });
 
     elements.newChatBtn.addEventListener('click', () => openModal(elements.newChatModal));
+    if (elements.emptyNewChatBtn) {
+        elements.emptyNewChatBtn.addEventListener('click', () => openModal(elements.newChatModal));
+    }
     elements.createChatBtn.addEventListener('click', createChat);
     elements.joinChatBtn.addEventListener('click', joinChat);
 
@@ -223,8 +344,12 @@ function setupEventListeners() {
             elements.profileUsername.textContent = data.user.username;
             elements.profileEmail.textContent = data.user.email || 'Нет email (приватный режим)';
             elements.profileCode.textContent = `Код: ${data.user.uniqueCode}`;
-            elements.profileAvatar.style.background = data.user.avatar || '#667EEA';
+            const avatarColor = data.user.avatar || DEFAULT_AVATAR;
+            elements.profileAvatar.style.background = avatarColor;
             elements.profileAvatar.textContent = data.user.username.charAt(0).toUpperCase();
+            document.querySelectorAll('.color-option').forEach(o => {
+                o.classList.toggle('active', o.dataset.color.toLowerCase() === avatarColor.toLowerCase());
+            });
             if (data.user.email === null || data.user.email === undefined) {
                 elements.profileAnonBadge.classList.remove('hidden');
                 elements.changePasswordBtn.classList.add('hidden');
@@ -242,9 +367,20 @@ function setupEventListeners() {
     });
 
     elements.savePasswordBtn.addEventListener('click', async () => {
+        clearFieldErrors(elements.passwordModal);
         const currentPassword = document.getElementById('current-password').value;
         const newPassword = document.getElementById('new-password').value;
         const confirmPassword = document.getElementById('confirm-new-password').value;
+
+        let valid = true;
+        if (!currentPassword) valid = setFieldError('current-password', 'Введите текущий пароль');
+        if (!newPassword) valid = setFieldError('new-password', 'Введите новый пароль');
+        else if (newPassword.length < 8) valid = setFieldError('new-password', 'Минимум 8 символов');
+        if (newPassword && confirmPassword !== newPassword) {
+            valid = setFieldError('confirm-new-password', 'Пароли не совпадают');
+        }
+        if (!valid) return;
+
         const data = await api('/api/change-password', {
             method: 'POST',
             body: JSON.stringify({ currentPassword, newPassword, confirmPassword }),
@@ -257,7 +393,7 @@ function setupEventListeners() {
                 showAuth();
             }, 1500);
         } else {
-            showToast(data.message, 'error');
+            setFieldError('current-password', data.message);
         }
     });
 
@@ -271,6 +407,8 @@ function setupEventListeners() {
             if (data.success) {
                 elements.profileAvatar.style.background = color;
                 if (currentUser) currentUser.avatar = color;
+                document.querySelectorAll('.color-option').forEach(o => o.classList.remove('active'));
+                btn.classList.add('active');
                 showToast('Цвет обновлён', 'success');
             }
         });
@@ -375,23 +513,75 @@ function openModal(modal) {
 }
 
 function closeModal(modal) {
+    clearFieldErrors(modal);
     modal.classList.add('hidden');
     if (!document.querySelector('.modal:not(.hidden)')) {
         elements.overlay.classList.add('hidden');
     }
 }
 
-async function loadChats() {
-    const data = await api('/api/chats');
-    if (!data.success) return;
+// Скелетон повторяет форму реального элемента списка — круглая аватарка и
+// две строки разной длины, — поэтому подмена на данные не двигает вёрстку.
+// Ширины строк намеренно разные: ряд одинаковых полосок выдаёт заглушку.
+function renderChatsSkeleton(count = 5) {
     elements.chatsList.innerHTML = '';
+    for (let i = 0; i < count; i++) {
+        const item = document.createElement('div');
+        item.className = 'skeleton-item';
+
+        const avatar = document.createElement('div');
+        avatar.className = 'skeleton skeleton-avatar';
+
+        const lines = document.createElement('div');
+        lines.className = 'skeleton-lines';
+        const title = document.createElement('div');
+        title.className = 'skeleton skeleton-line';
+        title.style.width = (54 + (i % 3) * 14) + '%';
+        const subtitle = document.createElement('div');
+        subtitle.className = 'skeleton skeleton-line skeleton-line-sm';
+        subtitle.style.width = (32 + (i % 4) * 10) + '%';
+        lines.append(title, subtitle);
+
+        item.append(avatar, lines);
+        elements.chatsList.appendChild(item);
+    }
+}
+
+function renderChatsPlaceholder(text) {
+    elements.chatsList.innerHTML = '';
+    const note = document.createElement('p');
+    note.className = 'chats-placeholder';
+    note.textContent = text;
+    elements.chatsList.appendChild(note);
+}
+
+async function loadChats() {
+    // Скелетон показывается только когда в списке ещё нечего показать:
+    // перерисовка после socket-события не должна мигать заглушкой.
+    if (!elements.chatsList.querySelector('.chat-item')) {
+        renderChatsSkeleton();
+    }
+
+    const data = await api('/api/chats');
+    if (!data.success) {
+        // Без этой ветки скелетон остался бы висеть навсегда.
+        renderChatsPlaceholder('Не удалось загрузить чаты');
+        return;
+    }
+
+    elements.chatsList.innerHTML = '';
+    if (!data.chats.length) {
+        renderChatsPlaceholder('Чатов пока нет');
+        return;
+    }
+
     data.chats.forEach(chat => {
         const div = document.createElement('div');
         div.className = 'chat-item';
         div.dataset.id = chat.id;
         div.dataset.roomId = chat.room_id || '';
         div.innerHTML = `
-            <div class="chat-avatar-small" style="background:${chat.avatar && chat.avatar.startsWith('#') ? chat.avatar : '#667EEA'}">${chat.name.charAt(0).toUpperCase()}</div>
+            <div class="chat-avatar-small" style="background:${chat.avatar && chat.avatar.startsWith('#') ? chat.avatar : DEFAULT_AVATAR}">${chat.name.charAt(0).toUpperCase()}</div>
             <div class="chat-info">
                 <div class="chat-name">${escapeHtml(chat.name)}</div>
                 <div class="chat-last">${chat.last_message ? escapeHtml(chat.last_message.substring(0, 30)) : 'Нет сообщений'}</div>
@@ -406,11 +596,14 @@ async function loadChats() {
 async function openChat(chatId, roomId, name, avatar, online, isBot) {
     currentChatId = chatId;
     currentRoomId = roomId;
+    elements.chatsList.querySelectorAll('.chat-item').forEach(item => {
+        item.classList.toggle('active', item.dataset.id === String(chatId));
+    });
     elements.chatName.textContent = name;
     elements.chatStatus.textContent = isBot ? 'Бот' : (online ? 'В сети' : 'Не в сети');
     elements.chatStatus.className = 'status ' + (online ? 'online' : 'offline');
     elements.chatAvatar.textContent = name.charAt(0).toUpperCase();
-    elements.chatAvatar.style.background = (avatar && avatar.startsWith('#')) ? avatar : '#667EEA';
+    elements.chatAvatar.style.background = (avatar && avatar.startsWith('#')) ? avatar : DEFAULT_AVATAR;
     elements.chatHeader.classList.remove('hidden');
     elements.messageInputContainer.classList.remove('hidden');
     elements.emptyState.classList.add('hidden');
@@ -471,8 +664,12 @@ function createFileAttachmentElement(message) {
     const a = document.createElement('a');
     a.href = file_url;
     a.target = '_blank';
+    a.rel = 'noopener';
     a.download = file_name || 'file';
-    a.textContent = `📎 ${file_name || 'Файл'}`;
+    a.appendChild(createIcon('i-file'));
+    const nameSpan = document.createElement('span');
+    nameSpan.textContent = file_name || 'Файл';
+    a.appendChild(nameSpan);
     wrapper.appendChild(a);
     return wrapper;
 }
@@ -494,9 +691,13 @@ function createMessageElement(message) {
         if (message.reply_to) {
             const replyDiv = document.createElement('div');
             replyDiv.className = 'reply-to';
-            const small = document.createElement('small');
-            small.textContent = `↩️ ${message.reply_to.sender_username || 'Неизвестно'}: ${(message.reply_to.text || '').substring(0, 60)}`;
-            replyDiv.appendChild(small);
+            const author = document.createElement('span');
+            author.className = 'reply-to-author';
+            author.textContent = message.reply_to.sender_username || 'Неизвестно';
+            const quoted = document.createElement('span');
+            quoted.className = 'reply-to-text';
+            quoted.textContent = (message.reply_to.text || '').substring(0, 60);
+            replyDiv.append(author, quoted);
             contentDiv.appendChild(replyDiv);
         }
         if (message.file_url) {
@@ -635,36 +836,44 @@ async function handleFileUpload() {
 }
 
 async function createChat() {
-    const name = document.getElementById('new-chat-name').value.trim();
-    if (!name) return showToast('Введите название', 'error');
+    clearFieldErrors(elements.newChatModal);
+    const input = document.getElementById('new-chat-name');
+    const name = input.value.trim();
+    if (!name) return setFieldError('new-chat-name', 'Введите название чата');
+
     const data = await api('/api/chats', {
         method: 'POST',
         body: JSON.stringify({ name }),
     });
     if (data.success) {
-        showToast('Чат создан', 'success');
+        input.value = '';
         closeModal(elements.newChatModal);
+        showToast('Чат создан', 'success');
         loadChats();
         openChat(data.chat.id, data.chat.room_id, data.chat.name, data.chat.avatar, 0, 0);
     } else {
-        showToast(data.message, 'error');
+        setFieldError('new-chat-name', data.message);
     }
 }
 
 async function joinChat() {
-    const code = document.getElementById('join-chat-code').value.trim();
-    if (!code) return showToast('Введите код', 'error');
+    clearFieldErrors(elements.newChatModal);
+    const input = document.getElementById('join-chat-code');
+    const code = input.value.trim();
+    if (!code) return setFieldError('join-chat-code', 'Введите код приглашения');
+
     const data = await api('/api/chats/join', {
         method: 'POST',
         body: JSON.stringify({ code }),
     });
     if (data.success) {
-        showToast('Вы присоединились к чату', 'success');
+        input.value = '';
         closeModal(elements.newChatModal);
+        showToast('Вы присоединились к чату', 'success');
         loadChats();
         openChat(data.chat.id, data.chat.room_id, data.chat.name, data.chat.avatar, 0, 0);
     } else {
-        showToast(data.message, 'error');
+        setFieldError('join-chat-code', data.message);
     }
 }
 
@@ -693,15 +902,24 @@ async function performSearch() {
     const data = await api(`/api/search?q=${encodeURIComponent(q)}`);
     if (!data.success) return;
     elements.chatsList.innerHTML = '';
-    if (data.results.chats) {
-        data.results.chats.forEach(chat => {
-            const div = document.createElement('div');
-            div.className = 'chat-item';
-            div.innerHTML = `<div class="chat-name">${escapeHtml(chat.name)}</div>`;
-            div.addEventListener('click', () => openChat(chat.id, null, chat.name, chat.avatar, 0, 0));
-            elements.chatsList.appendChild(div);
-        });
+    if (!data.results.chats || !data.results.chats.length) {
+        renderChatsPlaceholder('Ничего не найдено');
+        return;
     }
+
+    data.results.chats.forEach(chat => {
+        const div = document.createElement('div');
+        div.className = 'chat-item';
+        div.dataset.id = chat.id;
+        div.innerHTML = `
+            <div class="chat-avatar-small" style="background:${chat.avatar && chat.avatar.startsWith('#') ? chat.avatar : DEFAULT_AVATAR}">${chat.name.charAt(0).toUpperCase()}</div>
+            <div class="chat-info">
+                <div class="chat-name">${escapeHtml(chat.name)}</div>
+            </div>
+        `;
+        div.addEventListener('click', () => openChat(chat.id, null, chat.name, chat.avatar, 0, 0));
+        elements.chatsList.appendChild(div);
+    });
 }
 
 function scrollToBottom() {
