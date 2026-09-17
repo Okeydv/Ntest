@@ -21,7 +21,6 @@ const elements = {
     sendBtn: document.getElementById('send-btn'),
     attachBtn: document.getElementById('attach-btn'),
     fileInput: document.getElementById('file-input'),
-    recordBtn: document.getElementById('record-btn'),
     newChatBtn: document.getElementById('new-chat-btn'),
     chatHeader: document.getElementById('chat-header'),
     chatName: document.getElementById('chat-name'),
@@ -458,6 +457,8 @@ function createFileAttachmentElement(message) {
         video.className = 'message-video';
         return video;
     }
+    // Аудио больше нельзя отправить, но сообщения из истории, записанные до
+    // отключения этой возможности, по-прежнему должны проигрываться.
     if (message_type === 'audio') {
         const audio = document.createElement('audio');
         audio.src = file_url;
