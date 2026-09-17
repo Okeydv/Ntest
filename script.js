@@ -21,7 +21,6 @@ const elements = {
     sendBtn: document.getElementById('send-btn'),
     attachBtn: document.getElementById('attach-btn'),
     fileInput: document.getElementById('file-input'),
-    recordBtn: document.getElementById('record-btn'),
     newChatBtn: document.getElementById('new-chat-btn'),
     chatHeader: document.getElementById('chat-header'),
     chatName: document.getElementById('chat-name'),

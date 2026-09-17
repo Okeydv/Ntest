@@ -66,7 +66,6 @@ async function fetchAnonymousIdentity() {
 const ALLOWED_MIME_TYPES = [
     'image/jpeg', 'image/png', 'image/gif', 'image/webp',
     'video/mp4', 'video/webm', 'video/quicktime',
-    'audio/mpeg', 'audio/ogg', 'audio/wav', 'audio/webm',
     'application/pdf', 'text/plain',
 ];
 
@@ -85,10 +84,6 @@ const MIME_EXTENSIONS = {
     'video/mp4': '.mp4',
     'video/webm': '.webm',
     'video/quicktime': '.mov',
-    'audio/mpeg': '.mp3',
-    'audio/ogg': '.ogg',
-    'audio/wav': '.wav',
-    'audio/webm': '.weba',
     'application/pdf': '.pdf',
     'text/plain': '.txt',
 };
@@ -98,6 +93,14 @@ const MIME_EXTENSIONS = {
 // <script>, поэтому расширение блокируется отдельно на случай, если формат
 // когда-либо попадёт в разрешённый список по ошибке.
 const BLOCKED_EXTENSIONS = new Set(['.html', '.htm', '.php', '.exe', '.js', '.sh', '.py', '.rb', '.pl', '.bat', '.cmd', '.ps1', '.vbs', '.jar', '.msi', '.svg']);
+
+// Отправка голосовых сообщений отключена, аудио не принимается. Основной
+// барьер — ALLOWED_MIME_TYPES, но mimetype присылает клиент, а для
+// 'text/plain' checkMagicBytes возвращает true без реальной проверки
+// содержимого, поэтому аудиофайл можно было бы протащить, объявив его
+// текстовым. Расширение здесь берётся из имени, присланного клиентом,
+// и используется только для отказа — на диск оно не попадает.
+const BLOCKED_AUDIO_EXTENSIONS = new Set(['.mp3', '.ogg', '.oga', '.opus', '.wav', '.weba', '.m4a', '.aac', '.flac', '.wma', '.amr', '.aiff', '.aif', '.mid', '.midi']);
 
 // Итоговое имя файла на диске должно состоять только из "безопасных" для
 // файловой системы символов — доп. страховка на случай, если MIME_EXTENSIONS
@@ -117,17 +120,12 @@ function checkMagicBytes(buffer, mimetype) {
     // Раньше был ещё fallback b[0]===0 && b[1]===0 — под него подходит куча
     // произвольных бинарных форматов, так что от него больше вреда, чем пользы.
     if (mimetype === 'video/mp4')  return b[4] === 0x66 && b[5] === 0x74 && b[6] === 0x79 && b[7] === 0x70;
-    if (mimetype === 'audio/mpeg') return (b[0] === 0xFF && (b[1] & 0xE0) === 0xE0) || (b[0] === 0x49 && b[1] === 0x44 && b[2] === 0x33);
-    if (mimetype === 'audio/ogg' || mimetype === 'video/webm' || mimetype === 'audio/webm') {
-        return (b[0] === 0x4F && b[1] === 0x67 && b[2] === 0x67) || (b[0] === 0x1A && b[1] === 0x45 && b[2] === 0xDF && b[3] === 0xA3);
-    }
-    // WAV — RIFF-контейнер: контейнер сам по себе (байты 0-3 'RIFF') общий с
-    // любым другим RIFF-форматом (в т.ч. WebP/AVI), поэтому дополнительно
-    // проверяем 'WAVE' на смещении 8-11, как и положено для формата WAVE.
-    if (mimetype === 'audio/wav') {
-        return buffer.length >= 12
-            && b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46
-            && b[8] === 0x57 && b[9] === 0x41 && b[10] === 0x56 && b[11] === 0x45;
+    // WebM — EBML-контейнер. Раньше эта ветка была общей с audio/ogg и
+    // audio/webm и поэтому пропускала ещё и сигнатуру 'Ogg'; после удаления
+    // аудио остаётся только EBML, иначе ogg-аудио, отправленное под видом
+    // video/webm, по-прежнему проходило бы проверку.
+    if (mimetype === 'video/webm') {
+        return b[0] === 0x1A && b[1] === 0x45 && b[2] === 0xDF && b[3] === 0xA3;
     }
     if (mimetype === 'text/plain') return true;
     if (mimetype === 'video/quicktime') return b[4] === 0x66 && b[5] === 0x74 && b[6] === 0x79 && b[7] === 0x70;
@@ -157,6 +155,9 @@ const upload = multer({
         const ext = path.extname(file.originalname).toLowerCase();
         if (BLOCKED_EXTENSIONS.has(ext)) {
             return cb(new Error('Неподдерживаемый тип файла'), false);
+        }
+        if (BLOCKED_AUDIO_EXTENSIONS.has(ext)) {
+            return cb(new Error('Отправка аудио и голосовых сообщений отключена'), false);
         }
         if (!ALLOWED_MIME_TYPES.includes(file.mimetype)) {
             return cb(new Error('Неподдерживаемый тип файла'), false);
@@ -1471,8 +1472,8 @@ app.post('/api/messages/file', upload.single('file'), async (req, res) => {
         const fileType = file.mimetype;
         const sanitizedFileName = path.basename(file.originalname).slice(0, 200).replace(/[<>&"']/g, '');
 
-        const messageType = fileType.startsWith('image/') ? 'image' : fileType.startsWith('video/') ? 'video' : fileType.startsWith('audio/') ? 'audio' : 'file';
-        const messageText = text ? String(text).trim() : (messageType === 'audio' ? 'Голосовое сообщение' : file.originalname);
+        const messageType = fileType.startsWith('image/') ? 'image' : fileType.startsWith('video/') ? 'video' : 'file';
+        const messageText = text ? String(text).trim() : file.originalname;
 
         const result = await pool.query(
             'INSERT INTO messages (chat_id, room_id, user_id, text, file_url, file_name, file_type, message_type, sent, time, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id',

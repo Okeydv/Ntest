@@ -1160,19 +1160,3 @@ body::before {
 .loading {
     animation: spin 1s linear infinite;
 }
-
-/* Recording Animation */
-@keyframes recordPulse {
-    0%, 100% {
-        box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
-    }
-    50% {
-        box-shadow: 0 0 0 15px rgba(239, 68, 68, 0);
-    }
-}
-
-.recording {
-    animation: recordPulse 2s infinite;
-    background: var(--error) !important;
-    color: white !important;
-}
