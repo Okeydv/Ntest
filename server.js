@@ -506,6 +506,40 @@ async function initDatabase() {
     `);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_devices_user ON devices(user_id) WHERE revoked_at IS NULL;`);
 
+    // Конверты сообщений: под E2EE одно сообщение превращается в N
+    // шифротекстов, по одному на каждое устройство каждого получателя.
+    //
+    // Строка messages при этом остаётся и хранит только метаданные (кто, в
+    // каком чате, когда, на что отвечает) — на messages(id) висят внешние
+    // ключи из message_expiry, reactions и messages.reply_to_id, и делать
+    // конверт единственной записью означало бы переделать все три без
+    // выигрыша в приватности: метаданные всё равно видны серверу.
+    //
+    // header лежит BYTEA, а не JSONB, намеренно: он используется как AAD
+    // при AES-GCM, то есть должен вернуться байт в байт. JSONB нормализует
+    // ключи и порядок полей, после чего проверка AAD развалилась бы.
+    // Сервер внутрь не смотрит, он только переносит.
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS message_envelopes (
+            id BIGSERIAL PRIMARY KEY,
+            message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+            recipient_device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+            sender_device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+            envelope_type SMALLINT NOT NULL,
+            header BYTEA NOT NULL,
+            ciphertext BYTEA NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            UNIQUE (message_id, recipient_device_id)
+        )
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_envelopes_recipient ON message_envelopes(recipient_device_id, message_id);`);
+
+    // Текст больше не обязателен: у зашифрованного сообщения его нет вовсе,
+    // содержимое живёт в конвертах.
+    await pool.query(`ALTER TABLE messages ALTER COLUMN text DROP NOT NULL;`);
+    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS encrypted BOOLEAN NOT NULL DEFAULT FALSE;`);
+    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS sender_device_id INTEGER REFERENCES devices(id) ON DELETE SET NULL;`);
+
     // Миграция: если таблицы chats/messages были созданы ДО появления комнат,
     // CREATE TABLE IF NOT EXISTS их не тронет и колонки room_id не будет.
     // Добавляем её вручную, иначе следующий CREATE INDEX ON messages(room_id) упадёт с 42703.
@@ -683,7 +717,14 @@ io.on('connection', (socket) => {
         socket.disconnect(true);
         return;
     }
-    console.log('Пользователь подключился через WebSocket, userId:', userId);
+    // Персональная комната устройства: конверты у устройств разные, и
+    // общий broadcast для них не годится. deviceId читается из сессии на
+    // момент подключения, поэтому после регистрации или привязки
+    // устройства клиент обязан переподключить сокет.
+    const socketDeviceId = socket.request.session?.deviceId;
+    if (socketDeviceId) socket.join(`device:${socketDeviceId}`);
+
+    console.log('Пользователь подключился через WebSocket, userId:', userId, 'deviceId:', socketDeviceId || '—');
 
     socket.on('joinChat', async (roomKey) => {
         if (typeof roomKey !== 'string' || roomKey.length === 0) return;
@@ -1144,6 +1185,209 @@ app.get('/api/chats', async (req, res) => {
     }
 });
 
+/**
+ * Устройства, которым нужен конверт этого сообщения.
+ *
+ * Включает ВСЕ устройства участников, в том числе само устройство
+ * отправителя. Исключать его нельзя: открытый текст нигде не хранится, и
+ * после перезагрузки страницы отправитель не смог бы прочитать свои же
+ * отправленные сообщения — шифротекста для себя нет, брать нечего. Конверт
+ * «себе» и есть история отправителя.
+ *
+ * Для комнаты это все участники, для обычного чата — только владелец: у
+ * групповых чатов участники лежат в room_participants, а одиночная запись
+ * chats без room_id принадлежит одному человеку (чат с ботом либо ещё не
+ * присоединённый чат).
+ */
+async function resolveEnvelopeRecipients(chat) {
+    const rows = chat.room_id
+        ? await dbAll(
+            `SELECT d.id, d.user_id FROM devices d
+             JOIN room_participants rp ON rp.user_id = d.user_id
+             WHERE rp.room_id = $1 AND d.revoked_at IS NULL
+             ORDER BY d.id ASC`,
+            [chat.room_id]
+        )
+        : await dbAll(
+            'SELECT id, user_id FROM devices WHERE user_id = $1 AND revoked_at IS NULL ORDER BY id ASC',
+            [chat.user_id]
+        );
+    return rows;
+}
+
+const MAX_ENVELOPES = 256;
+const MAX_HEADER_B64 = 2048;
+const MAX_CIPHERTEXT_B64 = 16384;
+
+// Строгий base64: иначе в BYTEA уехал бы мусор, а ошибка всплыла бы только
+// у получателя при расшифровке, где её уже не с чем связать.
+const B64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
+
+function decodeB64(value, maxLen, field) {
+    if (typeof value !== 'string' || value.length === 0 || value.length > maxLen) {
+        return { error: `${field}: ожидается base64 до ${maxLen} символов` };
+    }
+    if (!B64_RE.test(value)) return { error: `${field}: некорректный base64` };
+    const buf = Buffer.from(value, 'base64');
+    if (buf.length === 0) return { error: `${field}: пустое значение` };
+    // Buffer.from не бросает на мусоре, а молча отбрасывает лишнее —
+    // сверяем обратной кодировкой, что ничего не потерялось.
+    if (buf.toString('base64').replace(/=+$/, '') !== value.replace(/=+$/, '')) {
+        return { error: `${field}: некорректный base64` };
+    }
+    return { buf };
+}
+
+/**
+ * POST /api/messages/encrypted
+ *
+ * Отправка зашифрованного сообщения. Сервер не видит содержимого: он
+ * проверяет, что конверты адресованы участникам чата, складывает их и
+ * рассылает каждому устройству его собственный конверт.
+ *
+ * Открытый путь POST /api/messages оставлен рядом: чаты с ботом и файлы на
+ * этом этапе не шифруются (бот не имеет ключей, а срезание EXIF требует,
+ * чтобы сервер видел файл).
+ */
+app.post('/api/messages/encrypted', async (req, res) => {
+    if (!req.session.userId) return res.status(401).json({ success: false, message: 'Не авторизован' });
+    if (!req.session.deviceId) {
+        return res.status(409).json({ success: false, message: 'Устройство не зарегистрировано' });
+    }
+
+    const { chatId, replyToId, expirySeconds, envelopes } = req.body || {};
+    const replyTo = Number(replyToId) || null;
+
+    if (!Array.isArray(envelopes) || envelopes.length === 0) {
+        return res.status(400).json({ success: false, message: 'Нет конвертов' });
+    }
+    if (envelopes.length > MAX_ENVELOPES) {
+        return res.status(400).json({ success: false, message: `Не больше ${MAX_ENVELOPES} конвертов` });
+    }
+
+    try {
+        const chat = await dbGet('SELECT * FROM chats WHERE id = $1 AND user_id = $2', [chatId, req.session.userId]);
+        if (!chat) return res.status(404).json({ success: false, message: 'Чат не найден' });
+
+        const senderDeviceId = req.session.deviceId;
+        const allowed = await resolveEnvelopeRecipients(chat);
+        const allowedIds = new Set(allowed.map(d => d.id));
+
+        // Разбор и проверка до единой записи в БД: половина вставленных
+        // конвертов хуже отказа — сообщение прочитается у части устройств.
+        const parsed = [];
+        const seen = new Set();
+        for (const item of envelopes) {
+            const deviceId = Number(item && item.recipientDeviceId);
+            if (!Number.isInteger(deviceId) || deviceId <= 0) {
+                return res.status(400).json({ success: false, message: 'Некорректный recipientDeviceId' });
+            }
+            if (seen.has(deviceId)) {
+                return res.status(400).json({ success: false, message: `Дубликат конверта для устройства ${deviceId}` });
+            }
+            // Адресовать конверт устройству вне чата нельзя: иначе сервер
+            // превращается в хранилище, куда можно писать кому угодно.
+            if (!allowedIds.has(deviceId)) {
+                return res.status(403).json({ success: false, message: `Устройство ${deviceId} не участвует в чате` });
+            }
+            const type = Number(item.envelopeType);
+            if (type !== 1 && type !== 2) {
+                return res.status(400).json({ success: false, message: 'envelopeType должен быть 1 (prekey) или 2 (normal)' });
+            }
+            const header = decodeB64(item.header, MAX_HEADER_B64, 'header');
+            if (header.error) return res.status(400).json({ success: false, message: header.error });
+            const ciphertext = decodeB64(item.ciphertext, MAX_CIPHERTEXT_B64, 'ciphertext');
+            if (ciphertext.error) return res.status(400).json({ success: false, message: ciphertext.error });
+
+            seen.add(deviceId);
+            parsed.push({ deviceId, type, header: header.buf, ciphertext: ciphertext.buf });
+        }
+
+        const time = getCurrentTime();
+        const roomId = chat.room_id || null;
+        const socketRoomKey = getSocketRoomKey(chatId, roomId);
+
+        const client = await pool.connect();
+        let messageId;
+        try {
+            await client.query('BEGIN');
+            const inserted = await client.query(
+                `INSERT INTO messages (chat_id, room_id, user_id, text, message_type, sent, time, status, reply_to_id, encrypted, sender_device_id)
+                 VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, TRUE, $9) RETURNING id`,
+                [chatId, roomId, req.session.userId, 'text', 1, time, 'sent', replyTo, senderDeviceId]
+            );
+            messageId = inserted.rows[0].id;
+            for (const e of parsed) {
+                await client.query(
+                    `INSERT INTO message_envelopes (message_id, recipient_device_id, sender_device_id, envelope_type, header, ciphertext)
+                     VALUES ($1, $2, $3, $4, $5, $6)`,
+                    [messageId, e.deviceId, senderDeviceId, e.type, e.header, e.ciphertext]
+                );
+            }
+            await client.query('COMMIT');
+        } catch (err) {
+            await client.query('ROLLBACK');
+            throw err;
+        } finally {
+            client.release();
+        }
+
+        if (expirySeconds && Number(expirySeconds) > 0) {
+            await disappearingMessagesManager.setMessageExpiry(messageId, Number(expirySeconds), false);
+        } else {
+            const chatSettings = await disappearingMessagesManager.getChatSettings(chatId);
+            if (chatSettings && chatSettings.default_message_expiry) {
+                await disappearingMessagesManager.setMessageExpiry(messageId, chatSettings.default_message_expiry, false);
+            }
+        }
+
+        const sender = await dbGet('SELECT username, avatar FROM users WHERE id = $1', [req.session.userId]);
+        const base = {
+            id: messageId,
+            chat_id: Number(chatId),
+            room_id: roomId,
+            user_id: req.session.userId,
+            sender_username: sender ? sender.username : '',
+            sender_avatar: sender ? sender.avatar || '' : '',
+            sender_device_id: senderDeviceId,
+            encrypted: true,
+            text: null,
+            message_type: 'text',
+            reply_to_id: replyTo,
+            sent: true,
+            time,
+            status: 'sent',
+        };
+
+        // Каждому устройству — только его конверт. Общий broadcast тут не
+        // годится: конверты разные, и отдать устройству чужой означало бы
+        // рассылать шифротекст, который оно всё равно не прочитает.
+        for (const e of parsed) {
+            io.to(`device:${e.deviceId}`).emit('newMessage', {
+                ...base,
+                envelope: {
+                    envelope_type: e.type,
+                    header: e.header.toString('base64'),
+                    ciphertext: e.ciphertext.toString('base64'),
+                },
+            });
+        }
+
+        res.json({
+            success: true,
+            message: base,
+            // Устройства чата, для которых конверта не прислали: клиент
+            // должен увидеть это и добрать их ключи, иначе там сообщение
+            // не прочитается.
+            missingDeviceIds: allowed.filter(d => !seen.has(d.id)).map(d => d.id),
+            socketRoomKey,
+        });
+    } catch (error) {
+        console.error('Encrypted message error:', error);
+        res.status(500).json({ success: false, message: 'Не удалось отправить сообщение' });
+    }
+});
+
 app.get('/api/messages/:chatId', async (req, res) => {
     if (!req.session.userId) return res.json({ success: false, message: 'Не авторизован' });
     const chatId = req.params.chatId;
@@ -1190,9 +1434,39 @@ app.get('/api/messages/:chatId', async (req, res) => {
         const reactionsMap = {};
         reactions.forEach(r => { reactionsMap[r.message_id] = r.emojis.split(','); });
 
+        // Конверты — только адресованные ЭТОМУ устройству. Чужие сервер
+        // отдавать не должен: прочитать их устройство всё равно не может,
+        // а отдача чужого шифротекста — лишняя утечка без пользы.
+        const envelopeMap = {};
+        if (req.session.deviceId) {
+            const encryptedIds = messages.filter(m => m.encrypted).map(m => m.id);
+            if (encryptedIds.length > 0) {
+                const envPlaceholders = encryptedIds.map((_, i) => `$${i + 2}`).join(',');
+                const envelopes = await dbAll(
+                    `SELECT message_id, envelope_type, header, ciphertext, sender_device_id
+                     FROM message_envelopes
+                     WHERE recipient_device_id = $1 AND message_id IN (${envPlaceholders})`,
+                    [req.session.deviceId, ...encryptedIds]
+                );
+                envelopes.forEach(e => {
+                    envelopeMap[e.message_id] = {
+                        envelope_type: e.envelope_type,
+                        header: e.header.toString('base64'),
+                        ciphertext: e.ciphertext.toString('base64'),
+                        sender_device_id: e.sender_device_id,
+                    };
+                });
+            }
+        }
+
         messages = messages.map(m => ({
             ...m,
             reactions: reactionsMap[m.id] || [],
+            // Для зашифрованного сообщения без конверта клиент обязан
+            // показать заглушку, а не пустое сообщение: это либо устройство
+            // подключили после отправки (историю оно не получает), либо
+            // отправитель не прислал конверт для него.
+            envelope: m.encrypted ? (envelopeMap[m.id] || null) : undefined,
             reply_to: m.reply_to_id ? { id: m.reply_to_id, text: m.reply_to_text, sender_username: m.reply_to_sender_username, sender_avatar: m.reply_to_sender_avatar } : null
         }));
 
