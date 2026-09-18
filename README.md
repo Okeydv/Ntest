@@ -227,10 +227,8 @@ DELETE /api/keys
 - [ ] Завершение клиентского E2EE модуля (WASM)
 - [ ] Desktop приложение (Electron)
 - [ ] Mobile приложения (React Native)
-- [ ] Voice/Video calls через WebRTC
 - [ ] Multi-device поддержка
 - [ ] Групповое E2EE
-- [ ] Stickers и GIF поддержка
 
 ## 🤝 Безопасное использование
 
