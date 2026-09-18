@@ -1,0 +1,1606 @@
+/* ============================================================================
+   Nyxo — дизайн-система
+   ----------------------------------------------------------------------------
+   Всё оформление собрано из токенов в :root. Светлая тема переопределяет те же
+   токены в [data-theme="light"], поэтому компонентные правила ниже про цвет
+   вообще не знают — они ссылаются только на переменные. Хардкод цвета в
+   компоненте = баг: такой компонент не переживёт смену темы.
+
+   Оглавление
+     1. Токены (цвет, слои, радиусы, типографика, тени, движение)
+     2. Сброс и база
+     3. Типографика
+     4. Бренд и иконки
+     5. Примитивы: кнопки, поля, разделитель, скелетоны
+     6. Экран входа
+     7. Каркас приложения: сайдбар, список чатов
+     8. Чат: шапка, сообщения, поле ввода
+     9. Пустой экран
+    10. Модалки и оверлей
+    11. Профиль и приглашения
+    12. Контекстное меню, тосты
+    13. Адаптив
+    14. Настройки движения
+   ========================================================================= */
+
+/* ============================================================================
+   1. ТОКЕНЫ
+   ========================================================================= */
+
+:root {
+    color-scheme: dark;
+
+    /* --- Радиусы -------------------------------------------------------------
+       Шкала, а не одно значение на всё: крупные контейнеры мягкие, контролы
+       собраннее. За счёт разницы уровни читаются как разные слои интерфейса. */
+    --r-xs: 6px;    /* бейджи, счётчики */
+    --r-sm: 9px;    /* реакции, код, вложения */
+    --r-md: 12px;   /* поля ввода, пункты меню */
+    --r-lg: 16px;   /* кнопки, элементы списка чатов */
+    --r-xl: 22px;   /* бабблы сообщений */
+    --r-2xl: 28px;  /* карточка входа, модалки */
+    --r-pill: 999px;
+
+    /* --- Типографика ---------------------------------------------------------
+       CSP отдаёт font-src 'self', внешние шрифты не подключить, поэтому
+       иерархия держится не на гарнитуре, а на размере, весе, межстрочном и
+       межбуквенном интервале. Шаг между уровнями крупный и намеренно
+       неравномерный: 38 / 30 / 26 / 19 / 15 — заголовок не спутать с текстом. */
+    --f-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    --f-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+
+    --fs-display: 2.375rem;  /* 38px — логотип на входе */
+    --fs-h1: 1.875rem;       /* 30px */
+    --fs-h2: 1.625rem;       /* 26px — пустой экран */
+    --fs-h3: 1.1875rem;      /* 19px — шапки модалок */
+    --fs-h4: 1.3125rem;      /* 21px — имя в профиле */
+    --fs-body: 0.9375rem;    /* 15px */
+    --fs-sm: 0.8438rem;      /* 13.5px */
+    --fs-xs: 0.75rem;        /* 12px */
+
+    /* Межстрочный: заголовки плотно, текст свободно. Дефолтный normal (~1.2)
+       одинаково не годится ни там, ни там. */
+    --lh-tight: 1.06;
+    --lh-snug: 1.24;
+    --lh-body: 1.62;
+
+    /* Межбуквенный: крупный кегль поджимаем, мелкий и капслок разряжаем —
+       иначе заголовки выглядят рыхлыми, а лейблы слипаются. */
+    --tr-display: -0.032em;
+    --tr-head: -0.02em;
+    --tr-body: -0.006em;
+    --tr-label: 0.085em;
+
+    /* --- Движение ------------------------------------------------------------ */
+    --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+    --ease-back: cubic-bezier(0.34, 1.26, 0.64, 1);
+    --dur-1: 120ms;
+    --dur-2: 200ms;
+    --dur-3: 320ms;
+
+    /* --- Акцент -------------------------------------------------------------- */
+    --accent: #6d5efc;
+    --accent-strong: #5b49f0;
+    --accent-2: #a86cf5;
+    --accent-ink: #ffffff;
+    --brand-from: #8b7bff;
+    --brand-to: #a86cf5;
+
+    --ok: #2dd4a7;
+    --danger: #f0495e;
+
+    /* --- Слои ---------------------------------------------------------------
+       Пять ступеней по тону, а не одна поверхность на всё: модалка ощутимо
+       светлее фона под ней, иначе слои сливаются и глубины не видно. */
+    --bg: #08080e;
+    --layer-1: #0e0e16;   /* область переписки */
+    --layer-2: #14141f;   /* сайдбар, шапки, футеры */
+    --layer-3: #1b1b28;   /* карточка входа, баббл собеседника */
+    --layer-4: #232333;   /* модалки, контекстное меню — верхний слой */
+    --field: #101019;
+    --field-focus: #161622;
+    --control: #212130;
+    --control-hover: #2a2a3c;
+
+    --text: #f2f3f7;
+    --text-2: #b9bcca;
+    --text-3: #868b9f;  /* 5.0:1 на --layer-3 — худшем (самом светлом) фоне тёмной темы */
+
+    --border: rgba(162, 170, 200, 0.12);
+    --border-2: rgba(162, 170, 200, 0.2);
+
+    --accent-soft: rgba(109, 94, 252, 0.16);
+    --accent-line: rgba(109, 94, 252, 0.38);
+    --accent-ring: rgba(109, 94, 252, 0.34);
+    --danger-soft: rgba(240, 73, 94, 0.14);
+    --danger-line: rgba(240, 73, 94, 0.42);
+
+    --sh-1: 0 1px 2px rgba(0, 0, 0, 0.44);
+    --sh-2: 0 4px 14px rgba(0, 0, 0, 0.44);
+    --sh-3: 0 24px 64px rgba(0, 0, 0, 0.62);
+    --sh-accent: 0 6px 18px rgba(109, 94, 252, 0.3);
+    --sh-accent-hover: 0 10px 26px rgba(109, 94, 252, 0.4);
+    --sh-danger: 0 8px 22px rgba(240, 73, 94, 0.3);
+
+    --scrim: rgba(4, 4, 9, 0.76);
+    --skeleton-base: rgba(162, 170, 200, 0.09);
+    --skeleton-sheen: rgba(162, 170, 200, 0.18);
+    --inset-on-surface: rgba(162, 170, 200, 0.1);
+    --inset-on-surface-hover: rgba(162, 170, 200, 0.17);
+    --ok-ring: rgba(45, 212, 167, 0.2);
+    --inset-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+    --glow-1: rgba(109, 94, 252, 0.16);
+    --glow-2: rgba(168, 108, 245, 0.12);
+
+    --icon-alert: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill-rule='evenodd' d='M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0zM7.1 4.2h1.8l-.25 5h-1.3zM8 10.6a1.1 1.1 0 1 1 0 2.2 1.1 1.1 0 0 1 0-2.2z'/%3E%3C/svg%3E");
+}
+
+[data-theme="light"] {
+    color-scheme: light;
+
+    --bg: #eef0f5;
+    --layer-1: #f7f8fb;
+    --layer-2: #ffffff;
+    --layer-3: #ffffff;
+    --layer-4: #ffffff;
+    --field: #f1f2f7;
+    --field-focus: #ffffff;
+    --control: #f4f5f9;
+    --control-hover: #ebecf3;
+
+    --text: #12131a;
+    --text-2: #4d5261;
+    --text-3: #6b7183;  /* 4.96:1 на белом */
+
+    --border: rgba(18, 19, 26, 0.1);
+    --border-2: rgba(18, 19, 26, 0.17);
+
+    --ok: #0a8566;      /* 4.63:1 на белом */
+    --danger: #d01f39;  /* 5.33:1 на белом, и белый текст на кнопке — 5.33:1 */
+
+    --accent-soft: rgba(109, 94, 252, 0.1);
+    --accent-line: rgba(109, 94, 252, 0.32);
+    --accent-ring: rgba(109, 94, 252, 0.3);
+    --danger-soft: rgba(208, 31, 57, 0.08);
+    --danger-line: rgba(208, 31, 57, 0.34);
+
+    /* В светлой теме слои почти не различаются по тону, поэтому глубину
+       держат тени и границы — они здесь заметно плотнее. */
+    --sh-1: 0 1px 2px rgba(16, 18, 30, 0.08);
+    --sh-2: 0 6px 18px rgba(16, 18, 30, 0.1);
+    --sh-3: 0 28px 64px rgba(16, 18, 30, 0.2);
+    --sh-accent: 0 6px 16px rgba(109, 94, 252, 0.26);
+    --sh-accent-hover: 0 10px 24px rgba(109, 94, 252, 0.34);
+    --sh-danger: 0 8px 20px rgba(208, 31, 57, 0.24);
+
+    --scrim: rgba(24, 26, 38, 0.42);
+    --skeleton-base: rgba(18, 19, 26, 0.07);
+    --skeleton-sheen: rgba(18, 19, 26, 0.13);
+    --inset-on-surface: rgba(18, 19, 26, 0.05);
+    --inset-on-surface-hover: rgba(18, 19, 26, 0.09);
+    --ok-ring: rgba(10, 133, 102, 0.18);
+    --inset-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.28);
+    --glow-1: rgba(109, 94, 252, 0.12);
+    --glow-2: rgba(168, 108, 245, 0.09);
+}
+
+/* ============================================================================
+   2. СБРОС И БАЗА
+   ========================================================================= */
+
+*,
+*::before,
+*::after {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+html {
+    -webkit-text-size-adjust: 100%;
+}
+
+body {
+    font-family: var(--f-sans);
+    font-size: var(--fs-body);
+    line-height: var(--lh-body);
+    letter-spacing: var(--tr-body);
+    color: var(--text);
+    background: var(--bg);
+    height: 100vh;
+    overflow: hidden;
+    position: relative;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    transition: background var(--dur-3) var(--ease), color var(--dur-3) var(--ease);
+}
+
+/* Подсветка фона: два мягких пятна акцентом. Единственная роль — не дать
+   тёмному фону выглядеть плоской заливкой. */
+body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background:
+        radial-gradient(60rem 40rem at 18% 12%, var(--glow-1) 0%, transparent 60%),
+        radial-gradient(50rem 38rem at 85% 88%, var(--glow-2) 0%, transparent 60%);
+    pointer-events: none;
+    z-index: 0;
+}
+
+.hidden { display: none !important; }
+
+.icon-sprite {
+    position: absolute;
+    width: 0;
+    height: 0;
+    overflow: hidden;
+}
+
+::selection {
+    background: var(--accent-soft);
+    color: var(--text);
+}
+
+/* Одно правило фокуса на весь интерфейс. :focus-visible, а не :focus, —
+   рамка появляется при навигации с клавиатуры и не мешает при клике мышью. */
+:where(button, input, textarea, a, [tabindex]):focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+/* Скроллбары */
+* {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-2) transparent;
+}
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+    background: var(--border-2);
+    border-radius: var(--r-pill);
+    border: 2px solid transparent;
+    background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background-clip: padding-box; }
+
+/* ============================================================================
+   3. ТИПОГРАФИКА
+   ========================================================================= */
+
+h1, h2, h3, h4 {
+    font-weight: 600;
+    line-height: var(--lh-snug);
+    letter-spacing: var(--tr-head);
+    color: var(--text);
+    text-wrap: balance;
+}
+
+h1 { font-size: var(--fs-h1); line-height: var(--lh-tight); letter-spacing: var(--tr-display); }
+h2 { font-size: var(--fs-h2); }
+h3 { font-size: var(--fs-h3); }
+h4 { font-size: var(--fs-h4); }
+
+code, .input-code, .mono {
+    font-family: var(--f-mono);
+    font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================================
+   4. БРЕНД И ИКОНКИ
+   ========================================================================= */
+
+/* Градиент знака живёт в токенах: var() в презентационных атрибутах SVG не
+   работает, поэтому stop-color задаётся отсюда, а атрибут в разметке —
+   только фолбэк. */
+#brand-gradient stop:first-child { stop-color: var(--brand-from); }
+#brand-gradient stop:last-child  { stop-color: var(--brand-to); }
+
+.icon {
+    width: 1.25rem;
+    height: 1.25rem;
+    flex-shrink: 0;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.7;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+}
+
+.brand-mark {
+    display: grid;
+    place-items: center;
+    width: 2rem;
+    height: 2rem;
+    flex-shrink: 0;
+}
+
+.brand-mark .icon {
+    width: 100%;
+    height: 100%;
+    stroke: none;
+}
+
+.brand-mark-lg {
+    width: 4rem;
+    height: 4rem;
+    margin: 0 auto 1.25rem;
+    filter: drop-shadow(0 6px 18px var(--accent-ring));
+}
+
+.brand-word {
+    font-weight: 600;
+    letter-spacing: var(--tr-head);
+    color: var(--text);
+}
+
+.brand-sm .brand-word {
+    font-size: 1.1875rem;
+}
+
+/* Переключатель темы. Лунa здесь — и только здесь: как значок тёмной темы
+   она узнаётся всеми, но именно поэтому не может быть знаком бренда. Знак
+   бренда — #i-brand, и эти две роли больше не пересекаются. */
+.theme-toggle .icon-when-dark,
+.theme-toggle .icon-when-light {
+    display: none;
+}
+
+:root[data-theme="dark"] .theme-toggle .icon-when-dark,
+:root[data-theme="light"] .theme-toggle .icon-when-light {
+    display: block;
+}
+
+/* ============================================================================
+   5. ПРИМИТИВЫ
+   ========================================================================= */
+
+/* --- Кнопки ------------------------------------------------------------- */
+
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0.875rem 1.25rem;
+    border: 1px solid transparent;
+    border-radius: var(--r-lg);
+    font-family: inherit;
+    font-size: var(--fs-body);
+    font-weight: 600;
+    letter-spacing: var(--tr-body);
+    line-height: 1.2;
+    cursor: pointer;
+    white-space: nowrap;
+    transition:
+        transform var(--dur-1) var(--ease),
+        box-shadow var(--dur-2) var(--ease),
+        background var(--dur-2) var(--ease),
+        border-color var(--dur-2) var(--ease),
+        color var(--dur-2) var(--ease);
+}
+
+.btn-block { width: 100%; }
+.btn .icon { width: 1.125rem; height: 1.125rem; }
+
+/* Основная кнопка: градиент + цветная тень + внутренний блик по верхней
+   кромке. Блик и тень дают ей объём — без них primary отличается от
+   secondary только заливкой и не тянет на главное действие. */
+.btn-primary {
+    background: linear-gradient(140deg, var(--accent) 0%, var(--accent-strong) 55%, var(--accent-2) 100%);
+    color: var(--accent-ink);
+    box-shadow: var(--sh-accent), var(--inset-highlight);
+}
+
+.btn-primary:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--sh-accent-hover), var(--inset-highlight);
+}
+
+.btn-primary:active {
+    transform: translateY(0) scale(0.99);
+    box-shadow: var(--sh-1), var(--inset-highlight);
+}
+
+.btn-secondary {
+    background: var(--control);
+    color: var(--text);
+    border-color: var(--border-2);
+    box-shadow: var(--sh-1);
+}
+
+.btn-secondary:hover {
+    border-color: var(--accent-line);
+    background: var(--control-hover);
+    transform: translateY(-1px);
+}
+
+.btn-secondary:active { transform: translateY(0); }
+
+.btn-ghost {
+    flex: 1;
+    padding: 0.75rem 0.875rem;
+    background: transparent;
+    color: var(--text-2);
+    border-color: var(--border);
+    font-weight: 500;
+    font-size: var(--fs-sm);
+}
+
+.btn-ghost:hover {
+    color: var(--text);
+    background: var(--accent-soft);
+    border-color: var(--accent-line);
+}
+
+.btn-danger {
+    background: var(--danger);
+    color: #fff;
+    box-shadow: var(--sh-danger), var(--inset-highlight);
+}
+
+.btn-danger:hover {
+    transform: translateY(-2px);
+    filter: brightness(1.06);
+}
+
+.btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
+}
+
+/* --- Иконочные кнопки --------------------------------------------------- */
+
+.icon-btn {
+    display: grid;
+    place-items: center;
+    width: 2.625rem;
+    height: 2.625rem;
+    flex-shrink: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--r-pill);
+    background: var(--control);
+    color: var(--text-2);
+    cursor: pointer;
+    transition:
+        transform var(--dur-1) var(--ease),
+        background var(--dur-2) var(--ease),
+        border-color var(--dur-2) var(--ease),
+        color var(--dur-2) var(--ease),
+        box-shadow var(--dur-2) var(--ease);
+}
+
+.icon-btn:hover {
+    color: var(--text);
+    background: var(--accent-soft);
+    border-color: var(--accent-line);
+    transform: translateY(-1px);
+}
+
+.icon-btn:active { transform: translateY(0) scale(0.94); }
+
+.icon-btn-sm {
+    width: 2.125rem;
+    height: 2.125rem;
+}
+
+.icon-btn-sm .icon { width: 1rem; height: 1rem; }
+
+.icon-btn-quiet {
+    background: transparent;
+    border-color: transparent;
+}
+
+.icon-btn-accent {
+    background: linear-gradient(140deg, var(--accent) 0%, var(--accent-strong) 100%);
+    border-color: transparent;
+    color: var(--accent-ink);
+    box-shadow: var(--sh-accent), var(--inset-highlight);
+}
+
+.icon-btn-accent:hover {
+    background: linear-gradient(140deg, var(--accent) 0%, var(--accent-2) 100%);
+    border-color: transparent;
+    color: var(--accent-ink);
+    box-shadow: var(--sh-accent-hover), var(--inset-highlight);
+}
+
+.icon-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+    transform: none;
+}
+
+/* --- Поля --------------------------------------------------------------- */
+
+.field {
+    margin-bottom: 1.125rem;
+}
+
+/* Лейбл капслоком, мелко и разряженно: отделяет подпись от значения в поле
+   по рисунку строки, а не только по размеру. */
+.field-label {
+    display: block;
+    margin-bottom: 0.4375rem;
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    line-height: 1.3;
+    letter-spacing: var(--tr-label);
+    text-transform: uppercase;
+    color: var(--text-3);
+}
+
+input[type="text"],
+input[type="email"],
+input[type="password"] {
+    width: 100%;
+    padding: 0.8125rem 1rem;
+    border: 1px solid var(--border-2);
+    border-radius: var(--r-md);
+    background: var(--field);
+    font-family: inherit;
+    font-size: var(--fs-body);
+    letter-spacing: var(--tr-body);
+    color: var(--text);
+    transition:
+        border-color var(--dur-2) var(--ease),
+        background var(--dur-2) var(--ease),
+        box-shadow var(--dur-2) var(--ease);
+}
+
+input::placeholder { color: var(--text-3); }
+
+/* Фокус: сдвиг фона + акцентная рамка + кольцо. Видно и на тёмной, и на
+   светлой теме, и отличается от состояния ошибки не только цветом. */
+input[type="text"]:focus,
+input[type="email"]:focus,
+input[type="password"]:focus {
+    outline: none;
+    border-color: var(--accent);
+    background: var(--field-focus);
+    box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+/* Ошибка: красная рамка, мягкая подложка и подпись под полем. Форма кольца
+   та же, что у фокуса, — меняется только цвет, поэтому состояния
+   складываются, а не перебивают друг друга. */
+input.is-invalid {
+    border-color: var(--danger-line);
+    background: var(--danger-soft);
+}
+
+input.is-invalid:focus {
+    border-color: var(--danger);
+    box-shadow: 0 0 0 3px var(--danger-soft);
+}
+
+.field-msg {
+    display: none;
+    margin-top: 0.4375rem;
+    font-size: var(--fs-xs);
+    line-height: 1.4;
+    color: var(--danger);
+}
+
+.field-msg.is-visible {
+    display: flex;
+    gap: 0.375rem;
+    align-items: flex-start;
+}
+
+.field-msg.is-visible::before {
+    content: '';
+    width: 0.875rem;
+    height: 0.875rem;
+    flex-shrink: 0;
+    margin-top: 0.125rem;
+    border-radius: var(--r-pill);
+    border-radius: 0;
+    /* Кружок с вырезанным восклицательным знаком: три подпути в одном path
+       и fill-rule="evenodd" — вложенные фигуры выбиваются из заливки. Через
+       mask знак берёт currentColor и меняет цвет вместе с текстом подписи. */
+    background: currentColor;
+    -webkit-mask: var(--icon-alert) center / contain no-repeat;
+    mask: var(--icon-alert) center / contain no-repeat;
+}
+
+.field-hint {
+    margin-top: 0.5rem;
+    font-size: var(--fs-xs);
+    line-height: 1.45;
+    color: var(--text-3);
+}
+
+.field-hint-center { text-align: center; }
+
+.input-code {
+    font-size: 1.0625rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+}
+
+/* --- Разделитель -------------------------------------------------------- */
+
+/* Не линия со словом посередине, а две линии, растворяющиеся к центру, и
+   подпись в капсуле поверх них. Разделитель перестаёт быть служебной
+   чертой и читается как пауза между двумя способами входа. */
+.divider {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 1.5rem 0;
+    position: relative;
+}
+
+.divider::before,
+.divider::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--border-2));
+}
+
+.divider::after {
+    background: linear-gradient(90deg, var(--border-2), transparent);
+}
+
+.divider-label {
+    flex-shrink: 0;
+    margin: 0 0.875rem;
+    padding: 0.25rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: var(--r-pill);
+    background: var(--layer-3);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: var(--tr-label);
+    text-transform: uppercase;
+    color: var(--text-3);
+}
+
+/* --- Скелетоны ---------------------------------------------------------- */
+
+/* Плоские серые блоки заменены на форму реального элемента: круглая
+   аватарка, две строки разной длины, по всему — бегущий блик. */
+.skeleton-item {
+    display: flex;
+    align-items: center;
+    gap: 0.875rem;
+    padding: 0.875rem;
+    border-radius: var(--r-lg);
+}
+
+.skeleton-lines {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.skeleton {
+    position: relative;
+    overflow: hidden;
+    background: var(--skeleton-base);
+}
+
+.skeleton::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(90deg, transparent, var(--skeleton-sheen), transparent);
+    animation: shimmer 1.4s var(--ease) infinite;
+}
+
+@keyframes shimmer {
+    to { transform: translateX(100%); }
+}
+
+.skeleton-avatar {
+    width: 3.25rem;
+    height: 3.25rem;
+    flex-shrink: 0;
+    border-radius: var(--r-pill);
+}
+
+.skeleton-line {
+    height: 0.75rem;
+    border-radius: var(--r-xs);
+}
+
+.skeleton-line-sm { height: 0.625rem; }
+
+/* ============================================================================
+   6. ЭКРАН ВХОДА
+   ========================================================================= */
+
+.auth-screen {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    padding: 1.25rem;
+    position: relative;
+    z-index: 1;
+}
+
+.auth-screen .theme-toggle {
+    position: fixed;
+    top: 1.25rem;
+    right: 1.25rem;
+    z-index: 2;
+}
+
+.auth-container {
+    width: 100%;
+    max-width: 27.5rem;
+    padding: 2.75rem;
+    border: 1px solid var(--border);
+    border-radius: var(--r-2xl);
+    background: var(--layer-3);
+    box-shadow: var(--sh-3);
+    animation: riseIn var(--dur-3) var(--ease) both;
+}
+
+@keyframes riseIn {
+    from { opacity: 0; transform: translateY(1.25rem); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.auth-logo {
+    text-align: center;
+    margin-bottom: 2.25rem;
+}
+
+/* Логотип на входе — самый крупный кегль в интерфейсе (38px против 15px
+   основного текста). Разрыв заметный намеренно: на этом экране больше
+   ничего нет, и иерархию держит только он. */
+.auth-logo .brand-word {
+    display: block;
+    font-size: var(--fs-display);
+    line-height: var(--lh-tight);
+    letter-spacing: var(--tr-display);
+    margin-bottom: 0.5rem;
+}
+
+.auth-tagline {
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+    color: var(--text-3);
+}
+
+.auth-tabs {
+    display: flex;
+    gap: 0.25rem;
+    margin-bottom: 1.75rem;
+    padding: 0.25rem;
+    border: 1px solid var(--border);
+    border-radius: var(--r-lg);
+    background: var(--field);
+}
+
+.auth-tab {
+    flex: 1;
+    padding: 0.625rem 1rem;
+    border: none;
+    border-radius: var(--r-md);
+    background: transparent;
+    font-family: inherit;
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    color: var(--text-3);
+    cursor: pointer;
+    transition: color var(--dur-2) var(--ease), background var(--dur-2) var(--ease), box-shadow var(--dur-2) var(--ease);
+}
+
+.auth-tab:hover:not(.active) { color: var(--text); }
+
+.auth-tab.active {
+    background: linear-gradient(140deg, var(--accent) 0%, var(--accent-strong) 100%);
+    color: var(--accent-ink);
+    box-shadow: var(--sh-1), var(--inset-highlight);
+}
+
+.auth-form { display: none; }
+
+.auth-form.active {
+    display: block;
+    animation: fadeIn var(--dur-2) var(--ease) both;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+/* ============================================================================
+   7. КАРКАС ПРИЛОЖЕНИЯ
+   ========================================================================= */
+
+.app {
+    display: flex;
+    height: 100vh;
+    position: relative;
+    z-index: 1;
+}
+
+.sidebar {
+    width: 21.25rem;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--layer-2);
+    border-right: 1px solid var(--border);
+}
+
+.sidebar-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 1rem 1.25rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.search-container { padding: 0.875rem 1.125rem; }
+
+.search-field {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+.search-icon {
+    position: absolute;
+    left: 0.875rem;
+    width: 1rem;
+    height: 1rem;
+    color: var(--text-3);
+    pointer-events: none;
+}
+
+.search-field input { padding-left: 2.5rem; }
+
+.chats-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0.25rem 0.75rem 0.75rem;
+}
+
+.chat-item {
+    display: flex;
+    align-items: center;
+    gap: 0.875rem;
+    padding: 0.875rem;
+    border: 1px solid transparent;
+    border-radius: var(--r-lg);
+    cursor: pointer;
+    transition: background var(--dur-2) var(--ease), border-color var(--dur-2) var(--ease);
+}
+
+.chat-item:hover {
+    background: var(--accent-soft);
+    border-color: var(--border);
+}
+
+.chat-item.active {
+    background: var(--accent-soft);
+    border-color: var(--accent-line);
+}
+
+/* На активном элементе подложка акцентная, и --text-3 на ней в светлой теме
+   проседает до 4.29:1. Заодно это правильнее по смыслу: у открытого чата
+   вторая строка должна быть заметнее, а не такой же, как у остальных. */
+.chat-item.active .chat-last { color: var(--text-2); }
+
+.chat-avatar-small {
+    display: grid;
+    place-items: center;
+    width: 3.25rem;
+    height: 3.25rem;
+    flex-shrink: 0;
+    border-radius: var(--r-pill);
+    color: #fff;
+    font-size: 1.1875rem;
+    font-weight: 600;
+    box-shadow: var(--sh-1);
+}
+
+/* Scoped: .chat-info есть и в элементе списка, и в шапке чата. В прежней
+   версии оба селектора были глобальными, второй перебивал первый своим
+   display:flex — и в списке название с последним сообщением вставали в
+   строку вместо колонки. */
+.chat-item .chat-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.chat-item .chat-name {
+    margin-bottom: 0.125rem;
+    font-size: var(--fs-body);
+    font-weight: 600;
+    letter-spacing: var(--tr-body);
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.chat-item .chat-last {
+    font-size: var(--fs-sm);
+    line-height: 1.4;
+    color: var(--text-3);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.chats-placeholder {
+    padding: 1.5rem 1rem;
+    text-align: center;
+    font-size: var(--fs-sm);
+    color: var(--text-3);
+}
+
+.chat-badge {
+    display: grid;
+    place-items: center;
+    min-width: 1.375rem;
+    height: 1.375rem;
+    padding: 0 0.4375rem;
+    border-radius: var(--r-pill);
+    background: linear-gradient(140deg, var(--accent) 0%, var(--accent-strong) 100%);
+    color: var(--accent-ink);
+    font-size: 0.6875rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    box-shadow: var(--sh-1);
+}
+
+.sidebar-footer {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.875rem 1.125rem;
+    border-top: 1px solid var(--border);
+}
+
+/* ============================================================================
+   8. ЧАТ
+   ========================================================================= */
+
+.main-content {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--layer-1);
+}
+
+.chat-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1rem 1.5rem;
+    background: var(--layer-2);
+    border-bottom: 1px solid var(--border);
+}
+
+.chat-identity {
+    display: flex;
+    align-items: center;
+    gap: 0.875rem;
+    min-width: 0;
+}
+
+.chat-avatar {
+    display: grid;
+    place-items: center;
+    width: 2.875rem;
+    height: 2.875rem;
+    flex-shrink: 0;
+    border-radius: var(--r-pill);
+    color: #fff;
+    font-size: 1.0625rem;
+    font-weight: 600;
+    box-shadow: var(--sh-1);
+}
+
+.chat-details { min-width: 0; }
+
+.chat-details h3 {
+    font-size: var(--fs-h3);
+    margin-bottom: 0.0625rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.status {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    font-size: var(--fs-xs);
+    font-weight: 500;
+    letter-spacing: 0.01em;
+}
+
+.status::before {
+    content: '';
+    width: 0.4375rem;
+    height: 0.4375rem;
+    border-radius: var(--r-pill);
+    background: currentColor;
+}
+
+.status.online { color: var(--ok); }
+.status.online::before { box-shadow: 0 0 0 3px var(--ok-ring); }
+.status.offline { color: var(--text-3); }
+
+.chat-actions {
+    display: flex;
+    gap: 0.5rem;
+}
+
+/* --- Сообщения ---------------------------------------------------------- */
+
+.chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    padding: 1.5rem;
+}
+
+.message {
+    max-width: min(70%, 34rem);
+    padding: 0.75rem 1rem;
+    border-radius: var(--r-xl);
+    animation: messageIn var(--dur-3) var(--ease-back) both;
+}
+
+@keyframes messageIn {
+    from { opacity: 0; transform: translateY(0.75rem) scale(0.98); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.message.sent {
+    --bubble-inset: rgba(0, 0, 0, 0.18);
+    --bubble-inset-hover: rgba(0, 0, 0, 0.28);
+    --bubble-rule: rgba(255, 255, 255, 0.5);
+    align-self: flex-end;
+    background: linear-gradient(140deg, var(--accent) 0%, var(--accent-strong) 100%);
+    color: var(--accent-ink);
+    border-bottom-right-radius: var(--r-xs);
+    box-shadow: var(--sh-accent);
+}
+
+.message.received {
+    --bubble-inset: var(--inset-on-surface);
+    --bubble-inset-hover: var(--inset-on-surface-hover);
+    --bubble-rule: var(--accent);
+    align-self: flex-start;
+    background: var(--layer-3);
+    border: 1px solid var(--border);
+    border-bottom-left-radius: var(--r-xs);
+    box-shadow: var(--sh-1);
+}
+
+.message-content { word-break: break-word; }
+
+.message-text {
+    font-size: var(--fs-body);
+    line-height: var(--lh-body);
+    white-space: pre-wrap;
+}
+
+.message-meta {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    margin-top: 0.375rem;
+    font-size: 0.6875rem;
+    font-variant-numeric: tabular-nums;
+    opacity: 0.66;
+}
+
+.message-time { font-weight: 500; }
+.message-status { font-weight: 600; }
+
+.message-image,
+.message-video,
+.message-audio {
+    display: block;
+    max-width: 100%;
+    margin-bottom: 0.5rem;
+    border-radius: var(--r-md);
+}
+
+.message-image {
+    cursor: pointer;
+    transition: transform var(--dur-2) var(--ease);
+}
+
+.message-image:hover { transform: scale(1.015); }
+
+.file-attachment a {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: var(--r-sm);
+    background: var(--bubble-inset);
+    color: inherit;
+    font-size: var(--fs-sm);
+    text-decoration: none;
+    transition: background var(--dur-2) var(--ease);
+}
+
+.file-attachment a:hover { background: var(--bubble-inset-hover); }
+.file-attachment .icon { width: 1rem; height: 1rem; }
+
+.reactions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.375rem;
+    margin-top: 0.5rem;
+}
+
+.reaction {
+    padding: 0.125rem 0.5rem;
+    border-radius: var(--r-sm);
+    background: var(--bubble-inset);
+    font-size: var(--fs-sm);
+    cursor: pointer;
+    transition: transform var(--dur-1) var(--ease), background var(--dur-2) var(--ease);
+}
+
+.reaction:hover { background: var(--bubble-inset-hover); transform: scale(1.08); }
+
+.reply-to {
+    margin-bottom: 0.5rem;
+    padding: 0.375rem 0.625rem;
+    border-left: 2px solid var(--bubble-rule);
+    border-radius: 0 var(--r-sm) var(--r-sm) 0;
+    background: var(--bubble-inset);
+    font-size: var(--fs-sm);
+    line-height: 1.4;
+}
+
+.reply-to-author {
+    display: block;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: var(--tr-label);
+    text-transform: uppercase;
+    opacity: 0.8;
+}
+
+.reply-to-text {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.edited-label {
+    margin-top: 0.25rem;
+    font-size: 0.6875rem;
+    text-align: right;
+    opacity: 0.6;
+}
+
+/* --- Поле ввода --------------------------------------------------------- */
+
+.message-input-container {
+    padding: 1rem 1.5rem 1.25rem;
+    background: var(--layer-2);
+    border-top: 1px solid var(--border);
+}
+
+.reply-preview {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+    padding: 0.5rem 0.625rem;
+    border-left: 2px solid var(--accent);
+    border-radius: 0 var(--r-md) var(--r-md) 0;
+    background: var(--accent-soft);
+    font-size: var(--fs-sm);
+    color: var(--text-2);
+}
+
+.reply-preview-icon {
+    width: 1rem;
+    height: 1rem;
+    color: var(--accent);
+}
+
+.reply-preview span {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.input-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+}
+
+.input-wrapper input { flex: 1; min-width: 0; }
+
+/* ============================================================================
+   9. ПУСТОЙ ЭКРАН
+   ========================================================================= */
+
+.empty-state {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 1.5rem;
+    text-align: center;
+}
+
+.empty-art {
+    width: 10rem;
+    height: 10rem;
+    margin-bottom: 0.5rem;
+}
+
+.empty-art svg { width: 100%; height: 100%; }
+
+.empty-orbit {
+    fill: none;
+    stroke: var(--border-2);
+    stroke-width: 1;
+}
+
+.empty-orbit-2 { stroke-dasharray: 2 8; }
+.empty-orbit-3 { stroke-dasharray: 1 12; }
+.empty-star { fill: var(--accent); opacity: 0.55; }
+
+.empty-state h2 { margin-bottom: 0.125rem; }
+
+.empty-state p {
+    max-width: 22rem;
+    color: var(--text-3);
+    margin-bottom: 1.25rem;
+}
+
+/* ============================================================================
+   10. МОДАЛКИ
+   ========================================================================= */
+
+.modal {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.25rem;
+    z-index: 100;
+}
+
+/* Модалка стоит на самом светлом слое (--layer-4), а не на том же тоне, что
+   фон. Вместе с затемняющим оверлеем под ней разница между слоями видна
+   сразу, без опоры на одну тонкую рамку. */
+.modal-content {
+    position: relative;
+    z-index: 101;
+    width: 100%;
+    max-width: 28.75rem;
+    max-height: 90vh;
+    overflow-y: auto;
+    border: 1px solid var(--border-2);
+    border-radius: var(--r-2xl);
+    background: var(--layer-4);
+    box-shadow: var(--sh-3);
+    animation: modalIn var(--dur-3) var(--ease-back) both;
+}
+
+.modal-content-sm { max-width: 24rem; }
+
+@keyframes modalIn {
+    from { opacity: 0; transform: translateY(-1rem) scale(0.97); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1.25rem 1.5rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.modal-body { padding: 1.5rem; }
+.modal-body .field:last-of-type { margin-bottom: 1.25rem; }
+.modal-body > .btn:last-child { margin-bottom: 0; }
+
+.close-modal:hover {
+    background: var(--danger-soft);
+    border-color: transparent;
+    color: var(--danger);
+}
+
+.overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 99;
+    background: var(--scrim);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    animation: fadeIn var(--dur-2) var(--ease) both;
+}
+
+/* ============================================================================
+   11. ПРОФИЛЬ И ПРИГЛАШЕНИЯ
+   ========================================================================= */
+
+.profile-info {
+    display: flex;
+    align-items: center;
+    gap: 1.125rem;
+    margin-bottom: 1.5rem;
+}
+
+.profile-avatar {
+    display: grid;
+    place-items: center;
+    width: 4.25rem;
+    height: 4.25rem;
+    flex-shrink: 0;
+    border-radius: var(--r-pill);
+    color: #fff;
+    font-size: 1.625rem;
+    font-weight: 600;
+    box-shadow: var(--sh-2);
+}
+
+.profile-details { min-width: 0; }
+.profile-details h4 { margin-bottom: 0.125rem; }
+
+.profile-details p {
+    font-size: var(--fs-sm);
+    color: var(--text-2);
+}
+
+.profile-details .profile-code {
+    display: inline-block;
+    margin-top: 0.5rem;
+    padding: 0.25rem 0.625rem;
+    border: 1px solid var(--accent-line);
+    border-radius: var(--r-sm);
+    background: var(--accent-soft);
+    font-family: var(--f-mono);
+    font-size: var(--fs-xs);
+    color: var(--text);
+}
+
+.anon-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    margin-top: 0.625rem;
+    padding: 0.25rem 0.625rem;
+    border: 1px solid var(--border-2);
+    border-radius: var(--r-pill);
+    background: var(--field);
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    color: var(--text-2);
+}
+
+.anon-badge .icon { width: 0.875rem; height: 0.875rem; }
+
+.color-picker {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.625rem;
+}
+
+.color-option {
+    width: 2.25rem;
+    height: 2.25rem;
+    border: 2px solid transparent;
+    border-radius: var(--r-pill);
+    cursor: pointer;
+    box-shadow: var(--sh-1);
+    transition: transform var(--dur-1) var(--ease), box-shadow var(--dur-2) var(--ease);
+}
+
+.color-option:hover { transform: scale(1.12); }
+
+.color-option.active {
+    box-shadow: 0 0 0 2px var(--layer-4), 0 0 0 4px var(--accent);
+}
+
+.invite-text {
+    margin-bottom: 0.875rem;
+    font-size: var(--fs-sm);
+    color: var(--text-2);
+}
+
+.invite-code-container {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.875rem 1rem;
+    border: 1px solid var(--accent-line);
+    border-radius: var(--r-md);
+    background: var(--accent-soft);
+}
+
+.invite-code-container code {
+    flex: 1;
+    min-width: 0;
+    font-size: 1.1875rem;
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    color: var(--text);
+    overflow-wrap: anywhere;
+}
+
+/* ============================================================================
+   12. КОНТЕКСТНОЕ МЕНЮ, ТОСТЫ
+   ========================================================================= */
+
+.context-menu {
+    position: absolute;
+    z-index: 200;
+    min-width: 12rem;
+    padding: 0.375rem;
+    border: 1px solid var(--border-2);
+    border-radius: var(--r-lg);
+    background: var(--layer-4);
+    box-shadow: var(--sh-3);
+    animation: menuIn var(--dur-1) var(--ease) both;
+}
+
+@keyframes menuIn {
+    from { opacity: 0; transform: translateY(-0.375rem) scale(0.98); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.menu-item {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    width: 100%;
+    padding: 0.625rem 0.75rem;
+    border: none;
+    border-radius: var(--r-md);
+    background: none;
+    font-family: inherit;
+    font-size: var(--fs-sm);
+    font-weight: 500;
+    text-align: left;
+    color: var(--text);
+    cursor: pointer;
+    transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+
+.menu-item .icon { width: 1rem; height: 1rem; color: var(--text-3); }
+.menu-item:hover { background: var(--accent-soft); }
+.menu-item:hover .icon { color: var(--accent); }
+.menu-item.danger { color: var(--danger); }
+.menu-item.danger .icon { color: var(--danger); }
+.menu-item.danger:hover { background: var(--danger-soft); }
+
+.toast {
+    position: fixed;
+    bottom: 1.75rem;
+    left: 50%;
+    z-index: 300;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    max-width: calc(100vw - 2.5rem);
+    padding: 0.75rem 1.125rem;
+    border: 1px solid var(--border-2);
+    border-radius: var(--r-md);
+    background: var(--layer-4);
+    font-size: var(--fs-sm);
+    font-weight: 500;
+    color: var(--text);
+    box-shadow: var(--sh-3);
+    animation: toastIn var(--dur-3) var(--ease-back) both;
+}
+
+@keyframes toastIn {
+    from { opacity: 0; transform: translate(-50%, 1rem); }
+    to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+/* Тип тоста — цветная полоса слева, а не заливка всей плашки: текст остаётся
+   на нейтральном слое и читается одинаково в обеих темах. */
+.toast::before {
+    content: '';
+    width: 0.25rem;
+    align-self: stretch;
+    flex-shrink: 0;
+    margin: -0.75rem 0.25rem -0.75rem -0.5rem;
+    border-radius: var(--r-pill);
+    background: var(--accent);
+}
+
+.toast.success::before { background: var(--ok); }
+.toast.error::before { background: var(--danger); }
+.toast.info::before { background: var(--accent); }
+
+/* ============================================================================
+   13. АДАПТИВ
+   ========================================================================= */
+
+@media (max-width: 860px) {
+    .sidebar { width: 17.5rem; }
+    .chat-messages { padding: 1.125rem; }
+}
+
+@media (max-width: 640px) {
+    .sidebar {
+        position: fixed;
+        inset: 0;
+        width: 100%;
+        z-index: 50;
+        transition: transform var(--dur-3) var(--ease);
+    }
+
+    .sidebar.hidden-mobile { transform: translateX(-100%); }
+
+    .main-content { width: 100%; }
+    .message { max-width: 86%; }
+
+    .auth-container {
+        padding: 1.75rem 1.25rem;
+        border-radius: var(--r-xl);
+    }
+
+    .auth-logo .brand-word { font-size: var(--fs-h1); }
+    .chat-header,
+    .message-input-container { padding-inline: 1rem; }
+    .modal-body,
+    .modal-header { padding-inline: 1.25rem; }
+    .sidebar-footer .btn-ghost { font-size: var(--fs-xs); }
+}
+
+/* ============================================================================
+   14. НАСТРОЙКИ ДВИЖЕНИЯ
+   ========================================================================= */
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
+
+    /* Блик скелетона — единственная анимация, которая несёт смысл
+       («данные грузятся»), поэтому вместо бега он просто гаснет. */
+    .skeleton::after { display: none; }
+}

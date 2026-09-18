@@ -66,7 +66,6 @@ async function fetchAnonymousIdentity() {
 const ALLOWED_MIME_TYPES = [
     'image/jpeg', 'image/png', 'image/gif', 'image/webp',
     'video/mp4', 'video/webm', 'video/quicktime',
-    'audio/mpeg', 'audio/ogg', 'audio/wav', 'audio/webm',
     'application/pdf', 'text/plain',
 ];
 
@@ -85,10 +84,6 @@ const MIME_EXTENSIONS = {
     'video/mp4': '.mp4',
     'video/webm': '.webm',
     'video/quicktime': '.mov',
-    'audio/mpeg': '.mp3',
-    'audio/ogg': '.ogg',
-    'audio/wav': '.wav',
-    'audio/webm': '.weba',
     'application/pdf': '.pdf',
     'text/plain': '.txt',
 };
@@ -117,17 +112,12 @@ function checkMagicBytes(buffer, mimetype) {
     // Раньше был ещё fallback b[0]===0 && b[1]===0 — под него подходит куча
     // произвольных бинарных форматов, так что от него больше вреда, чем пользы.
     if (mimetype === 'video/mp4')  return b[4] === 0x66 && b[5] === 0x74 && b[6] === 0x79 && b[7] === 0x70;
-    if (mimetype === 'audio/mpeg') return (b[0] === 0xFF && (b[1] & 0xE0) === 0xE0) || (b[0] === 0x49 && b[1] === 0x44 && b[2] === 0x33);
-    if (mimetype === 'audio/ogg' || mimetype === 'video/webm' || mimetype === 'audio/webm') {
-        return (b[0] === 0x4F && b[1] === 0x67 && b[2] === 0x67) || (b[0] === 0x1A && b[1] === 0x45 && b[2] === 0xDF && b[3] === 0xA3);
-    }
-    // WAV — RIFF-контейнер: контейнер сам по себе (байты 0-3 'RIFF') общий с
-    // любым другим RIFF-форматом (в т.ч. WebP/AVI), поэтому дополнительно
-    // проверяем 'WAVE' на смещении 8-11, как и положено для формата WAVE.
-    if (mimetype === 'audio/wav') {
-        return buffer.length >= 12
-            && b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46
-            && b[8] === 0x57 && b[9] === 0x41 && b[10] === 0x56 && b[11] === 0x45;
+    // WebM — всегда EBML-контейнер (1A 45 DF A3). Раньше здесь же проверялся
+    // audio/ogg, поэтому в качестве альтернативы допускалась и Ogg-сигнатура,
+    // из-за чего Ogg-файл проходил валидацию как video/webm. Аудио больше не
+    // загружается, так что проверка сузилась до одной корректной сигнатуры.
+    if (mimetype === 'video/webm') {
+        return b[0] === 0x1A && b[1] === 0x45 && b[2] === 0xDF && b[3] === 0xA3;
     }
     if (mimetype === 'text/plain') return true;
     if (mimetype === 'video/quicktime') return b[4] === 0x66 && b[5] === 0x74 && b[6] === 0x79 && b[7] === 0x70;
@@ -1471,8 +1461,8 @@ app.post('/api/messages/file', upload.single('file'), async (req, res) => {
         const fileType = file.mimetype;
         const sanitizedFileName = path.basename(file.originalname).slice(0, 200).replace(/[<>&"']/g, '');
 
-        const messageType = fileType.startsWith('image/') ? 'image' : fileType.startsWith('video/') ? 'video' : fileType.startsWith('audio/') ? 'audio' : 'file';
-        const messageText = text ? String(text).trim() : (messageType === 'audio' ? 'Голосовое сообщение' : file.originalname);
+        const messageType = fileType.startsWith('image/') ? 'image' : fileType.startsWith('video/') ? 'video' : 'file';
+        const messageText = text ? String(text).trim() : file.originalname;
 
         const result = await pool.query(
             'INSERT INTO messages (chat_id, room_id, user_id, text, file_url, file_name, file_type, message_type, sent, time, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id',
