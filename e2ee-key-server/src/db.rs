@@ -18,7 +18,10 @@ pub struct OneTimePrekeyRow {
     pub public_key: [u8; PUBKEY_LEN],
 }
 
+/// Bundle одного устройства. Ключи привязаны к устройству, поэтому у
+/// пользователя их столько, сколько у него активных устройств.
 pub struct Bundle {
+    pub device_id: i64,
     pub identity: IdentityRow,
     pub signed_prekey: SignedPrekeyRow,
     pub one_time_prekey: Option<OneTimePrekeyRow>,
@@ -40,20 +43,22 @@ fn to_arr64(v: Vec<u8>) -> [u8; SIGNATURE_LEN] {
 pub async fn upsert_identity_keys(
     pool: &PgPool,
     user_id: i64,
+    device_id: i64,
     signing_key: &[u8; PUBKEY_LEN],
     dh_key: &[u8; PUBKEY_LEN],
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         r#"
-        INSERT INTO identity_keys (user_id, identity_signing_key, identity_dh_key, updated_at)
-        VALUES ($1, $2, $3, now())
-        ON CONFLICT (user_id) DO UPDATE
+        INSERT INTO identity_keys (user_id, device_id, identity_signing_key, identity_dh_key, updated_at)
+        VALUES ($1, $2, $3, $4, now())
+        ON CONFLICT (user_id, device_id) DO UPDATE
             SET identity_signing_key = EXCLUDED.identity_signing_key,
                 identity_dh_key = EXCLUDED.identity_dh_key,
                 updated_at = now()
         "#,
     )
     .bind(user_id)
+    .bind(device_id)
     .bind(&signing_key[..])
     .bind(&dh_key[..])
     .execute(pool)
@@ -64,11 +69,13 @@ pub async fn upsert_identity_keys(
 pub async fn get_identity_signing_key(
     pool: &PgPool,
     user_id: i64,
+    device_id: i64,
 ) -> Result<Option<[u8; PUBKEY_LEN]>, sqlx::Error> {
     let row = sqlx::query_as::<_, (Vec<u8>,)>(
-        "SELECT identity_signing_key FROM identity_keys WHERE user_id = $1",
+        "SELECT identity_signing_key FROM identity_keys WHERE user_id = $1 AND device_id = $2",
     )
     .bind(user_id)
+    .bind(device_id)
     .fetch_optional(pool)
     .await?;
     Ok(row.map(|(k,)| to_arr32(k)))
@@ -77,15 +84,16 @@ pub async fn get_identity_signing_key(
 pub async fn upsert_signed_prekey(
     pool: &PgPool,
     user_id: i64,
+    device_id: i64,
     key_id: i64,
     public_key: &[u8; PUBKEY_LEN],
     signature: &[u8; SIGNATURE_LEN],
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         r#"
-        INSERT INTO signed_prekeys (user_id, key_id, public_key, signature, created_at)
-        VALUES ($1, $2, $3, $4, now())
-        ON CONFLICT (user_id) DO UPDATE
+        INSERT INTO signed_prekeys (user_id, device_id, key_id, public_key, signature, created_at)
+        VALUES ($1, $2, $3, $4, $5, now())
+        ON CONFLICT (user_id, device_id) DO UPDATE
             SET key_id = EXCLUDED.key_id,
                 public_key = EXCLUDED.public_key,
                 signature = EXCLUDED.signature,
@@ -93,6 +101,7 @@ pub async fn upsert_signed_prekey(
         "#,
     )
     .bind(user_id)
+    .bind(device_id)
     .bind(key_id)
     .bind(&public_key[..])
     .bind(&signature[..])
@@ -101,25 +110,27 @@ pub async fn upsert_signed_prekey(
     Ok(())
 }
 
-/// Массовая загрузка one-time prekeys. Дубликаты (тот же key_id) молча
-/// игнорируются — идемпотентно на случай повторной отправки клиентом.
-/// Возвращает число реально вставленных строк.
+/// Массовая загрузка one-time prekeys устройства. Дубликаты (тот же key_id
+/// у того же устройства) молча игнорируются — идемпотентно на случай
+/// повторной отправки клиентом. Возвращает число реально вставленных строк.
 pub async fn insert_one_time_prekeys(
     pool: &PgPool,
     user_id: i64,
+    device_id: i64,
     key_ids: &[i64],
     public_keys: &[Vec<u8>],
 ) -> Result<u64, sqlx::Error> {
     debug_assert_eq!(key_ids.len(), public_keys.len());
     let result = sqlx::query(
         r#"
-        INSERT INTO one_time_prekeys (user_id, key_id, public_key)
-        SELECT $1, t.key_id, t.public_key
-        FROM UNNEST($2::bigint[], $3::bytea[]) AS t(key_id, public_key)
-        ON CONFLICT (user_id, key_id) DO NOTHING
+        INSERT INTO one_time_prekeys (user_id, device_id, key_id, public_key)
+        SELECT $1, $2, t.key_id, t.public_key
+        FROM UNNEST($3::bigint[], $4::bytea[]) AS t(key_id, public_key)
+        ON CONFLICT (user_id, device_id, key_id) DO NOTHING
         "#,
     )
     .bind(user_id)
+    .bind(device_id)
     .bind(key_ids)
     .bind(public_keys)
     .execute(pool)
@@ -127,88 +138,143 @@ pub async fn insert_one_time_prekeys(
     Ok(result.rows_affected())
 }
 
-pub async fn count_one_time_prekeys(pool: &PgPool, user_id: i64) -> Result<i64, sqlx::Error> {
-    let (count,): (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM one_time_prekeys WHERE user_id = $1")
-            .bind(user_id)
-            .fetch_one(pool)
-            .await?;
+pub async fn count_one_time_prekeys(
+    pool: &PgPool,
+    user_id: i64,
+    device_id: i64,
+) -> Result<i64, sqlx::Error> {
+    let (count,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM one_time_prekeys WHERE user_id = $1 AND device_id = $2",
+    )
+    .bind(user_id)
+    .bind(device_id)
+    .fetch_one(pool)
+    .await?;
     Ok(count)
 }
 
-/// Атомарно собирает bundle для установления сессии с target_user_id:
-/// identity keys + текущий signed prekey + (если есть) один one-time
-/// prekey, который тут же удаляется (claim-and-consume под
-/// `FOR UPDATE SKIP LOCKED`, чтобы конкурентные запросы не выдавали
-/// один и тот же OPK дважды). Если у target нет identity-ключей или
-/// signed prekey — считаем, что пользователь не завершил E2EE-онбординг,
-/// и возвращаем None.
-pub async fn fetch_bundle(
+/// Атомарно собирает bundle для КАЖДОГО устройства target_user_id: identity
+/// keys + текущий signed prekey + (если есть) один one-time prekey этого
+/// устройства, который тут же удаляется.
+///
+/// Claim-and-consume идёт под `FOR UPDATE SKIP LOCKED` и отдельно на каждое
+/// устройство, поэтому конкурентные запросы не выдают один и тот же OPK
+/// дважды, а исчерпание пула у одного устройства не мешает остальным.
+///
+/// Устройства без identity-ключей или без signed prekey пропускаются: это
+/// устройство, не завершившее E2EE-онбординг, и слать ему нечего. Если
+/// таких оказались все — возвращается пустой вектор, и решение, считать ли
+/// это 404, принимает вызывающий слой.
+///
+/// Принятая по threat model L4 утечка метаданных: сервер узнаёт, что
+/// user_id запросил bundle target_user_id (кто с кем хочет говорить), а
+/// теперь ещё и сколько у target устройств. Скрытие этого паттерна
+/// потребовало бы mixnet/PIR, что прямо исключено зафиксированной моделью
+/// угроз (L4, не L5/L6).
+pub async fn fetch_bundles(
     pool: &PgPool,
     target_user_id: i64,
-) -> Result<Option<Bundle>, sqlx::Error> {
+) -> Result<Vec<Bundle>, sqlx::Error> {
     let mut tx = pool.begin().await?;
 
-    let identity = sqlx::query_as::<_, (Vec<u8>, Vec<u8>)>(
-        "SELECT identity_signing_key, identity_dh_key FROM identity_keys WHERE user_id = $1",
-    )
-    .bind(target_user_id)
-    .fetch_optional(&mut *tx)
-    .await?;
-
-    let Some((signing_key, dh_key)) = identity else {
-        return Ok(None);
-    };
-
-    let spk = sqlx::query_as::<_, (i64, Vec<u8>, Vec<u8>)>(
-        "SELECT key_id, public_key, signature FROM signed_prekeys WHERE user_id = $1",
-    )
-    .bind(target_user_id)
-    .fetch_optional(&mut *tx)
-    .await?;
-
-    let Some((spk_key_id, spk_pub, spk_sig)) = spk else {
-        return Ok(None);
-    };
-
-    let otpk = sqlx::query_as::<_, (i64, i64, Vec<u8>)>(
+    // Один запрос на identity + signed prekey: INNER JOIN сам отбрасывает
+    // устройства с неполным материалом.
+    let rows = sqlx::query_as::<_, (i64, Vec<u8>, Vec<u8>, i64, Vec<u8>, Vec<u8>)>(
         r#"
-        DELETE FROM one_time_prekeys
-        WHERE id = (
-            SELECT id FROM one_time_prekeys
-            WHERE user_id = $1
-            ORDER BY id ASC
-            LIMIT 1
-            FOR UPDATE SKIP LOCKED
-        )
-        RETURNING id, key_id, public_key
+        SELECT ik.device_id,
+               ik.identity_signing_key,
+               ik.identity_dh_key,
+               sp.key_id,
+               sp.public_key,
+               sp.signature
+        FROM identity_keys ik
+        JOIN signed_prekeys sp
+          ON sp.user_id = ik.user_id AND sp.device_id = ik.device_id
+        WHERE ik.user_id = $1
+        ORDER BY ik.device_id ASC
         "#,
     )
     .bind(target_user_id)
-    .fetch_optional(&mut *tx)
+    .fetch_all(&mut *tx)
     .await?;
 
-    tx.commit().await?;
+    let mut bundles = Vec::with_capacity(rows.len());
+    for (device_id, signing_key, dh_key, spk_key_id, spk_pub, spk_sig) in rows {
+        let otpk = sqlx::query_as::<_, (i64, i64, Vec<u8>)>(
+            r#"
+            DELETE FROM one_time_prekeys
+            WHERE id = (
+                SELECT id FROM one_time_prekeys
+                WHERE user_id = $1 AND device_id = $2
+                ORDER BY id ASC
+                LIMIT 1
+                FOR UPDATE SKIP LOCKED
+            )
+            RETURNING id, key_id, public_key
+            "#,
+        )
+        .bind(target_user_id)
+        .bind(device_id)
+        .fetch_optional(&mut *tx)
+        .await?;
 
-    Ok(Some(Bundle {
-        identity: IdentityRow {
-            identity_signing_key: to_arr32(signing_key),
-            identity_dh_key: to_arr32(dh_key),
-        },
-        signed_prekey: SignedPrekeyRow {
-            key_id: spk_key_id,
-            public_key: to_arr32(spk_pub),
-            signature: to_arr64(spk_sig),
-        },
-        one_time_prekey: otpk.map(|(_, key_id, public_key)| OneTimePrekeyRow {
-            key_id,
-            public_key: to_arr32(public_key),
-        }),
-    }))
+        bundles.push(Bundle {
+            device_id,
+            identity: IdentityRow {
+                identity_signing_key: to_arr32(signing_key),
+                identity_dh_key: to_arr32(dh_key),
+            },
+            signed_prekey: SignedPrekeyRow {
+                key_id: spk_key_id,
+                public_key: to_arr32(spk_pub),
+                signature: to_arr64(spk_sig),
+            },
+            one_time_prekey: otpk.map(|(_, key_id, public_key)| OneTimePrekeyRow {
+                key_id,
+                public_key: to_arr32(public_key),
+            }),
+        });
+    }
+
+    tx.commit().await?;
+    Ok(bundles)
 }
 
-/// Полное удаление ключевого материала пользователя — используется при
-/// удалении аккаунта, часть требований по эфемерности из threat model.
+/// Удаление ключевого материала ОДНОГО устройства — отзыв устройства.
+///
+/// Отзыв устройства обязан сопровождаться сменой групповых ключей у всех
+/// участников общих групп: в схеме sender keys отозванное устройство иначе
+/// продолжит расшифровывать групповые сообщения теми ключами, что у него
+/// уже есть. Здесь удаляется только ключевой материал; ротацию инициирует
+/// Node, у которого есть состав групп.
+pub async fn delete_device_keys(
+    pool: &PgPool,
+    user_id: i64,
+    device_id: i64,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM one_time_prekeys WHERE user_id = $1 AND device_id = $2")
+        .bind(user_id)
+        .bind(device_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM signed_prekeys WHERE user_id = $1 AND device_id = $2")
+        .bind(user_id)
+        .bind(device_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM identity_keys WHERE user_id = $1 AND device_id = $2")
+        .bind(user_id)
+        .bind(device_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Полное удаление ключевого материала пользователя по всем устройствам —
+/// используется при удалении аккаунта, часть требований по эфемерности из
+/// threat model.
 pub async fn delete_all_keys(pool: &PgPool, user_id: i64) -> Result<(), sqlx::Error> {
     let mut tx = pool.begin().await?;
     sqlx::query("DELETE FROM one_time_prekeys WHERE user_id = $1")

@@ -43,6 +43,7 @@ pub struct OneTimePrekeysUploadResponse {
 
 #[derive(Serialize)]
 pub struct OneTimePrekeyCountResponse {
+    pub device_id: i64,
     pub count: i64,
 }
 
@@ -59,15 +60,30 @@ pub struct OneTimePrekeyDto {
     pub public_key: String,
 }
 
+/// Bundle ОДНОГО устройства получателя.
 #[derive(Serialize)]
-pub struct BundleResponse {
+pub struct DeviceBundle {
+    /// Клиент обязан хранить сессию в привязке к этому id: адрес сессии —
+    /// это (user_id, device_id), а не один user_id.
+    pub device_id: i64,
     pub identity_signing_key: String,
     pub identity_dh_key: String,
     pub signed_prekey: SignedPrekeyDto,
-    /// None если у пользователя временно кончились one-time prekeys.
+    /// None если у устройства временно кончились one-time prekeys.
     /// X3DH в этом случае деградирует (пропускается DH-шаг с OPK) —
     /// сессия остаётся безопасной, но теряется часть forward secrecy
     /// для самого первого сообщения. Клиент должен показать это как
     /// повод срочно пополнить пул своих OPK на стороне получателя.
     pub one_time_prekey: Option<OneTimePrekeyDto>,
+}
+
+/// Ответ на запрос bundle: набор по всем устройствам получателя, у которых
+/// ключевой материал полон.
+///
+/// Отправитель обязан зашифровать сообщение для КАЖДОГО элемента этого
+/// набора — иначе на части устройств получателя сообщение не расшифруется.
+/// В схеме sender keys через этот же набор раздаются и групповые ключи.
+#[derive(Serialize)]
+pub struct BundlesResponse {
+    pub bundles: Vec<DeviceBundle>,
 }

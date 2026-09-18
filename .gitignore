@@ -8,5 +8,5 @@ public/uploads/
 tmp_*.js
 bd/
 .DS_Store
-anon-service/target/
+target/
 Cargo.lock
