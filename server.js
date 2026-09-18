@@ -35,6 +35,7 @@ const {
 
 // Импорт E2EE прокси
 const e2eeProxy = require('./lib/e2ee-proxy');
+const { createDevicesRouter } = require('./lib/devices');
 
 // Импорт Tor support
 const {
@@ -407,10 +408,6 @@ let disappearingMessagesManager;
 async function initDatabase() {
     await maybeDumpCa().catch(err => { console.error('[DUMP_CA] Ошибка:', err.message); process.exit(1); });
 
-    // Инициализация disappearing messages
-    disappearingMessagesManager = new DisappearingMessagesManager(pool);
-    await disappearingMessagesManager.initialize();
-
     await pool.query(`
         CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
@@ -491,6 +488,24 @@ async function initDatabase() {
         )
     `);
 
+
+    // Реестр устройств. Ключи E2EE привязаны к устройству, а не к аккаунту
+    // (см. e2ee-key-server/migrations/0002_device_scoped_keys.sql), поэтому
+    // серверу нужен список: без него неизвестно, кому раздавать ключи и что
+    // отзывать. revoked_at, а не DELETE: id устройства встречается в
+    // ключевом материале, переиспользовать его нельзя.
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS devices (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            last_seen_at TIMESTAMPTZ,
+            revoked_at TIMESTAMPTZ
+        )
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_devices_user ON devices(user_id) WHERE revoked_at IS NULL;`);
+
     // Миграция: если таблицы chats/messages были созданы ДО появления комнат,
     // CREATE TABLE IF NOT EXISTS их не тронет и колонки room_id не будет.
     // Добавляем её вручную, иначе следующий CREATE INDEX ON messages(room_id) упадёт с 42703.
@@ -548,6 +563,16 @@ async function initDatabase() {
     if (colMap.password === 'NO') {
         await pool.query('ALTER TABLE users ALTER COLUMN password DROP NOT NULL');
     }
+
+    // Disappearing messages инициализируются ПОСЛЕ создания таблиц.
+    //
+    // Раньше вызов стоял в самом начале initDatabase(), а initialize()
+    // создаёт message_expiry с REFERENCES messages(id) — на пустой базе это
+    // падало с `relation "messages" does not exist`, и сервер не поднимался
+    // вообще. Незаметным это было потому, что на уже существующей базе всё
+    // работает: ошибка возникает только при первом запуске с нуля.
+    disappearingMessagesManager = new DisappearingMessagesManager(pool);
+    await disappearingMessagesManager.initialize();
 
     console.log('База данных инициализирована');
 }
@@ -799,6 +824,23 @@ function serveIndexWithNonce(req, res) {
 }
 
 app.use('/api/', apiLimiter);
+
+// Реестр устройств и прокси к e2ee-key-server.
+//
+// Прокси до сих пор не был смонтирован: модуль подключался через require, но
+// app.use для него не вызывался, поэтому все /api/keys/* отдавали 404 —
+// притом что README документирует их как рабочие. Монтируется здесь, после
+// сессии, CSRF и apiLimiter, чтобы операции с ключами проходили те же
+// проверки, что остальное API.
+app.use(createDevicesRouter({
+    pool,
+    dbGet,
+    dbAll,
+    dbRun,
+    revokeDeviceKeys: e2eeProxy.revokeDeviceKeys,
+}));
+app.use(e2eeProxy.router);
+
 app.post('/api/register', registerLimiter, async (req, res) => {
     const { username, email, password, confirmPassword } = req.body;
     if (!username || !email || !password || !confirmPassword)
@@ -987,6 +1029,13 @@ app.post('/api/logout', async (req, res) => {
     if (isAnonymous && userId) {
         try {
             console.log(`[Anon] Cleaning up data for anonymous user ${userId}`);
+
+            // Ключевой материал всех устройств — до удаления самих устройств
+            // и пользователя: после DELETE FROM users строки devices уйдут по
+            // ON DELETE CASCADE, и отзывать станет нечего, а ключи останутся
+            // висеть в схеме key-server, которая FK на users не имеет.
+            await e2eeProxy.revokeAllKeys(userId);
+            await dbRun('DELETE FROM devices WHERE user_id = $1', [userId]);
 
             // Удаляем все чаты пользователя
             await dbRun('DELETE FROM messages WHERE user_id = $1', [userId]);

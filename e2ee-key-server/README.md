@@ -151,9 +151,9 @@ app.put('/api/keys/identity', requireAuth, async (req, res) => {
 `INTERNAL_KEY_SERVER_SECRET` в Node-`.env` должен быть тем же значением,
 что `INTERNAL_SHARED_SECRET` в `.env` этого сервиса.
 
-Это следующий конкретный шаг, если хотите продолжить прямо сейчас —
-я его не делал в этом инкременте, чтобы явно разделить «новый Rust-код»
-и «правки в существующем server.js» на отдельные проверяемые куски.
+Сделано: прокси смонтирован в `server.js`, а `device_id` подставляется из
+серверной сессии (см. `lib/e2ee-proxy.js` и `lib/devices.js`). Сквозной
+тест — `scripts/integration-test-devices.mjs` в корне проекта.
 
 ## Запуск локально
 

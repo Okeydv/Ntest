@@ -89,6 +89,26 @@ CREATE TABLE IF NOT EXISTS room_participants (
     user_id INTEGER NOT NULL REFERENCES users(id)
 );
 
+-- Реестр устройств. Ключи E2EE привязаны к устройству, а не к аккаунту
+-- (см. e2ee-key-server/migrations/0002_device_scoped_keys.sql): у каждого
+-- устройства свой identity-ключ, свой signed prekey и свой пул one-time
+-- prekeys, а отправитель шифрует сообщение для каждого устройства
+-- получателя отдельно.
+--
+-- Отзыв помечается revoked_at, а не удалением строки: id устройства
+-- встречается в ключевом материале и в конвертах сообщений, поэтому
+-- переиспользовать его нельзя.
+CREATE TABLE IF NOT EXISTS devices (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_seen_at TIMESTAMPTZ,
+    revoked_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_devices_user ON devices(user_id) WHERE revoked_at IS NULL;
+
 CREATE TABLE IF NOT EXISTS reactions (
     id SERIAL PRIMARY KEY,
     message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
