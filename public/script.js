@@ -61,6 +61,115 @@ const elements = {
     emptyNewChatBtn: document.getElementById('empty-new-chat-btn'),
 };
 
+/* --- E2EE -------------------------------------------------------------
+   Крипта живёт в ES-модулях (public/crypto/*), а этот файл — обычный
+   скрипт. Модульные скрипты всегда deferred, поэтому крипта может быть ещё
+   не поднята к моменту исполнения этого кода; bootstrap.js сообщает о
+   готовности событием, и обе очерёдности обрабатываются. */
+
+let e2ee = null;          // модуль крипты, когда он загрузился
+let e2eeDeviceId = null;  // id этого устройства, если E2EE поднялся
+
+function cryptoModule() {
+    if (window.NyxoCrypto) return Promise.resolve(window.NyxoCrypto);
+    return new Promise(resolve => {
+        window.addEventListener('nyxo-crypto-ready', () => resolve(window.NyxoCrypto), { once: true });
+        // Если модуль не загрузился (сеть, CSP, старый браузер) — приложение
+        // обязано работать дальше без шифрования, а не висеть.
+        setTimeout(() => resolve(window.NyxoCrypto || null), 5000);
+    });
+}
+
+/**
+ * Поднять шифрование для текущей сессии: зарегистрировать или привязать
+ * устройство, опубликовать ключи, пополнить пул prekeys.
+ *
+ * Сокет после этого переподключается: серверная комната device:<id>
+ * выбирается по сессии в момент рукопожатия, а deviceId там появился
+ * только что.
+ */
+async function setupE2EE() {
+    e2ee = await cryptoModule();
+    if (!e2ee) {
+        console.warn('[E2EE] модуль крипты не загрузился, работаем без шифрования');
+        return;
+    }
+    const result = await e2ee.bootstrap({ api, deviceName: navigator.userAgent.slice(0, 64) });
+    if (!result) {
+        e2eeDeviceId = null;
+        return;
+    }
+    e2eeDeviceId = result.deviceId;
+
+    // Сокет обязан переподключиться ПЕРЕД тем, как кто-то позовёт
+    // joinChat: серверную комнату device:<id> выбирают по сессии в момент
+    // рукопожатия, а deviceId там появился только что. Без ожидания
+    // следующий joinChat уходил в ещё не поднятое соединение.
+    socket.disconnect();
+    await new Promise(resolve => {
+        socket.once('connect', resolve);
+        socket.connect();
+        // Не зависаем, если сокет не поднимется: без него приложение
+        // деградирует до обновления по перезагрузке, но работает.
+        setTimeout(resolve, 3000);
+    });
+}
+
+/**
+ * Текст сообщения для отображения.
+ *
+ * Возвращает null, если прочитать нечем — это не ошибка, а нормальное
+ * состояние: сообщение отправлено до того, как появилось это устройство.
+ * Вызывающий обязан показать заглушку, а не пустой пузырь.
+ */
+async function resolveMessageText(message) {
+    if (!message.encrypted) return message.text;
+    if (!e2ee) return null;
+
+    // Кэш проверяется первым и для своих, и для чужих сообщений. Это не
+    // ускорение: ключ сообщения в Double Ratchet одноразовый, и повторно
+    // расшифровать тот же конверт нельзя. Без кэша история после
+    // перезагрузки восстанавливалась бы только для своих сообщений.
+    const cached = await e2ee.recallPlaintext(message.id);
+    if (cached != null) return cached;
+
+    if (!message.envelope) return null;
+    return e2ee.decryptIncoming(message);
+}
+
+/**
+ * Обновить превью в списке чатов на месте.
+ *
+ * Раньше превью приходило с сервера в last_message, и строка обновлялась
+ * сама при следующем loadChats. Под E2EE сервер текста не знает, превью
+ * считает клиент — значит и обновлять строку теперь его забота, иначе в
+ * списке навсегда остаётся «Нет сообщений».
+ *
+ * Ищем по room_id, если он есть: у сообщения chat_id указывает на запись
+ * чата ОТПРАВИТЕЛЯ, а у получателя запись своя, с другим id.
+ */
+function updateChatPreviewInList(message, text) {
+    const selector = message.room_id
+        ? `.chat-item[data-room-id="${message.room_id}"]`
+        : `.chat-item[data-id="${message.chat_id}"]`;
+    const line = elements.chatsList.querySelector(`${selector} .chat-last`);
+    if (line) line.textContent = text.substring(0, 30);
+}
+
+/** Расшифровать и дорисовать сообщение в открытый чат. */
+async function appendMessageDecrypted(message) {
+    const text = await resolveMessageText(message);
+    if (message.encrypted) {
+        message.undecryptable = text === null;
+        message.text = text === null ? '' : text;
+        if (text !== null && e2ee) {
+            await e2ee.rememberPreview(message.chat_id, text);
+            updateChatPreviewInList(message, text);
+        }
+    }
+    appendMessage(message);
+}
+
 const THEME_KEY = 'nyxo-theme';
 const DEFAULT_AVATAR = '#6D5EFC';
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -169,6 +278,7 @@ async function checkAuth() {
         if (data.authenticated) {
             currentUser = data.user;
             showApp();
+            await setupE2EE();
             loadChats();
         } else {
             showAuth();
@@ -248,6 +358,7 @@ function setupEventListeners() {
             currentUser = data.user;
             showToast('Вход выполнен', 'success');
             showApp();
+            await setupE2EE();
             loadChats();
         } else {
             setFieldError('login-password', data.message);
@@ -281,6 +392,7 @@ function setupEventListeners() {
             currentUser = data.user;
             showToast('Регистрация завершена', 'success');
             showApp();
+            await setupE2EE();
             loadChats();
         } else {
             setFieldError('register-email', data.message);
@@ -293,6 +405,7 @@ function setupEventListeners() {
             currentUser = data.user;
             showToast('Приватный режим активирован', 'success');
             showApp();
+            await setupE2EE();
             loadChats();
         } else {
             showToast(data.message, 'error');
@@ -469,11 +582,17 @@ function setupEventListeners() {
         hideMessageMenu();
     });
 
-    socket.on('newMessage', (message) => {
+    socket.on('newMessage', async (message) => {
         if (message.chat_id == currentChatId || message.room_id == currentRoomId) {
-            appendMessage(message);
+            await appendMessageDecrypted(message);
             scrollToBottom();
         } else {
+            // Чужой чат: расшифровываем ради превью в списке, рисовать
+            // нечего.
+            if (message.encrypted && e2ee) {
+                const text = await resolveMessageText(message);
+                if (text !== null) await e2ee.rememberPreview(message.chat_id, text);
+            }
             loadChats();
         }
     });
@@ -575,7 +694,9 @@ async function loadChats() {
         return;
     }
 
-    data.chats.forEach(chat => {
+    // for...of, а не forEach: превью зашифрованных чатов лежит в IndexedDB,
+    // и его чтение асинхронно.
+    for (const chat of data.chats) {
         const div = document.createElement('div');
         div.className = 'chat-item';
         div.dataset.id = chat.id;
@@ -584,13 +705,29 @@ async function loadChats() {
             <div class="chat-avatar-small" style="background:${chat.avatar && chat.avatar.startsWith('#') ? chat.avatar : DEFAULT_AVATAR}">${chat.name.charAt(0).toUpperCase()}</div>
             <div class="chat-info">
                 <div class="chat-name">${escapeHtml(chat.name)}</div>
-                <div class="chat-last">${chat.last_message ? escapeHtml(chat.last_message.substring(0, 30)) : 'Нет сообщений'}</div>
+                <div class="chat-last">${escapeHtml(await chatPreview(chat))}</div>
             </div>
             ${chat.unread > 0 ? `<div class="chat-badge">${chat.unread}</div>` : ''}
         `;
         div.addEventListener('click', () => openChat(chat.id, chat.room_id, chat.name, chat.avatar, chat.online, chat.is_bot));
         elements.chatsList.appendChild(div);
-    });
+    }
+}
+
+/**
+ * Превью последнего сообщения.
+ *
+ * Для зашифрованного чата сервер его дать не может — в базе нет текста.
+ * Поэтому берём то, что клиент расшифровал сам. Если это устройство чат
+ * ещё не открывало, превью честно нет.
+ */
+async function chatPreview(chat) {
+    if (chat.last_message) return chat.last_message.substring(0, 30);
+    if (e2ee) {
+        const cached = await e2ee.recallPreview(chat.id);
+        if (cached) return cached.substring(0, 30);
+    }
+    return 'Нет сообщений';
 }
 
 async function openChat(chatId, roomId, name, avatar, online, isBot) {
@@ -613,7 +750,10 @@ async function openChat(chatId, roomId, name, avatar, online, isBot) {
     if (!data.success) return;
 
     if (data.messages) {
-        data.messages.forEach(msg => appendMessage(msg));
+        // Последовательно, а не Promise.all: у Double Ratchet состояние
+        // сессии меняется на каждом сообщении, и параллельная расшифровка
+        // двух сообщений одной сессии затирала бы состояние друг друга.
+        for (const msg of data.messages) await appendMessageDecrypted(msg);
         scrollToBottom();
     }
 
@@ -686,6 +826,13 @@ function createMessageElement(message) {
     if (message.deleted) {
         const em = document.createElement('em');
         em.textContent = 'Сообщение удалено';
+        contentDiv.appendChild(em);
+    } else if (message.undecryptable) {
+        // Сообщение зашифровано, но ключа у этого устройства нет: оно
+        // появилось в чате позже. Показываем это прямо, а не пустотой.
+        const em = document.createElement('em');
+        em.className = 'message-locked';
+        em.textContent = 'Сообщение недоступно на этом устройстве';
         contentDiv.appendChild(em);
     } else {
         if (message.reply_to) {
@@ -804,6 +951,8 @@ async function sendMessage() {
             if (el) el.textContent = text;
         }
         editingMessageId = null;
+    } else if (await sendEncrypted(text, payload)) {
+        // отправлено зашифрованным путём
     } else {
         await api('/api/messages', {
             method: 'POST',
@@ -813,6 +962,66 @@ async function sendMessage() {
 
     elements.messageInput.value = '';
     clearReply();
+}
+
+/**
+ * Отправка зашифрованного сообщения. Возвращает false, если шифрование
+ * сейчас невозможно — вызывающий уходит на открытый путь.
+ *
+ * Молчаливый откат здесь недопустим: если сообщение ушло открытым текстом,
+ * пользователь обязан это увидеть, иначе он считает переписку защищённой,
+ * когда она не защищена.
+ */
+async function sendEncrypted(text, payload) {
+    if (!e2ee || !e2ee.isReady()) return false;
+
+    try {
+        const { envelopes } = await e2ee.encryptForChat(currentChatId, text);
+        if (envelopes.length === 0) {
+            // В чате нет других устройств — шифровать не для кого. Такое
+            // бывает у чата с ботом и у чата, к которому ещё никто не
+            // присоединился.
+            return false;
+        }
+
+        const data = await api('/api/messages/encrypted', {
+            method: 'POST',
+            body: JSON.stringify({
+                chatId: currentChatId,
+                replyToId: payload.replyToId || null,
+                envelopes,
+            }),
+        });
+        if (!data || !data.success) {
+            showToast((data && data.message) || 'Не удалось отправить зашифрованно', 'error');
+            return true; // на открытый путь не уходим: это было бы тихой потерей шифрования
+        }
+
+        // Свой открытый текст — локально: конверт себе не отправляется.
+        await e2ee.rememberSent(data.message.id, text);
+        await e2ee.rememberPreview(currentChatId, text);
+
+        // И по этой же причине своё сообщение приходится дорисовать
+        // самому: сокет-события о нём не будет, конверта-то нет. Раньше
+        // отправленное появлялось в чате только после перезагрузки.
+        updateChatPreviewInList(data.message, text);
+        if (data.message.chat_id == currentChatId || data.message.room_id == currentRoomId) {
+            appendMessage({ ...data.message, text });
+            scrollToBottom();
+        }
+
+        // Устройства, для которых конверта не нашлось: у них сообщение не
+        // прочитается, и об этом честнее сказать сразу.
+        const missing = (data.missingDeviceIds || []).filter(id => id !== e2eeDeviceId);
+        if (missing.length > 0) {
+            showToast(`Сообщение не дойдёт до ${missing.length} устройств: нет ключей`, 'error');
+        }
+        return true;
+    } catch (error) {
+        console.error('[E2EE] отправка не удалась:', error);
+        showToast('Шифрование не удалось, сообщение не отправлено', 'error');
+        return true;
+    }
 }
 
 async function handleFileUpload() {

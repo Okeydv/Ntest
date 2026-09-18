@@ -1215,6 +1215,31 @@ async function resolveEnvelopeRecipients(chat) {
     return rows;
 }
 
+/**
+ * GET /api/chats/:chatId/devices
+ *
+ * Отправителю нужно знать, для скольких устройств шифровать. Сам он этого
+ * знать не может: состав чата и список устройств живут на сервере.
+ *
+ * Отдаются только id — ключей здесь нет, за ними клиент идёт в
+ * /api/keys/bundle/:userId. Разделение не косметическое: bundle расходует
+ * одноразовый prekey, и запрашивать его ради простого пересчёта устройств
+ * было бы расточительно.
+ */
+app.get('/api/chats/:chatId/devices', async (req, res) => {
+    if (!req.session.userId) return res.status(401).json({ success: false, message: 'Не авторизован' });
+    try {
+        const chat = await dbGet('SELECT * FROM chats WHERE id = $1 AND user_id = $2',
+            [req.params.chatId, req.session.userId]);
+        if (!chat) return res.status(404).json({ success: false, message: 'Чат не найден' });
+        const devices = await resolveEnvelopeRecipients(chat);
+        res.json({ success: true, devices: devices.map(d => ({ device_id: d.id, user_id: d.user_id })) });
+    } catch (error) {
+        console.error('Chat devices error:', error);
+        res.status(500).json({ success: false, message: 'Не удалось получить устройства чата' });
+    }
+});
+
 const MAX_ENVELOPES = 256;
 const MAX_HEADER_B64 = 2048;
 const MAX_CIPHERTEXT_B64 = 16384;

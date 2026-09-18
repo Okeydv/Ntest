@@ -428,5 +428,8 @@
 
     <script src="/socket.io/socket.io.js"></script>
     <script src="script.js"></script>
+    <!-- Модульные скрипты всегда deferred, поэтому крипта поднимается
+         после script.js и сообщает о готовности событием. -->
+    <script type="module" src="crypto/bootstrap.js"></script>
 </body>
 </html>

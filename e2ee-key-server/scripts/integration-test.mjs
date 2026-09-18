@@ -21,6 +21,7 @@
 // Тест рассчитан на ЧИСТУЮ базу: он оставляет после себя удалённый
 // аккаунт 1, повторный прогон без пересоздания БД пройдёт, но полагаться
 // на это не стоит.
+import crypto from 'node:crypto';
 const BASE = 'http://127.0.0.1:7421';
 const SECRET = 'test-secret-at-least-32-chars-long-xx';
 let fails = 0;

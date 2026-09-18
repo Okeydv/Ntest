@@ -26,6 +26,7 @@
 //
 // Тест рассчитан на ЧИСТУЮ базу: он регистрирует alice и bob, повторный
 // прогон без пересоздания БД упадёт на занятых username.
+import crypto from 'node:crypto';
 const BASE = 'http://127.0.0.1:3006';
 let fails = 0;
 const check = (l, c, d='') => { console.log(`${c?'ok  ':'FAIL'}  ${l}${d?'  — '+d:''}`); if(!c) fails++; };
