@@ -1588,31 +1588,33 @@ app.delete('/api/reactions/:messageId/:emoji', async (req, res) => {
 app.get('/api/search', async (req, res) => {
     if (!req.session.userId) return res.json({ success: false, message: 'Не авторизован' });
     const query = req.query.q || '';
-    if (!query || query.length < 1) return res.json({ success: true, results: [] });
+    // results всегда объект с chats: раньше на пустой запрос отдавался массив,
+    // и форма ответа отличалась от успешного случая.
+    if (!query || query.length < 1) return res.json({ success: true, results: { chats: [] } });
     if (query.length > 100) return res.json({ success: false, message: 'Запрос слишком длинный' });
 
     const safeTerm = query.replace(/[%_\\]/g, '\\$&');
     const searchTerm = `%${safeTerm}%`;
     try {
+        // Ищем только по названиям чатов.
+        //
+        // Поиск по тексту сообщений убран намеренно и окончательно: он делал
+        // `m.text ILIKE` на сервере, то есть требовал, чтобы сервер читал
+        // переписку. Это прямо противоречит E2EE, к которому идёт проект, —
+        // после включения шифрования сервер увидит только шифротекст, и
+        // такой запрос перестанет находить что-либо в принципе.
+        //
+        // Клиент эти результаты и так никогда не показывал: performSearch()
+        // рендерит только results.chats, а results.messages выбрасывал. То
+        // есть запрос выполнялся на каждое нажатие клавиши (debounce 300 мс)
+        // впустую.
+        //
+        // Если поиск по сообщениям понадобится снова, единственный
+        // совместимый с E2EE вариант — индекс на клиенте, по расшифрованным
+        // у него же сообщениям. Серверная реализация возможна только за счёт
+        // отказа от шифрования.
         const chats = await dbAll('SELECT id, name, avatar FROM chats WHERE user_id = $1 AND name ILIKE $2 LIMIT 10', [req.session.userId, searchTerm]);
-        // Раньше джойн был m.chat_id = c.id, а m.chat_id всегда указывает на
-        // строку chats её АВТОРА, а не читающего — у каждого участника
-        // групповой комнаты своя запись chats. В итоге поиск находил только
-        // сообщения самого искателя (см. п.4 аудита). Джойним на СОБСТВЕННУЮ
-        // запись chats искателя (uc) по тому же паттерну room_id/chat_id,
-        // что уже используется в /api/chats: для групповых чатов сравниваем
-        // m.room_id с room_id этой записи (не зависит от того, кто автор), а
-        // для обычных 1:1 чатов — как и раньше, m.chat_id = uc.id.
-        const messages = await dbAll(
-            `SELECT m.id, m.text, uc.id AS chat_id, uc.name AS chat_name FROM messages m
-             JOIN chats uc ON (
-                 (uc.room_id IS NOT NULL AND m.room_id = uc.room_id)
-                 OR (uc.room_id IS NULL AND m.chat_id = uc.id)
-             )
-             WHERE uc.user_id = $1 AND m.text ILIKE $2 AND m.deleted = 0 LIMIT 20`,
-            [req.session.userId, searchTerm]
-        );
-        res.json({ success: true, results: { chats, messages } });
+        res.json({ success: true, results: { chats } });
     } catch (error) {
         res.json({ success: false, message: 'Ошибка поиска' });
     }
