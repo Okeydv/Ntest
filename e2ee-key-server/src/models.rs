@@ -87,3 +87,17 @@ pub struct DeviceBundle {
 pub struct BundlesResponse {
     pub bundles: Vec<DeviceBundle>,
 }
+
+/// Identity-ключи одного устройства — без prekeys.
+#[derive(Serialize)]
+pub struct DeviceIdentity {
+    pub device_id: i64,
+    pub identity_signing_key: String,
+    pub identity_dh_key: String,
+}
+
+/// Ответ на запрос identity-ключей: по всем устройствам пользователя.
+#[derive(Serialize)]
+pub struct IdentitiesResponse {
+    pub devices: Vec<DeviceIdentity>,
+}

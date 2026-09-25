@@ -70,6 +70,10 @@ async fn main() -> anyhow::Result<()> {
             get(handlers::get_bundle),
         )
         .route(
+            "/internal/v1/keys/identities/:target_user_id",
+            get(handlers::get_identities),
+        )
+        .route(
             "/internal/v1/keys/device",
             delete(handlers::delete_device_keys),
         )

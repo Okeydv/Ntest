@@ -10,3 +10,4 @@ bd/
 .DS_Store
 target/
 Cargo.lock
+encrypted-blobs/

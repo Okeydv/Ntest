@@ -132,6 +132,8 @@
     --glow-1: rgba(109, 94, 252, 0.16);
     --glow-2: rgba(168, 108, 245, 0.12);
 
+    --icon-locked: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.6'%3E%3Crect x='3' y='7' width='10' height='7' rx='2'/%3E%3Cpath d='M5.5 7V5a2.5 2.5 0 0 1 5 0v2'/%3E%3C/svg%3E");
+
     --icon-alert: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill-rule='evenodd' d='M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0zM7.1 4.2h1.8l-.25 5h-1.3zM8 10.6a1.1 1.1 0 1 1 0 2.2 1.1 1.1 0 0 1 0-2.2z'/%3E%3C/svg%3E");
 }
 
@@ -1029,6 +1031,39 @@ input.is-invalid:focus {
     text-overflow: ellipsis;
 }
 
+.chat-subline {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.25rem 0.75rem;
+}
+
+/* Индикатор шифрования. Включённое шифрование — спокойный зелёный замок,
+   выключенное — нейтральный открытый замок: это не ошибка, а режим чата,
+   но человек обязан его видеть. */
+.encryption-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3125rem;
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    font-size: var(--fs-xs);
+    font-weight: 500;
+    letter-spacing: 0.01em;
+    border-radius: var(--r-xs);
+}
+
+/* В зашифрованном чате индикатор — вход в сверку ключей. */
+.encryption-badge:not(:disabled) { cursor: pointer; }
+.encryption-badge:not(:disabled):hover { text-decoration: underline; text-underline-offset: 0.2em; }
+
+.encryption-badge .icon { width: 0.8125rem; height: 0.8125rem; }
+.encryption-badge.is-on { color: var(--ok); }
+.encryption-badge.is-off { color: var(--text-3); }
+.encryption-badge.is-warn { color: var(--danger); }
+
 .status {
     display: inline-flex;
     align-items: center;
@@ -1120,6 +1155,23 @@ input.is-invalid:focus {
 }
 
 .message-time { font-weight: 500; }
+
+.message-encrypted {
+    display: inline-flex;
+    opacity: 0.85;
+}
+
+.message-encrypted .icon { width: 0.6875rem; height: 0.6875rem; }
+
+/* Место под вложение, пока оно скачивается и расшифровывается: форма
+   картинки, чтобы подгрузка не дёргала ленту. */
+.encrypted-attachment { margin-bottom: 0.5rem; }
+
+.attachment-skeleton {
+    width: min(15rem, 60vw);
+    aspect-ratio: 3 / 2;
+    border-radius: var(--r-md);
+}
 .message-status { font-weight: 600; }
 
 .message-image,
@@ -1196,6 +1248,26 @@ input.is-invalid:focus {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+/* Сообщение, которое это устройство расшифровать не может: оно появилось
+   в чате позже. Приглушённый курсив, а не ошибка — состояние штатное. */
+.message-locked {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    font-size: var(--fs-sm);
+    opacity: 0.66;
+}
+
+.message-locked::before {
+    content: '';
+    width: 0.875rem;
+    height: 0.875rem;
+    flex-shrink: 0;
+    background: currentColor;
+    -webkit-mask: var(--icon-locked) center / contain no-repeat;
+    mask: var(--icon-locked) center / contain no-repeat;
 }
 
 .edited-label {
@@ -1603,4 +1675,104 @@ input.is-invalid:focus {
     /* Блик скелетона — единственная анимация, которая несёт смысл
        («данные грузятся»), поэтому вместо бега он просто гаснет. */
     .skeleton::after { display: none; }
+}
+
+/* ============================================================================
+   Сверка ключей
+   ========================================================================== */
+
+.safety-intro {
+    margin-bottom: 1rem;
+    font-size: var(--fs-sm);
+    color: var(--text-2);
+}
+
+.safety-list {
+    display: grid;
+    gap: 0.875rem;
+}
+
+.safety-entry {
+    display: grid;
+    /* minmax(0, 1fr): без него ширину колонки задаёт самая длинная
+       неразрывная строка, и на телефоне карточка вылезает за экран. */
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.75rem;
+    padding: 1rem;
+    border: 1px solid var(--border-2);
+    border-radius: var(--r-lg);
+}
+
+.safety-entry-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    min-width: 0;
+}
+
+.safety-entry-head strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.safety-state {
+    flex-shrink: 0;
+    padding: 0.1875rem 0.5rem;
+    border-radius: var(--r-pill);
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    color: var(--text-3);
+    border: 1px solid var(--border-2);
+}
+
+.safety-state.is-verified { color: var(--ok); border-color: var(--ok-ring); }
+.safety-state.is-changed { color: var(--danger); border-color: var(--danger-line); background: var(--danger-soft); }
+
+/* 12 групп по 5 цифр: 4 колонки, 3 строки — так код читают вслух
+   по строкам. Раскладка одинакова на любом экране: иначе у собеседников
+   с телефоном и ноутбуком строки не совпали бы. Моноширинный шрифт и
+   табличные цифры держат колонки ровными. */
+.safety-number {
+    display: grid;
+    grid-template-columns: repeat(4, auto);
+    justify-content: space-between;
+    row-gap: 0.375rem;
+    column-gap: 0.5rem;
+    padding: 0.875rem 1rem;
+    border-radius: var(--r-md);
+    background: var(--accent-soft);
+    font-family: var(--f-mono);
+    font-size: 1.0625rem;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.06em;
+    color: var(--text);
+}
+
+.safety-warning {
+    display: flex;
+    gap: 0.5rem;
+    align-items: flex-start;
+    font-size: var(--fs-sm);
+    color: var(--danger);
+}
+
+.safety-warning .icon { flex-shrink: 0; width: 1rem; height: 1rem; margin-top: 0.125rem; }
+
+.safety-muted {
+    font-size: var(--fs-sm);
+    color: var(--text-3);
+}
+
+.safety-skeleton {
+    height: 12rem;
+    border-radius: var(--r-lg);
+}
+
+.safety-entry .btn { white-space: normal; }
+
+@media (max-width: 380px) {
+    .safety-entry { padding: 0.875rem; }
+    .safety-number { padding: 0.75rem; font-size: 0.9375rem; letter-spacing: 0.02em; }
 }

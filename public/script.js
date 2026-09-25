@@ -1,6 +1,7 @@
 const socket = io();
 let currentChatId = null;
 let currentRoomId = null;
+let currentChatIsBot = false;
 let currentUser = null;
 let replyToMessageId = null;
 let editingMessageId = null;
@@ -26,6 +27,9 @@ const elements = {
     chatName: document.getElementById('chat-name'),
     chatStatus: document.getElementById('chat-status'),
     chatAvatar: document.getElementById('chat-avatar'),
+    chatEncryption: document.getElementById('chat-encryption'),
+    safetyModal: document.getElementById('safety-modal'),
+    safetyList: document.getElementById('safety-list'),
     emptyState: document.getElementById('empty-state'),
     messageInputContainer: document.getElementById('message-input-container'),
     searchInput: document.getElementById('search-input'),
@@ -60,6 +64,319 @@ const elements = {
     profileAnonBadge: document.getElementById('profile-anon-badge'),
     emptyNewChatBtn: document.getElementById('empty-new-chat-btn'),
 };
+
+/* --- E2EE -------------------------------------------------------------
+   Крипта живёт в ES-модулях (public/crypto/*), а этот файл — обычный
+   скрипт. Модульные скрипты всегда deferred, поэтому крипта может быть ещё
+   не поднята к моменту исполнения этого кода; bootstrap.js сообщает о
+   готовности событием, и обе очерёдности обрабатываются. */
+
+let e2ee = null;          // модуль крипты, когда он загрузился
+let e2eeDeviceId = null;  // id этого устройства, если E2EE поднялся
+
+function cryptoModule() {
+    if (window.NyxoCrypto) return Promise.resolve(window.NyxoCrypto);
+    return new Promise(resolve => {
+        window.addEventListener('nyxo-crypto-ready', () => resolve(window.NyxoCrypto), { once: true });
+        // Если модуль не загрузился (сеть, CSP, старый браузер) — приложение
+        // обязано работать дальше без шифрования, а не висеть.
+        setTimeout(() => resolve(window.NyxoCrypto || null), 5000);
+    });
+}
+
+/**
+ * Поднять шифрование для текущей сессии: зарегистрировать или привязать
+ * устройство, опубликовать ключи, пополнить пул prekeys.
+ *
+ * Сокет после этого переподключается: серверная комната device:<id>
+ * выбирается по сессии в момент рукопожатия, а deviceId там появился
+ * только что.
+ */
+async function setupE2EE() {
+    e2ee = await cryptoModule();
+    if (!e2ee) {
+        console.warn('[E2EE] модуль крипты не загрузился, работаем без шифрования');
+        return;
+    }
+    const result = await e2ee.bootstrap({
+        api,
+        userId: currentUser.id,
+        deviceName: navigator.userAgent.slice(0, 64),
+    });
+    if (!result) {
+        e2eeDeviceId = null;
+        return;
+    }
+    e2eeDeviceId = result.deviceId;
+
+    // Сокет обязан переподключиться ПЕРЕД тем, как кто-то позовёт
+    // joinChat: серверную комнату device:<id> выбирают по сессии в момент
+    // рукопожатия, а deviceId там появился только что. Без ожидания
+    // следующий joinChat уходил в ещё не поднятое соединение.
+    socket.disconnect();
+    await new Promise(resolve => {
+        socket.once('connect', resolve);
+        socket.connect();
+        // Не зависаем, если сокет не поднимется: без него приложение
+        // деградирует до обновления по перезагрузке, но работает.
+        setTimeout(resolve, 3000);
+    });
+}
+
+/**
+ * Текст сообщения для отображения.
+ *
+ * Возвращает null, если прочитать нечем — это не ошибка, а нормальное
+ * состояние: сообщение отправлено до того, как появилось это устройство.
+ * Вызывающий обязан показать заглушку, а не пустой пузырь.
+ */
+async function resolveMessageText(message) {
+    if (!message.encrypted) return message.text;
+    if (!e2ee) return null;
+
+    // Кэш проверяется первым и для своих, и для чужих сообщений. Это не
+    // ускорение: ключ сообщения в Double Ratchet одноразовый, и повторно
+    // расшифровать тот же конверт нельзя. Без кэша история после
+    // перезагрузки восстанавливалась бы только для своих сообщений.
+    const cached = await e2ee.recallPlaintext(message.id);
+    if (cached != null) return cached;
+
+    if (!message.envelope && !message.group && !message.keyEnvelope) return null;
+    return e2ee.decryptIncoming(message);
+}
+
+/**
+ * Обновить превью в списке чатов на месте.
+ *
+ * Раньше превью приходило с сервера в last_message, и строка обновлялась
+ * сама при следующем loadChats. Под E2EE сервер текста не знает, превью
+ * считает клиент — значит и обновлять строку теперь его забота, иначе в
+ * списке навсегда остаётся «Нет сообщений».
+ *
+ * Ищем по room_id, если он есть: у сообщения chat_id указывает на запись
+ * чата ОТПРАВИТЕЛЯ, а у получателя запись своя, с другим id.
+ */
+function updateChatPreviewInList(message, text) {
+    const selector = message.room_id
+        ? `.chat-item[data-room-id="${message.room_id}"]`
+        : `.chat-item[data-id="${message.chat_id}"]`;
+    const line = elements.chatsList.querySelector(`${selector} .chat-last`);
+    if (line) line.textContent = text.substring(0, 30);
+}
+
+/**
+ * Разложить расшифрованное содержимое по полям сообщения для отрисовки.
+ * Зашифрованное сообщение — это JSON с типом: текст или вложение.
+ */
+function applyDecryptedContent(message, content) {
+    message.undecryptable = content === null;
+    message.text = content && content.t === 'text' ? content.body : '';
+    message.encryptedFile = content && content.t === 'file' ? content : null;
+    message.brokenAttachment = Boolean(content && content.t === 'invalid');
+}
+
+/** Расшифровать и дорисовать сообщение в открытый чат. */
+async function appendMessageDecrypted(message) {
+    if (message.encrypted) {
+        const raw = await resolveMessageText(message);
+        const content = raw === null ? null : e2ee.decodePayload(raw);
+        applyDecryptedContent(message, content);
+        if (content) {
+            const preview = e2ee.payloadPreview(content);
+            await e2ee.rememberPreview(message.chat_id, preview);
+            updateChatPreviewInList(message, preview);
+        }
+    }
+    appendMessage(message);
+}
+
+/** Есть ли в чате устройства, кроме этого: то есть есть ли для кого шифровать. */
+async function chatDevices(chatId) {
+    const info = await api(`/api/chats/${chatId}/devices`);
+    return info && info.success ? info : null;
+}
+
+const hasForeignDevices = info => Boolean(info && info.devices.some(d => d.device_id !== e2eeDeviceId));
+
+async function chatHasForeignDevices(chatId) {
+    if (!e2ee || !e2ee.isReady()) return false;
+    return hasForeignDevices(await chatDevices(chatId));
+}
+
+/**
+ * Индикатор в шапке чата: шифруется ли то, что здесь пишут, и сверены ли
+ * ключи собеседников.
+ *
+ * Приложение смешанное — общие чаты шифруются, чат с ботом нет, а чат без
+ * собеседника пока тоже нет. До этого индикатора отличить одно от другого
+ * было нельзя никак. В зашифрованном чате он же — вход в сверку ключей.
+ */
+async function refreshEncryptionBadge(chatId, isBot) {
+    const badge = elements.chatEncryption;
+    let mode = 'off';
+    let icon = 'i-unlock';
+    let text;
+    if (isBot) {
+        text = 'Без шифрования: бот';
+    } else if (!e2ee || !e2ee.isReady()) {
+        text = 'Без шифрования: ключи устройства недоступны';
+    } else {
+        const info = await chatDevices(chatId);
+        if (hasForeignDevices(info)) {
+            const states = [...(await e2ee.verificationStatus(info.devices)).values()];
+            if (states.includes('changed')) {
+                mode = 'warn';
+                icon = 'i-alert';
+                text = 'Ключи собеседника изменились';
+            } else if (states.length > 0 && states.every(v => v === 'verified')) {
+                mode = 'on';
+                icon = 'i-shield-check';
+                text = 'Сквозное шифрование · ключи сверены';
+            } else {
+                mode = 'on';
+                icon = 'i-lock';
+                text = 'Сквозное шифрование';
+            }
+        } else {
+            text = 'Без шифрования: собеседника пока нет';
+        }
+    }
+    // Пока ждали ответа, могли открыть другой чат — не перезаписываем его.
+    if (currentChatId !== chatId) return;
+    badge.className = `encryption-badge is-${mode}`;
+    badge.disabled = mode === 'off';
+    badge.title = mode === 'off' ? '' : 'Сверить ключи';
+    badge.replaceChildren(createIcon(icon), document.createTextNode(text));
+}
+
+/* --- Сверка ключей -------------------------------------------------------
+   Код безопасности считается на каждого собеседника: в группе их несколько,
+   и сверять приходится с каждым. */
+
+const SAFETY_STATE_TEXT = {
+    unverified: 'Не сверено',
+    verified: 'Сверено',
+    changed: 'Изменились после сверки',
+};
+
+function safetyNote(text) {
+    const p = document.createElement('p');
+    p.className = 'safety-warning';
+    p.append(createIcon('i-alert'), document.createTextNode(text));
+    return p;
+}
+
+async function renderSafetyEntry(chatId, user) {
+    const section = document.createElement('section');
+    section.className = 'safety-entry';
+    section.dataset.userId = user.user_id;
+
+    const head = document.createElement('div');
+    head.className = 'safety-entry-head';
+    const name = document.createElement('strong');
+    name.textContent = user.username;
+    head.appendChild(name);
+    section.appendChild(head);
+
+    let info;
+    try {
+        info = await e2ee.safetyInfo(user.user_id);
+    } catch (error) {
+        const p = document.createElement('p');
+        p.className = 'safety-muted';
+        p.textContent = `Не удалось получить ключи: ${error.message}`;
+        section.appendChild(p);
+        return section;
+    }
+    if (!info.available) {
+        const p = document.createElement('p');
+        p.className = 'safety-muted';
+        p.textContent = 'У собеседника пока нет ключей шифрования.';
+        section.appendChild(p);
+        return section;
+    }
+
+    const chip = document.createElement('span');
+    chip.className = `safety-state is-${info.state}`;
+    chip.textContent = SAFETY_STATE_TEXT[info.state];
+    head.appendChild(chip);
+
+    if (info.state === 'changed') {
+        section.appendChild(safetyNote('После сверки у собеседника появилось новое устройство. '
+            + 'Пока вы не сверите код заново, сообщения в этот чат не отправляются.'));
+    }
+    if (info.conflicts.length > 0) {
+        section.appendChild(safetyNote('Сервер выдаёт для устройства собеседника ключ, который не совпадает '
+            + 'с известным. Этому устройству сообщения не отправляются.'));
+    }
+    if (info.ownConflicts.length > 0) {
+        section.appendChild(safetyNote('Сервер раздаёт от имени ваших устройств чужие ключи. '
+            + 'Код у собеседника не совпадёт с вашим.'));
+    }
+
+    const groups = e2ee.formatSafetyNumber(info.safetyNumber);
+    const number = document.createElement('div');
+    number.className = 'safety-number';
+    number.setAttribute('aria-label', `Код безопасности: ${groups.join(' ')}`);
+    for (const group of groups) {
+        const span = document.createElement('span');
+        span.textContent = group;
+        number.appendChild(span);
+    }
+    section.appendChild(number);
+
+    const meta = document.createElement('p');
+    meta.className = 'safety-muted';
+    meta.textContent = `Устройств собеседника: ${info.devices.length}`;
+    section.appendChild(meta);
+
+    const action = document.createElement('button');
+    action.type = 'button';
+    if (info.state === 'verified') {
+        action.className = 'btn btn-secondary btn-block';
+        action.textContent = 'Снять отметку';
+        action.addEventListener('click', async () => {
+            await e2ee.clearVerified(user.user_id);
+            section.replaceWith(await renderSafetyEntry(chatId, user));
+            refreshEncryptionBadge(chatId, currentChatIsBot);
+        });
+    } else {
+        action.className = 'btn btn-primary btn-block';
+        action.textContent = 'Код совпал — отметить сверенным';
+        action.addEventListener('click', async () => {
+            // Отмечается ровно тот набор устройств, по которому посчитан
+            // показанный код, а не тот, что окажется на сервере к моменту клика.
+            await e2ee.markVerified(user.user_id, info.devices);
+            section.replaceWith(await renderSafetyEntry(chatId, user));
+            refreshEncryptionBadge(chatId, currentChatIsBot);
+        });
+    }
+    section.appendChild(action);
+    return section;
+}
+
+async function openSafetyModal(chatId) {
+    if (!e2ee || !e2ee.isReady()) return;
+    const list = elements.safetyList;
+    const loading = document.createElement('div');
+    loading.className = 'skeleton safety-skeleton';
+    list.replaceChildren(loading);
+    openModal(elements.safetyModal);
+
+    const info = await chatDevices(chatId);
+    const others = ((info && info.users) || []).filter(u => u.user_id !== currentUser.id);
+    if (others.length === 0) {
+        const p = document.createElement('p');
+        p.className = 'safety-muted';
+        p.textContent = 'В чате пока нет собеседников — сверять не с кем. '
+            + 'Сообщения шифруются только для других ваших устройств.';
+        list.replaceChildren(p);
+        return;
+    }
+    const entries = [];
+    for (const user of others) entries.push(await renderSafetyEntry(chatId, user));
+    list.replaceChildren(...entries);
+}
 
 const THEME_KEY = 'nyxo-theme';
 const DEFAULT_AVATAR = '#6D5EFC';
@@ -169,6 +486,7 @@ async function checkAuth() {
         if (data.authenticated) {
             currentUser = data.user;
             showApp();
+            await setupE2EE();
             loadChats();
         } else {
             showAuth();
@@ -248,6 +566,7 @@ function setupEventListeners() {
             currentUser = data.user;
             showToast('Вход выполнен', 'success');
             showApp();
+            await setupE2EE();
             loadChats();
         } else {
             setFieldError('login-password', data.message);
@@ -281,6 +600,7 @@ function setupEventListeners() {
             currentUser = data.user;
             showToast('Регистрация завершена', 'success');
             showApp();
+            await setupE2EE();
             loadChats();
         } else {
             setFieldError('register-email', data.message);
@@ -293,6 +613,7 @@ function setupEventListeners() {
             currentUser = data.user;
             showToast('Приватный режим активирован', 'success');
             showApp();
+            await setupE2EE();
             loadChats();
         } else {
             showToast(data.message, 'error');
@@ -458,6 +779,10 @@ function setupEventListeners() {
         searchTimeout = setTimeout(performSearch, 300);
     });
 
+    elements.chatEncryption.addEventListener('click', () => {
+        if (currentChatId) openSafetyModal(currentChatId);
+    });
+
     document.querySelectorAll('.close-modal').forEach(btn => {
         btn.addEventListener('click', () => {
             document.querySelectorAll('.modal').forEach(m => closeModal(m));
@@ -469,13 +794,14 @@ function setupEventListeners() {
         hideMessageMenu();
     });
 
-    socket.on('newMessage', (message) => {
-        if (message.chat_id == currentChatId || message.room_id == currentRoomId) {
-            appendMessage(message);
-            scrollToBottom();
-        } else {
-            loadChats();
-        }
+    // Сообщения обрабатываются строго по одному, в порядке прихода. Иначе
+    // второе сообщение группы могло бы начать расшифровываться раньше, чем
+    // первое принесёт ключ, и показалось бы заглушкой.
+    let incoming = Promise.resolve();
+    socket.on('newMessage', message => {
+        incoming = incoming.then(() => handleNewMessage(message)).catch(error => {
+            console.error('Ошибка обработки сообщения:', error);
+        });
     });
 
     socket.on('messageEdited', ({ id, text, chat_id, room_id }) => {
@@ -575,7 +901,9 @@ async function loadChats() {
         return;
     }
 
-    data.chats.forEach(chat => {
+    // for...of, а не forEach: превью зашифрованных чатов лежит в IndexedDB,
+    // и его чтение асинхронно.
+    for (const chat of data.chats) {
         const div = document.createElement('div');
         div.className = 'chat-item';
         div.dataset.id = chat.id;
@@ -584,18 +912,38 @@ async function loadChats() {
             <div class="chat-avatar-small" style="background:${chat.avatar && chat.avatar.startsWith('#') ? chat.avatar : DEFAULT_AVATAR}">${chat.name.charAt(0).toUpperCase()}</div>
             <div class="chat-info">
                 <div class="chat-name">${escapeHtml(chat.name)}</div>
-                <div class="chat-last">${chat.last_message ? escapeHtml(chat.last_message.substring(0, 30)) : 'Нет сообщений'}</div>
+                <div class="chat-last">${escapeHtml(await chatPreview(chat))}</div>
             </div>
             ${chat.unread > 0 ? `<div class="chat-badge">${chat.unread}</div>` : ''}
         `;
         div.addEventListener('click', () => openChat(chat.id, chat.room_id, chat.name, chat.avatar, chat.online, chat.is_bot));
         elements.chatsList.appendChild(div);
-    });
+    }
+}
+
+/**
+ * Превью последнего сообщения.
+ *
+ * Для зашифрованного чата сервер его дать не может — в базе нет текста.
+ * Поэтому берём то, что клиент расшифровал сам. Если это устройство чат
+ * ещё не открывало, превью честно нет.
+ */
+async function chatPreview(chat) {
+    if (chat.last_message) return chat.last_message.substring(0, 30);
+    if (e2ee) {
+        const cached = await e2ee.recallPreview(chat.id);
+        if (cached) return cached.substring(0, 30);
+    }
+    return 'Нет сообщений';
 }
 
 async function openChat(chatId, roomId, name, avatar, online, isBot) {
     currentChatId = chatId;
     currentRoomId = roomId;
+    currentChatIsBot = Boolean(isBot);
+    // Расшифрованные вложения прошлого чата больше не нужны в памяти.
+    if (e2ee) e2ee.releaseAttachments();
+    refreshEncryptionBadge(chatId, isBot);
     elements.chatsList.querySelectorAll('.chat-item').forEach(item => {
         item.classList.toggle('active', item.dataset.id === String(chatId));
     });
@@ -613,7 +961,12 @@ async function openChat(chatId, roomId, name, avatar, online, isBot) {
     if (!data.success) return;
 
     if (data.messages) {
-        data.messages.forEach(msg => appendMessage(msg));
+        // Последовательно, а не Promise.all: у Double Ratchet состояние
+        // сессии меняется на каждом сообщении, и параллельная расшифровка
+        // двух сообщений одной сессии затирала бы состояние друг друга.
+        // Ключи групп — до сообщений: без них групповые не расшифровать.
+        if (e2ee && data.keyEnvelopes) await e2ee.processKeyEnvelopes(data.keyEnvelopes);
+        for (const msg of data.messages) await appendMessageDecrypted(msg);
         scrollToBottom();
     }
 
@@ -633,6 +986,61 @@ function appendMessage(message) {
 // свойства, а не вставка HTML-текста, так что вырваться из атрибута нельзя.
 // Заодно клик по картинке навешан через addEventListener, а не инлайновый
 // onclick, который CSP (script-src без 'unsafe-inline') всё равно блокирует.
+/**
+ * Зашифрованное вложение: сначала заглушка, потом — по мере скачивания и
+ * расшифровки — картинка, видео или ссылка на скачивание.
+ */
+function createEncryptedAttachmentElement(p) {
+    const holder = document.createElement('div');
+    holder.className = 'encrypted-attachment';
+    const loading = document.createElement('div');
+    loading.className = 'skeleton attachment-skeleton';
+    holder.appendChild(loading);
+
+    e2ee.openAttachment(p).then(({ url, kind }) => {
+        holder.replaceChildren();
+        if (kind === 'image') {
+            const img = document.createElement('img');
+            img.src = url;
+            img.alt = p.name;
+            img.className = 'message-image';
+            holder.appendChild(img);
+        } else if (kind === 'video') {
+            const video = document.createElement('video');
+            video.src = url;
+            video.controls = true;
+            video.className = 'message-video';
+            holder.appendChild(video);
+        } else {
+            // Только скачивание, без target=_blank: открытие blob-ссылки во
+            // вкладке исполнило бы файл в нашем origin.
+            const wrapper = document.createElement('div');
+            wrapper.className = 'file-attachment';
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = p.name;
+            a.appendChild(createIcon('i-file'));
+            const nameSpan = document.createElement('span');
+            nameSpan.textContent = `${p.name} · ${formatSize(p.size)}`;
+            a.appendChild(nameSpan);
+            wrapper.appendChild(a);
+            holder.appendChild(wrapper);
+        }
+    }).catch(err => {
+        const em = document.createElement('em');
+        em.className = 'message-locked';
+        em.textContent = `Вложение недоступно: ${err.message}`;
+        holder.replaceChildren(em);
+    });
+    return holder;
+}
+
+function formatSize(bytes) {
+    if (bytes < 1024) return `${bytes} Б`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} КБ`;
+    return `${(bytes / 1024 / 1024).toFixed(1)} МБ`;
+}
+
 function createFileAttachmentElement(message) {
     const { file_url, file_name, message_type } = message;
     if (message_type === 'image') {
@@ -687,6 +1095,13 @@ function createMessageElement(message) {
         const em = document.createElement('em');
         em.textContent = 'Сообщение удалено';
         contentDiv.appendChild(em);
+    } else if (message.undecryptable) {
+        // Сообщение зашифровано, но ключа у этого устройства нет: оно
+        // появилось в чате позже. Показываем это прямо, а не пустотой.
+        const em = document.createElement('em');
+        em.className = 'message-locked';
+        em.textContent = 'Сообщение недоступно на этом устройстве';
+        contentDiv.appendChild(em);
     } else {
         if (message.reply_to) {
             const replyDiv = document.createElement('div');
@@ -696,17 +1111,33 @@ function createMessageElement(message) {
             author.textContent = message.reply_to.sender_username || 'Неизвестно';
             const quoted = document.createElement('span');
             quoted.className = 'reply-to-text';
-            quoted.textContent = (message.reply_to.text || '').substring(0, 60);
+            // Текст удалённого сообщения сервер стирает — цитировать нечего.
+            quoted.textContent = message.reply_to.deleted
+                ? 'Сообщение удалено'
+                : (message.reply_to.text || '').substring(0, 60);
             replyDiv.append(author, quoted);
             contentDiv.appendChild(replyDiv);
         }
         if (message.file_url) {
             contentDiv.appendChild(createFileAttachmentElement(message));
         }
-        const textDiv = document.createElement('div');
-        textDiv.className = 'message-text';
-        textDiv.textContent = message.text || '';
-        contentDiv.appendChild(textDiv);
+        if (message.encryptedFile) {
+            contentDiv.appendChild(createEncryptedAttachmentElement(message.encryptedFile));
+        }
+        if (message.brokenAttachment) {
+            const em = document.createElement('em');
+            em.className = 'message-locked';
+            em.textContent = 'Повреждённое вложение';
+            contentDiv.appendChild(em);
+        }
+        // Пустой текст у вложения не рисуем: иначе под картинкой остаётся
+        // пустая строка с отступом.
+        if (message.text || !(message.encryptedFile || message.brokenAttachment)) {
+            const textDiv = document.createElement('div');
+            textDiv.className = 'message-text';
+            textDiv.textContent = message.text || '';
+            contentDiv.appendChild(textDiv);
+        }
 
         if (message.edited_at) {
             const editedDiv = document.createElement('div');
@@ -729,6 +1160,13 @@ function createMessageElement(message) {
 
     const metaDiv = document.createElement('div');
     metaDiv.className = 'message-meta';
+    if (message.encrypted) {
+        const lock = document.createElement('span');
+        lock.className = 'message-encrypted';
+        lock.title = 'Сквозное шифрование';
+        lock.appendChild(createIcon('i-lock'));
+        metaDiv.appendChild(lock);
+    }
     const timeSpan = document.createElement('span');
     timeSpan.className = 'message-time';
     timeSpan.textContent = message.time || '';
@@ -769,8 +1207,27 @@ function showMessageMenu(x, y, message) {
     elements.messageMenu.dataset.messageId = message.id;
     elements.messageMenu.dataset.messageText = message.text || '';
     const isMine = message.user_id === (currentUser ? currentUser.id : 0);
-    elements.editMessageBtn.style.display = isMine ? 'block' : 'none';
+    // Правка зашифрованного сообщения ушла бы на сервер открытым текстом,
+    // поэтому её нет вовсе — удалить и отправить заново можно.
+    elements.editMessageBtn.style.display = isMine && !message.encrypted ? 'block' : 'none';
     elements.deleteMessageBtn.style.display = isMine ? 'block' : 'none';
+}
+
+async function handleNewMessage(message) {
+    if (message.chat_id == currentChatId || message.room_id == currentRoomId) {
+        await appendMessageDecrypted(message);
+        scrollToBottom();
+    } else {
+        // Чужой чат: расшифровываем ради превью в списке, рисовать
+        // нечего.
+        if (message.encrypted && e2ee) {
+            const raw = await resolveMessageText(message);
+            if (raw !== null) {
+                await e2ee.rememberPreview(message.chat_id, e2ee.payloadPreview(e2ee.decodePayload(raw)));
+            }
+        }
+        loadChats();
+    }
 }
 
 function hideMessageMenu() {
@@ -805,23 +1262,171 @@ async function sendMessage() {
         }
         editingMessageId = null;
     } else {
-        await api('/api/messages', {
-            method: 'POST',
-            body: JSON.stringify(payload),
-        });
+        const outcome = await sendEncrypted(text, payload);
+        // Не отправилось — текст остаётся в поле: иначе его пришлось бы
+        // набирать заново.
+        if (outcome === 'failed') return;
+        if (outcome === 'plain') {
+            await api('/api/messages', {
+                method: 'POST',
+                body: JSON.stringify(payload),
+            });
+        }
     }
 
     elements.messageInput.value = '';
     clearReply();
 }
 
+/**
+ * Зашифровать и отправить готовую полезную нагрузку (текст или вложение).
+ *
+ * chatId передаётся явно, а не берётся из currentChatId: пока шифруется и
+ * загружается файл, пользователь может переключить чат, и сообщение ушло
+ * бы не туда.
+ *
+ * Возвращает { sent: false }, только если в чате не для кого шифровать.
+ * Любая другая неудача — исключение: откатываться на открытый путь после
+ * провала шифрования нельзя, человек считал бы переписку защищённой.
+ */
+async function sendEncryptedPayload(chatId, encoded, { replyToId = null, blobIds = [] } = {}) {
+    const encrypted = await e2ee.encryptForChat(chatId, encoded);
+    const { targets, rejected } = encrypted;
+    if (targets.length === 0) return { sent: false };
+    // Получатели есть, а прочитать не сможет никто: ключи не выдал сервер
+    // или все они подменены. Уходить в открытый текст здесь нельзя —
+    // индикатор обещает шифрование.
+    if (encrypted.readers === 0) {
+        throw new Error(rejected.length > 0
+            ? 'ключи устройств собеседника не совпадают с известными'
+            : 'не удалось получить ключи собеседника');
+    }
+
+    // Попарно — конверт с содержимым на каждое устройство; в группе —
+    // один шифротекст на всех и ключ только тем, у кого его ещё нет.
+    const body = encrypted.mode === 'group'
+        ? { chatId, replyToId, blobIds, group: encrypted.group, keyEnvelopes: encrypted.keyEnvelopes }
+        : { chatId, replyToId, blobIds, envelopes: encrypted.envelopes };
+    const data = await api('/api/messages/encrypted', { method: 'POST', body: JSON.stringify(body) });
+    if (!data || !data.success) throw new Error((data && data.message) || 'сервер не принял сообщение');
+    await encrypted.commit();
+
+    // Своё содержимое — локально: конверт себе не отправляется. По этой же
+    // причине своё сообщение приходится дорисовать самому: сокет-события о
+    // нём не будет.
+    await e2ee.rememberSent(data.message.id, encoded);
+    const content = e2ee.decodePayload(encoded);
+    const preview = e2ee.payloadPreview(content);
+    await e2ee.rememberPreview(chatId, preview);
+    updateChatPreviewInList(data.message, preview);
+
+    if (chatId === currentChatId) {
+        const local = { ...data.message };
+        applyDecryptedContent(local, content);
+        appendMessage(local);
+        scrollToBottom();
+    }
+
+    // Устройства, для которых конверта не нашлось: у них сообщение не
+    // прочитается, и об этом честнее сказать сразу.
+    if (rejected.length > 0) {
+        showToast(rejected.length === 1
+            ? 'Ключ устройства собеседника не совпадает с известным — ему сообщение не отправлено'
+            : `Ключи ${devicesGenitive(rejected.length)} собеседника не совпадают с известными — им сообщение не отправлено`,
+        'error');
+    }
+    const missing = [...(data.missingDeviceIds || []), ...encrypted.undelivered]
+        .filter(id => id !== e2eeDeviceId && !rejected.includes(id));
+    if (missing.length > 0) {
+        showToast(`Сообщение не дойдёт до ${devicesGenitive(missing.length)}: нет ключей`, 'error');
+    }
+    return { sent: true };
+}
+
+/** «до 1 устройства», «до 5 устройств», «до 21 устройства». */
+function devicesGenitive(n) {
+    const one = n % 10 === 1 && n % 100 !== 11;
+    return `${n} ${one ? 'устройства' : 'устройств'}`;
+}
+
+/** Итог: 'sent', 'plain' (шифровать не для кого) или 'failed'. */
+async function sendEncrypted(text, payload) {
+    if (!e2ee || !e2ee.isReady()) return 'plain';
+    const chatId = currentChatId;
+    try {
+        const result = await sendEncryptedPayload(chatId, e2ee.encodeText(text), {
+            replyToId: payload.replyToId || null,
+        });
+        // В чате не для кого шифровать (бот, никто не присоединился) —
+        // это единственный случай, когда уходим на открытый путь.
+        return result.sent ? 'sent' : 'plain';
+    } catch (error) {
+        reportEncryptedSendError('Сообщение не отправлено', chatId, error);
+        return 'failed';
+    }
+}
+
+function reportEncryptedSendError(prefix, chatId, error) {
+    console.error('[E2EE] отправка не удалась:', error);
+    showToast(`${prefix}: ${error.message}`, 'error');
+    // Отправку остановила сверка — индикатор должен это показать сразу,
+    // а не после переоткрытия чата.
+    if (error.code === 'verification-changed' && chatId === currentChatId) {
+        refreshEncryptionBadge(chatId, currentChatIsBot);
+    }
+}
+
+// Сервер принимает до 50 МБ шифротекста; GCM добавляет 16 байт тега.
+const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024 - 16;
+
+/**
+ * Отправить файл зашифрованным: очистить метаданные (для картинок),
+ * зашифровать своим ключом, загрузить непрозрачные байты, отправить ключ
+ * внутри E2EE-сообщения.
+ */
+async function sendEncryptedFile(chatId, file) {
+    if (file.size > MAX_ATTACHMENT_BYTES) throw new Error('файл больше 50 МБ');
+
+    const { ciphertext, meta } = await e2ee.encryptAttachment(file);
+
+    const upload = await fetch(`/api/blobs?chatId=${encodeURIComponent(chatId)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream', 'X-CSRF-Token': getCsrfToken() },
+        body: ciphertext,
+    });
+    const uploaded = await upload.json().catch(() => null);
+    if (!uploaded || !uploaded.success) {
+        throw new Error((uploaded && uploaded.message) || `загрузка не удалась (${upload.status})`);
+    }
+
+    const result = await sendEncryptedPayload(chatId, e2ee.encodeFile({ blob: uploaded.blobId, ...meta }), {
+        blobIds: [uploaded.blobId],
+    });
+    // Между проверкой и отправкой собеседник мог выйти из чата. Файл при
+    // этом уже загружен — его уберёт уборщик, а пользователю говорим прямо.
+    if (!result.sent) throw new Error('в чате больше не для кого шифровать');
+}
+
 async function handleFileUpload() {
     const file = elements.fileInput.files[0];
     if (!file || !currentChatId) return;
+    const chatId = currentChatId;
+    elements.fileInput.value = '';
+
+    // Если в чате есть для кого шифровать — только зашифрованный путь.
+    // Ошибка шифрования не откатывает на открытую загрузку.
+    if (await chatHasForeignDevices(chatId)) {
+        try {
+            await sendEncryptedFile(chatId, file);
+        } catch (error) {
+            reportEncryptedSendError('Файл не отправлен', chatId, error);
+        }
+        return;
+    }
 
     const formData = new FormData();
     formData.append('file', file);
-    formData.append('chatId', currentChatId);
+    formData.append('chatId', chatId);
 
     const res = await fetch('/api/messages/file', {
         method: 'POST',
@@ -832,7 +1437,6 @@ async function handleFileUpload() {
     if (!data.success) {
         showToast(data.message, 'error');
     }
-    elements.fileInput.value = '';
 }
 
 async function createChat() {
