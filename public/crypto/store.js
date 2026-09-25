@@ -14,7 +14,7 @@
 // на новом устройстве в этап A не входит.
 
 const DB_NAME = 'nyxo-e2ee';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 
 const STORE_META = 'meta';
 const STORE_IDENTITY = 'identity';
@@ -24,9 +24,12 @@ const STORE_SESSIONS = 'sessions';
 const STORE_PLAINTEXT = 'plaintext';
 const STORE_IDENTITIES = 'identities';
 const STORE_VERIFIED = 'verified';
+const STORE_SENDER_KEYS = 'senderKeys';
+const STORE_GROUP_SESSIONS = 'groupSessions';
 
 const ALL_STORES = [STORE_META, STORE_IDENTITY, STORE_SIGNED_PREKEYS,
-    STORE_ONE_TIME_PREKEYS, STORE_SESSIONS, STORE_PLAINTEXT, STORE_IDENTITIES, STORE_VERIFIED];
+    STORE_ONE_TIME_PREKEYS, STORE_SESSIONS, STORE_PLAINTEXT, STORE_IDENTITIES, STORE_VERIFIED,
+    STORE_SENDER_KEYS, STORE_GROUP_SESSIONS];
 
 let dbPromise = null;
 
@@ -183,6 +186,30 @@ export const verified = {
     load: userId => get(STORE_VERIFIED, String(userId)),
     save: (userId, entry) => put(STORE_VERIFIED, String(userId), entry),
     drop: userId => del(STORE_VERIFIED, String(userId)),
+};
+
+/**
+ * Свои sender keys — по одному на комнату. Хранятся объектом как есть:
+ * приватная часть подписи — неизвлекаемый CryptoKey, и в IndexedDB он
+ * попадает структурным клонированием, как identity-ключ.
+ */
+export const senderKeys = {
+    load: roomId => get(STORE_SENDER_KEYS, String(roomId)),
+    save: (roomId, entry) => put(STORE_SENDER_KEYS, String(roomId), entry),
+};
+
+/**
+ * Чужие sender keys: состояние цепочки каждого отправителя в каждой
+ * комнате. Старые распространения не удаляются: ими зашифрована история,
+ * отправленная до смены ключа.
+ */
+const groupSessionKey = (roomId, senderDeviceId, distribution) => `${roomId}:${senderDeviceId}:${distribution}`;
+
+export const groupSessions = {
+    load: (roomId, senderDeviceId, distribution) =>
+        get(STORE_GROUP_SESSIONS, groupSessionKey(roomId, senderDeviceId, distribution)),
+    save: (roomId, senderDeviceId, distribution, entry) =>
+        put(STORE_GROUP_SESSIONS, groupSessionKey(roomId, senderDeviceId, distribution), entry),
 };
 
 /** Полная очистка — при смене устройства или несовпадении с сервером. */

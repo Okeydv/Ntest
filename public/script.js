@@ -141,7 +141,7 @@ async function resolveMessageText(message) {
     const cached = await e2ee.recallPlaintext(message.id);
     if (cached != null) return cached;
 
-    if (!message.envelope) return null;
+    if (!message.envelope && !message.group && !message.keyEnvelope) return null;
     return e2ee.decryptIncoming(message);
 }
 
@@ -794,21 +794,14 @@ function setupEventListeners() {
         hideMessageMenu();
     });
 
-    socket.on('newMessage', async (message) => {
-        if (message.chat_id == currentChatId || message.room_id == currentRoomId) {
-            await appendMessageDecrypted(message);
-            scrollToBottom();
-        } else {
-            // Чужой чат: расшифровываем ради превью в списке, рисовать
-            // нечего.
-            if (message.encrypted && e2ee) {
-                const raw = await resolveMessageText(message);
-                if (raw !== null) {
-                    await e2ee.rememberPreview(message.chat_id, e2ee.payloadPreview(e2ee.decodePayload(raw)));
-                }
-            }
-            loadChats();
-        }
+    // Сообщения обрабатываются строго по одному, в порядке прихода. Иначе
+    // второе сообщение группы могло бы начать расшифровываться раньше, чем
+    // первое принесёт ключ, и показалось бы заглушкой.
+    let incoming = Promise.resolve();
+    socket.on('newMessage', message => {
+        incoming = incoming.then(() => handleNewMessage(message)).catch(error => {
+            console.error('Ошибка обработки сообщения:', error);
+        });
     });
 
     socket.on('messageEdited', ({ id, text, chat_id, room_id }) => {
@@ -971,6 +964,8 @@ async function openChat(chatId, roomId, name, avatar, online, isBot) {
         // Последовательно, а не Promise.all: у Double Ratchet состояние
         // сессии меняется на каждом сообщении, и параллельная расшифровка
         // двух сообщений одной сессии затирала бы состояние друг друга.
+        // Ключи групп — до сообщений: без них групповые не расшифровать.
+        if (e2ee && data.keyEnvelopes) await e2ee.processKeyEnvelopes(data.keyEnvelopes);
         for (const msg of data.messages) await appendMessageDecrypted(msg);
         scrollToBottom();
     }
@@ -1209,8 +1204,27 @@ function showMessageMenu(x, y, message) {
     elements.messageMenu.dataset.messageId = message.id;
     elements.messageMenu.dataset.messageText = message.text || '';
     const isMine = message.user_id === (currentUser ? currentUser.id : 0);
-    elements.editMessageBtn.style.display = isMine ? 'block' : 'none';
+    // Правка зашифрованного сообщения ушла бы на сервер открытым текстом,
+    // поэтому её нет вовсе — удалить и отправить заново можно.
+    elements.editMessageBtn.style.display = isMine && !message.encrypted ? 'block' : 'none';
     elements.deleteMessageBtn.style.display = isMine ? 'block' : 'none';
+}
+
+async function handleNewMessage(message) {
+    if (message.chat_id == currentChatId || message.room_id == currentRoomId) {
+        await appendMessageDecrypted(message);
+        scrollToBottom();
+    } else {
+        // Чужой чат: расшифровываем ради превью в списке, рисовать
+        // нечего.
+        if (message.encrypted && e2ee) {
+            const raw = await resolveMessageText(message);
+            if (raw !== null) {
+                await e2ee.rememberPreview(message.chat_id, e2ee.payloadPreview(e2ee.decodePayload(raw)));
+            }
+        }
+        loadChats();
+    }
 }
 
 function hideMessageMenu() {
@@ -1273,22 +1287,26 @@ async function sendMessage() {
  * провала шифрования нельзя, человек считал бы переписку защищённой.
  */
 async function sendEncryptedPayload(chatId, encoded, { replyToId = null, blobIds = [] } = {}) {
-    const { envelopes, targets, rejected } = await e2ee.encryptForChat(chatId, encoded);
+    const encrypted = await e2ee.encryptForChat(chatId, encoded);
+    const { targets, rejected } = encrypted;
     if (targets.length === 0) return { sent: false };
-    // Получатели есть, а зашифровать не для кого: ключи не выдал сервер
+    // Получатели есть, а прочитать не сможет никто: ключи не выдал сервер
     // или все они подменены. Уходить в открытый текст здесь нельзя —
     // индикатор обещает шифрование.
-    if (envelopes.length === 0) {
+    if (encrypted.readers === 0) {
         throw new Error(rejected.length > 0
             ? 'ключи устройств собеседника не совпадают с известными'
             : 'не удалось получить ключи собеседника');
     }
 
-    const data = await api('/api/messages/encrypted', {
-        method: 'POST',
-        body: JSON.stringify({ chatId, replyToId, envelopes, blobIds }),
-    });
+    // Попарно — конверт с содержимым на каждое устройство; в группе —
+    // один шифротекст на всех и ключ только тем, у кого его ещё нет.
+    const body = encrypted.mode === 'group'
+        ? { chatId, replyToId, blobIds, group: encrypted.group, keyEnvelopes: encrypted.keyEnvelopes }
+        : { chatId, replyToId, blobIds, envelopes: encrypted.envelopes };
+    const data = await api('/api/messages/encrypted', { method: 'POST', body: JSON.stringify(body) });
     if (!data || !data.success) throw new Error((data && data.message) || 'сервер не принял сообщение');
+    await encrypted.commit();
 
     // Своё содержимое — локально: конверт себе не отправляется. По этой же
     // причине своё сообщение приходится дорисовать самому: сокет-события о
@@ -1314,7 +1332,7 @@ async function sendEncryptedPayload(chatId, encoded, { replyToId = null, blobIds
             : `Ключи ${devicesGenitive(rejected.length)} собеседника не совпадают с известными — им сообщение не отправлено`,
         'error');
     }
-    const missing = (data.missingDeviceIds || [])
+    const missing = [...(data.missingDeviceIds || []), ...encrypted.undelivered]
         .filter(id => id !== e2eeDeviceId && !rejected.includes(id));
     if (missing.length > 0) {
         showToast(`Сообщение не дойдёт до ${devicesGenitive(missing.length)}: нет ключей`, 'error');

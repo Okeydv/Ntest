@@ -554,6 +554,43 @@ async function initDatabase() {
     `);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_blobs_message ON encrypted_blobs(message_id);`);
 
+    // Групповые сообщения (sender keys): один шифротекст на всех получателей
+    // вместо конверта на каждое устройство. header — BYTEA по той же
+    // причине, что у конвертов: он идёт в AAD и возвращается байт в байт.
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS message_group_payloads (
+            message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+            header BYTEA NOT NULL,
+            ciphertext BYTEA NOT NULL,
+            signature BYTEA NOT NULL
+        )
+    `);
+
+    // Раздача sender key: попарно зашифрованное состояние цепочки
+    // отправителя, по конверту на каждое устройство группы.
+    //
+    // Отдельная таблица, а не конверт при сообщении, намеренно. Если бы ключ
+    // ехал внутри сообщения, удаление этого сообщения (или таймер исчезающих)
+    // забирало бы ключ с собой, и устройство, которое было офлайн, не
+    // прочитало бы уже ничего из дальнейшей переписки. Здесь конверт живёт,
+    // пока его не заберёт получатель (подтверждение), не уйдёт он из группы
+    // или не будет отозвано его устройство.
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS sender_key_envelopes (
+            id BIGSERIAL PRIMARY KEY,
+            room_id INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+            sender_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            sender_device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+            recipient_device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+            envelope_type SMALLINT NOT NULL,
+            header BYTEA NOT NULL,
+            ciphertext BYTEA NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_sender_key_envelopes_recipient
+        ON sender_key_envelopes(recipient_device_id, room_id, id);`);
+
     // Текст больше не обязателен: у зашифрованного сообщения его нет вовсе,
     // содержимое живёт в конвертах.
     await pool.query(`ALTER TABLE messages ALTER COLUMN text DROP NOT NULL;`);
@@ -1266,6 +1303,9 @@ app.get('/api/chats/:chatId/devices', async (req, res) => {
             : [];
         res.json({
             success: true,
+            // room_id нужен клиенту для sender keys: у каждого участника своя
+            // запись chats с другим id, а групповой ключ один на комнату.
+            room_id: chat.room_id || null,
             devices: devices.map(d => ({ device_id: d.id, user_id: d.user_id })),
             users: users.map(u => ({ user_id: u.id, username: u.username })),
         });
@@ -1312,6 +1352,7 @@ async function purgeEncryptedContent(messageId) {
     }
     await dbRun('DELETE FROM encrypted_blobs WHERE message_id = $1', [messageId]);
     await dbRun('DELETE FROM message_envelopes WHERE message_id = $1', [messageId]);
+    await dbRun('DELETE FROM message_group_payloads WHERE message_id = $1', [messageId]);
 }
 
 /**
@@ -1453,16 +1494,74 @@ function decodeB64(value, maxLen, field) {
     return { buf };
 }
 
+// Групповой заголовок: версия + id распространения (16) + номер (4).
+const GROUP_HEADER_BYTES = 21;
+const GROUP_SIGNATURE_BYTES = 64;
+
+/**
+ * Разобрать список конвертов. Каждый обязан быть адресован устройству
+ * участника чата: иначе сервер превращается в хранилище, куда можно писать
+ * кому угодно. Возвращает { parsed } или { status, message }.
+ */
+function parseEnvelopeList(list, allowedIds, label) {
+    const parsed = [];
+    const seen = new Set();
+    for (const item of list) {
+        const deviceId = Number(item && item.recipientDeviceId);
+        if (!Number.isInteger(deviceId) || deviceId <= 0) {
+            return { status: 400, message: `${label}: некорректный recipientDeviceId` };
+        }
+        if (seen.has(deviceId)) {
+            return { status: 400, message: `${label}: дубликат для устройства ${deviceId}` };
+        }
+        if (!allowedIds.has(deviceId)) {
+            return { status: 403, message: `Устройство ${deviceId} не участвует в чате` };
+        }
+        const type = Number(item.envelopeType);
+        if (type !== 1 && type !== 2) {
+            return { status: 400, message: 'envelopeType должен быть 1 (prekey) или 2 (normal)' };
+        }
+        const header = decodeB64(item.header, MAX_HEADER_B64, 'header');
+        if (header.error) return { status: 400, message: header.error };
+        const ciphertext = decodeB64(item.ciphertext, MAX_CIPHERTEXT_B64, 'ciphertext');
+        if (ciphertext.error) return { status: 400, message: ciphertext.error };
+
+        seen.add(deviceId);
+        parsed.push({ deviceId, type, header: header.buf, ciphertext: ciphertext.buf });
+    }
+    return { parsed, seen };
+}
+
+function parseGroupPayload(group) {
+    if (!group || typeof group !== 'object') return { message: 'group: ожидается объект' };
+    const header = decodeB64(group.header, MAX_HEADER_B64, 'group.header');
+    if (header.error) return { message: header.error };
+    if (header.buf.length !== GROUP_HEADER_BYTES) return { message: 'group.header: неверная длина' };
+    const signature = decodeB64(group.signature, MAX_HEADER_B64, 'group.signature');
+    if (signature.error) return { message: signature.error };
+    if (signature.buf.length !== GROUP_SIGNATURE_BYTES) return { message: 'group.signature: неверная длина' };
+    const ciphertext = decodeB64(group.ciphertext, MAX_CIPHERTEXT_B64, 'group.ciphertext');
+    if (ciphertext.error) return { message: ciphertext.error };
+    return { header: header.buf, ciphertext: ciphertext.buf, signature: signature.buf };
+}
+
+const b64 = buf => buf.toString('base64');
+
 /**
  * POST /api/messages/encrypted
  *
  * Отправка зашифрованного сообщения. Сервер не видит содержимого: он
  * проверяет, что конверты адресованы участникам чата, складывает их и
- * рассылает каждому устройству его собственный конверт.
+ * рассылает каждому устройству то, что ему адресовано.
  *
- * Открытый путь POST /api/messages оставлен рядом: чаты с ботом и файлы на
- * этом этапе не шифруются (бот не имеет ключей, а срезание EXIF требует,
- * чтобы сервер видел файл).
+ * Два режима:
+ *   - попарный (envelopes): конверт с содержимым на каждое устройство;
+ *   - групповой (group + keyEnvelopes): один шифротекст на всех, и конверты
+ *     с sender key только тем устройствам, у которых его ещё нет. Только
+ *     для комнат.
+ *
+ * Открытый путь POST /api/messages оставлен рядом для чата с ботом и чатов,
+ * где пока не для кого шифровать.
  */
 app.post('/api/messages/encrypted', async (req, res) => {
     if (!req.session.userId) return res.status(401).json({ success: false, message: 'Не авторизован' });
@@ -1470,7 +1569,9 @@ app.post('/api/messages/encrypted', async (req, res) => {
         return res.status(409).json({ success: false, message: 'Устройство не зарегистрировано' });
     }
 
-    const { chatId, replyToId, expirySeconds, envelopes, blobIds = [] } = req.body || {};
+    const {
+        chatId, replyToId, expirySeconds, envelopes = [], keyEnvelopes = [], group = null, blobIds = [],
+    } = req.body || {};
     const replyTo = Number(replyToId) || null;
 
     if (!Array.isArray(blobIds) || blobIds.length > MAX_BLOBS_PER_MESSAGE
@@ -1478,16 +1579,34 @@ app.post('/api/messages/encrypted', async (req, res) => {
         return res.status(400).json({ success: false, message: 'Некорректный список вложений' });
     }
 
-    if (!Array.isArray(envelopes) || envelopes.length === 0) {
-        return res.status(400).json({ success: false, message: 'Нет конвертов' });
+    if (!Array.isArray(envelopes) || !Array.isArray(keyEnvelopes)) {
+        return res.status(400).json({ success: false, message: 'Конверты должны быть массивом' });
     }
-    if (envelopes.length > MAX_ENVELOPES) {
+    // Содержимое идёт либо попарно, либо одним групповым шифротекстом. Оба
+    // сразу означали бы, что разные устройства прочтут разное.
+    if (group ? envelopes.length > 0 : envelopes.length === 0) {
+        return res.status(400).json({ success: false, message: group
+            ? 'Групповое сообщение не несёт попарных конвертов'
+            : 'Нет конвертов' });
+    }
+    if (!group && keyEnvelopes.length > 0) {
+        return res.status(400).json({ success: false, message: 'Раздача ключа — только с групповым сообщением' });
+    }
+    if (envelopes.length > MAX_ENVELOPES || keyEnvelopes.length > MAX_ENVELOPES) {
         return res.status(400).json({ success: false, message: `Не больше ${MAX_ENVELOPES} конвертов` });
+    }
+    const groupPayload = group ? parseGroupPayload(group) : null;
+    if (groupPayload && groupPayload.message) {
+        return res.status(400).json({ success: false, message: groupPayload.message });
     }
 
     try {
         const chat = await dbGet('SELECT * FROM chats WHERE id = $1 AND user_id = $2', [chatId, req.session.userId]);
         if (!chat) return res.status(404).json({ success: false, message: 'Чат не найден' });
+
+        if (groupPayload && !chat.room_id) {
+            return res.status(400).json({ success: false, message: 'Групповое шифрование — только для комнат' });
+        }
 
         const senderDeviceId = req.session.deviceId;
         const allowed = await resolveEnvelopeRecipients(chat);
@@ -1495,33 +1614,12 @@ app.post('/api/messages/encrypted', async (req, res) => {
 
         // Разбор и проверка до единой записи в БД: половина вставленных
         // конвертов хуже отказа — сообщение прочитается у части устройств.
-        const parsed = [];
-        const seen = new Set();
-        for (const item of envelopes) {
-            const deviceId = Number(item && item.recipientDeviceId);
-            if (!Number.isInteger(deviceId) || deviceId <= 0) {
-                return res.status(400).json({ success: false, message: 'Некорректный recipientDeviceId' });
-            }
-            if (seen.has(deviceId)) {
-                return res.status(400).json({ success: false, message: `Дубликат конверта для устройства ${deviceId}` });
-            }
-            // Адресовать конверт устройству вне чата нельзя: иначе сервер
-            // превращается в хранилище, куда можно писать кому угодно.
-            if (!allowedIds.has(deviceId)) {
-                return res.status(403).json({ success: false, message: `Устройство ${deviceId} не участвует в чате` });
-            }
-            const type = Number(item.envelopeType);
-            if (type !== 1 && type !== 2) {
-                return res.status(400).json({ success: false, message: 'envelopeType должен быть 1 (prekey) или 2 (normal)' });
-            }
-            const header = decodeB64(item.header, MAX_HEADER_B64, 'header');
-            if (header.error) return res.status(400).json({ success: false, message: header.error });
-            const ciphertext = decodeB64(item.ciphertext, MAX_CIPHERTEXT_B64, 'ciphertext');
-            if (ciphertext.error) return res.status(400).json({ success: false, message: ciphertext.error });
-
-            seen.add(deviceId);
-            parsed.push({ deviceId, type, header: header.buf, ciphertext: ciphertext.buf });
-        }
+        const content = parseEnvelopeList(envelopes, allowedIds, 'envelopes');
+        if (content.status) return res.status(content.status).json({ success: false, message: content.message });
+        const keys = parseEnvelopeList(keyEnvelopes, allowedIds, 'keyEnvelopes');
+        if (keys.status) return res.status(keys.status).json({ success: false, message: keys.message });
+        const parsed = content.parsed;
+        const seen = content.seen;
 
         // Привязать можно только своё, ещё не отправленное вложение из этого
         // же чата. Иначе можно было бы «переотправить» чужой файл в другой
@@ -1572,6 +1670,21 @@ app.post('/api/messages/encrypted', async (req, res) => {
                     [messageId, e.deviceId, senderDeviceId, e.type, e.header, e.ciphertext]
                 );
             }
+            if (groupPayload) {
+                await client.query(
+                    'INSERT INTO message_group_payloads (message_id, header, ciphertext, signature) VALUES ($1, $2, $3, $4)',
+                    [messageId, groupPayload.header, groupPayload.ciphertext, groupPayload.signature]
+                );
+            }
+            for (const e of keys.parsed) {
+                const row = await client.query(
+                    `INSERT INTO sender_key_envelopes
+                        (room_id, sender_user_id, sender_device_id, recipient_device_id, envelope_type, header, ciphertext)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+                    [chat.room_id, req.session.userId, senderDeviceId, e.deviceId, e.type, e.header, e.ciphertext]
+                );
+                e.id = Number(row.rows[0].id);
+            }
             await client.query('COMMIT');
         } catch (err) {
             await client.query('ROLLBACK');
@@ -1607,18 +1720,45 @@ app.post('/api/messages/encrypted', async (req, res) => {
             status: 'sent',
         };
 
-        // Каждому устройству — только его конверт. Общий broadcast тут не
-        // годится: конверты разные, и отдать устройству чужой означало бы
-        // рассылать шифротекст, который оно всё равно не прочитает.
-        for (const e of parsed) {
-            io.to(`device:${e.deviceId}`).emit('newMessage', {
-                ...base,
-                envelope: {
-                    envelope_type: e.type,
-                    header: e.header.toString('base64'),
-                    ciphertext: e.ciphertext.toString('base64'),
-                },
-            });
+        if (groupPayload) {
+            // Групповой шифротекст — всем устройствам комнаты, кроме
+            // отправляющего (оно дорисует сообщение само). Конверт с ключом —
+            // только тем, кому он предназначен.
+            const groupOut = {
+                header: b64(groupPayload.header),
+                ciphertext: b64(groupPayload.ciphertext),
+                signature: b64(groupPayload.signature),
+            };
+            const keyByDevice = new Map(keys.parsed.map(e => [e.deviceId, {
+                id: e.id,
+                sender_device_id: senderDeviceId,
+                envelope_type: e.type,
+                header: b64(e.header),
+                ciphertext: b64(e.ciphertext),
+            }]));
+            for (const d of allowed) {
+                if (d.id === senderDeviceId) continue;
+                io.to(`device:${d.id}`).emit('newMessage', {
+                    ...base,
+                    envelope: null,
+                    group: groupOut,
+                    keyEnvelope: keyByDevice.get(d.id) || null,
+                });
+            }
+        } else {
+            // Каждому устройству — только его конверт. Общий broadcast тут не
+            // годится: конверты разные, и отдать устройству чужой означало бы
+            // рассылать шифротекст, который оно всё равно не прочитает.
+            for (const e of parsed) {
+                io.to(`device:${e.deviceId}`).emit('newMessage', {
+                    ...base,
+                    envelope: {
+                        envelope_type: e.type,
+                        header: b64(e.header),
+                        ciphertext: b64(e.ciphertext),
+                    },
+                });
+            }
         }
 
         res.json({
@@ -1626,8 +1766,10 @@ app.post('/api/messages/encrypted', async (req, res) => {
             message: base,
             // Устройства чата, для которых конверта не прислали: клиент
             // должен увидеть это и добрать их ключи, иначе там сообщение
-            // не прочитается.
-            missingDeviceIds: allowed.filter(d => !seen.has(d.id)).map(d => d.id),
+            // не прочитается. У группового сообщения конверта нет почти ни у
+            // кого (ключ у них уже есть), и кто его прочтёт, знает только
+            // отправитель.
+            missingDeviceIds: groupPayload ? [] : allowed.filter(d => !seen.has(d.id)).map(d => d.id),
             socketRoomKey,
         });
     } catch (error) {
@@ -1636,6 +1778,29 @@ app.post('/api/messages/encrypted', async (req, res) => {
         }
         console.error('Encrypted message error:', error);
         res.status(500).json({ success: false, message: 'Не удалось отправить сообщение' });
+    }
+});
+
+/**
+ * POST /api/sender-keys/ack — устройство забрало конверты с sender key.
+ * Удалять можно только адресованное этому устройству.
+ */
+app.post('/api/sender-keys/ack', async (req, res) => {
+    if (!req.session.userId) return res.status(401).json({ success: false, message: 'Не авторизован' });
+    if (!req.session.deviceId) return res.status(409).json({ success: false, message: 'Устройство не зарегистрировано' });
+    const ids = Array.isArray(req.body && req.body.ids) ? req.body.ids.map(Number) : [];
+    if (ids.length === 0 || ids.length > MAX_ENVELOPES || !ids.every(id => Number.isInteger(id) && id > 0)) {
+        return res.status(400).json({ success: false, message: 'Некорректный список конвертов' });
+    }
+    try {
+        const result = await pool.query(
+            'DELETE FROM sender_key_envelopes WHERE id = ANY($1::bigint[]) AND recipient_device_id = $2',
+            [ids, req.session.deviceId]
+        );
+        res.json({ success: true, deleted: result.rowCount });
+    } catch (error) {
+        console.error('Sender key ack error:', error);
+        res.status(500).json({ success: false, message: 'Не удалось подтвердить получение ключей' });
     }
 });
 
@@ -1710,9 +1875,43 @@ app.get('/api/messages/:chatId', async (req, res) => {
             }
         }
 
+        // Групповой шифротекст одинаков для всех устройств комнаты.
+        const groupMap = {};
+        const encryptedMessageIds = messages.filter(m => m.encrypted).map(m => m.id);
+        if (encryptedMessageIds.length > 0) {
+            const payloads = await dbAll(
+                'SELECT message_id, header, ciphertext, signature FROM message_group_payloads WHERE message_id = ANY($1::int[])',
+                [encryptedMessageIds]
+            );
+            payloads.forEach(p => {
+                groupMap[p.message_id] = { header: b64(p.header), ciphertext: b64(p.ciphertext), signature: b64(p.signature) };
+            });
+        }
+
+        // Ещё не забранные этим устройством sender keys этой комнаты. Клиент
+        // обрабатывает их ДО сообщений: без ключа групповые не расшифровать.
+        let keyEnvelopes = [];
+        if (req.session.deviceId && chat.room_id) {
+            keyEnvelopes = (await dbAll(
+                `SELECT id, sender_user_id, sender_device_id, envelope_type, header, ciphertext
+                 FROM sender_key_envelopes
+                 WHERE recipient_device_id = $1 AND room_id = $2
+                 ORDER BY id ASC`,
+                [req.session.deviceId, chat.room_id]
+            )).map(e => ({
+                id: Number(e.id),
+                sender_user_id: e.sender_user_id,
+                sender_device_id: e.sender_device_id,
+                envelope_type: e.envelope_type,
+                header: b64(e.header),
+                ciphertext: b64(e.ciphertext),
+            }));
+        }
+
         messages = messages.map(m => ({
             ...m,
             reactions: reactionsMap[m.id] || [],
+            group: m.encrypted ? (groupMap[m.id] || null) : undefined,
             // Для зашифрованного сообщения без конверта клиент обязан
             // показать заглушку, а не пустое сообщение: это либо устройство
             // подключили после отправки (историю оно не получает), либо
@@ -1726,7 +1925,7 @@ app.get('/api/messages/:chatId', async (req, res) => {
             : 'UPDATE messages SET status = $1 WHERE chat_id = $2 AND sent = 0';
         await dbRun(updateQuery, ['read', selectParam]);
 
-        res.json({ success: true, messages, chat });
+        res.json({ success: true, messages, chat, keyEnvelopes });
     } catch (error) {
         console.error('Get messages error:', error);
         res.json({ success: false, message: 'Ошибка загрузки сообщений' });
@@ -1902,6 +2101,14 @@ app.delete('/api/chats/:chatId', async (req, res) => {
 
         if (chat.room_id) {
             await dbRun('DELETE FROM room_participants WHERE room_id = $1 AND user_id = $2', [chat.room_id, req.session.userId]);
+            // Ключи группы, которые ушедший так и не забрал, ему больше не
+            // нужны. Остальные участники сменят свои sender keys при
+            // следующей отправке: клиент видит, что устройство пропало.
+            await dbRun(
+                `DELETE FROM sender_key_envelopes WHERE room_id = $1
+                 AND recipient_device_id IN (SELECT id FROM devices WHERE user_id = $2)`,
+                [chat.room_id, req.session.userId]
+            );
             const remaining = await dbGet('SELECT COUNT(*) as cnt FROM room_participants WHERE room_id = $1', [chat.room_id]);
             await dbRun('DELETE FROM unread WHERE chat_id = $1', [chatId]);
             await dbRun('DELETE FROM chats WHERE id = $1 AND user_id = $2', [chatId, req.session.userId]);
@@ -1935,6 +2142,12 @@ app.put('/api/messages/:messageId', async (req, res) => {
     try {
         const message = await dbGet('SELECT * FROM messages WHERE id = $1 AND user_id = $2', [messageId, req.session.userId]);
         if (!message) return res.json({ success: false, message: 'Сообщение не найдено' });
+        // Правка шла бы открытым текстом: этот эндпоинт кладёт новый текст в
+        // messages.text и рассылает его всем. Для зашифрованного сообщения
+        // это означало бы выложить на сервер то, что было зашифровано.
+        if (message.encrypted) {
+            return res.status(409).json({ success: false, message: 'Зашифрованные сообщения нельзя редактировать' });
+        }
         const editedAt = new Date().toISOString();
         const trimmedText = text.trim();
         await dbRun('UPDATE messages SET text = $1, edited_at = $2 WHERE id = $3', [trimmedText, editedAt, messageId]);

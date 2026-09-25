@@ -20,6 +20,9 @@ import {
     ENVELOPE_PREKEY, ENVELOPE_NORMAL,
 } from '../public/crypto/e2ee.js';
 import { userFingerprint, combineFingerprints, formatSafetyNumber } from '../public/crypto/safety.js';
+import {
+    createSenderKey, senderKeyDistribution, encryptGroup, importDistribution, decryptGroup, parseGroupHeader,
+} from '../public/crypto/group.js';
 
 let fails = 0;
 const check = (label, cond, detail = '') => {
@@ -340,6 +343,67 @@ check('второе сообщение расшифровано', await recv(bob
     const forged = { ...b2, dhKey: (await dev(3)).dhKey };
     check('подмена одного лишь DH-ключа меняет отпечаток', fb !== await userFingerprint(20, [b1, forged]));
     await throws('без устройств отпечатка нет', () => userFingerprint(20, []));
+}
+
+// --- sender keys -----------------------------------------------------------
+{
+    const alice = await createSenderKey();
+    const dist = senderKeyDistribution(alice);
+    const bob = importDistribution(dist);
+    const carol = importDistribution(dist);
+
+    const m1 = await encryptGroup(alice, 'всем привет');
+    check('один шифротекст читают все получатели',
+        await decryptGroup(bob, m1.header, m1.ciphertext, m1.signature) === 'всем привет' &&
+        await decryptGroup(carol, m1.header, m1.ciphertext, m1.signature) === 'всем привет');
+    check('заголовок — 21 байт, номер растёт', m1.header.length === 21 && parseGroupHeader(m1.header).iteration === 0);
+
+    await throws('повтор того же сообщения не проходит',
+        () => decryptGroup(bob, m1.header, m1.ciphertext, m1.signature));
+
+    const m2 = await encryptGroup(alice, 'второе');
+    const m3 = await encryptGroup(alice, 'третье');
+    check('доставка не по порядку: сначала третье',
+        await decryptGroup(bob, m3.header, m3.ciphertext, m3.signature) === 'третье');
+    check('потом второе — ключ из пропущенных',
+        await decryptGroup(bob, m2.header, m2.ciphertext, m2.signature) === 'второе');
+
+    const m4 = await encryptGroup(alice, 'подпись');
+    const flipped = m4.ciphertext.slice(); flipped[0] ^= 1;
+    await throws('подменённый шифротекст не проходит проверку подписи',
+        () => decryptGroup(carol, m4.header, flipped, m4.signature), /подпись/);
+
+    // Участник знает цепочку, но не ключ подписи отправителя — подделать
+    // сообщение от его имени не может.
+    const forger = await createSenderKey();
+    Object.assign(forger, { distributionId: alice.distributionId, chainKey: alice.chainKey, iteration: alice.iteration });
+    const forged = await encryptGroup(forger, 'от имени Алисы');
+    await throws('участник не может писать от чужого имени',
+        () => decryptGroup(carol, forged.header, forged.ciphertext, forged.signature), /подпись/);
+    check('после подделки сессия не сдвинулась', carol.iteration === 1);
+    check('и настоящее сообщение читается',
+        await decryptGroup(carol, m4.header, m4.ciphertext, m4.signature) === 'подпись');
+
+    // Новый участник получает ТЕКУЩЕЕ состояние цепочки.
+    const dave = importDistribution(senderKeyDistribution(alice));
+    await throws('новый участник не читает то, что было до него',
+        () => decryptGroup(dave, m1.header, m1.ciphertext, m1.signature));
+    const m5 = await encryptGroup(alice, 'для всех, включая новенького');
+    check('а новое — читает', await decryptGroup(dave, m5.header, m5.ciphertext, m5.signature) === 'для всех, включая новенького');
+
+    const other = await createSenderKey();
+    const foreign = await encryptGroup(other, 'чужой ключ');
+    await throws('сообщение под другим sender key отвергается',
+        () => decryptGroup(bob, foreign.header, foreign.ciphertext, foreign.signature), /другим sender key/);
+
+    const far = await createSenderKey();
+    const farSession = importDistribution(senderKeyDistribution(far));
+    far.iteration = 5000;
+    const jump = await encryptGroup(far, 'далеко');
+    await throws('пропуск больше предела отвергается',
+        () => decryptGroup(farSession, jump.header, jump.ciphertext, jump.signature), /предел/);
+
+    await throws('битая distribution отвергается', () => importDistribution({ ...dist, chain: 'AAAA' }));
 }
 
 console.log(fails ? `\n${fails} проверок провалено` : '\nвсе проверки пройдены');

@@ -15,6 +15,10 @@ import {
 } from './e2ee.js';
 import * as store from './store.js';
 import { userFingerprint, combineFingerprints } from './safety.js';
+import {
+    createSenderKey, senderKeyDistribution, encryptGroup,
+    importDistribution, distributionKey, decryptGroup, parseGroupHeader,
+} from './group.js';
 
 // Пул одноразовых prekeys. Каждый входящий первый контакт съедает один,
 // поэтому пул пополняется заранее: пустой пул не ломает связь, но первое
@@ -226,24 +230,31 @@ async function assertVerifiedTargets(targets) {
     }
 }
 
+/* ------------------------------------------------------------------
+   Очередь
+   ------------------------------------------------------------------ */
+
+// Шифрование и расшифровка двигают одно и то же состояние: сессии Double
+// Ratchet и цепочки sender keys. Два параллельных вызова загрузили бы одну
+// версию, и второй затёр бы сохранённое первым — сессия разошлась бы с
+// собеседником. Поэтому всё, что меняет это состояние, идёт строго по
+// одному, в порядке вызова.
+let queue = Promise.resolve();
+function serialized(fn) {
+    const run = queue.then(fn);
+    queue = run.catch(() => {});
+    return run;
+}
+
+/* ------------------------------------------------------------------
+   Попарное шифрование
+   ------------------------------------------------------------------ */
+
 /**
- * Собрать конверты для всех устройств чата.
- *
- * Собственное устройство исключается: свой открытый текст кладётся в
- * локальное хранилище (store.sentPlaintext), и конверт себе не нужен.
+ * Зашифровать одну и ту же строку попарно для каждого из targets.
+ * Возвращает конверты и устройства, отвергнутые из-за подмены ключа.
  */
-export async function encryptForChat(chatId, plaintext) {
-    if (!state.ready) throw new Error('E2EE не инициализирован');
-
-    const info = await state.api(`/api/chats/${chatId}/devices`);
-    if (!info || !info.success) throw new Error('не удалось получить список устройств чата');
-
-    const targets = info.devices.filter(d => d.device_id !== state.deviceId);
-    if (targets.length === 0) return { envelopes: [], targets: [], rejected: [] };
-    // До запроса bundle: он расходует одноразовые prekeys, а отправка всё
-    // равно не состоится.
-    await assertVerifiedTargets(targets);
-
+async function encryptPairwise(targets, plaintext) {
     const live = new Map();
     const needBundle = [];
     for (const target of targets) {
@@ -299,34 +310,26 @@ export async function encryptForChat(chatId, plaintext) {
         await saveSession(target.user_id, target.device_id, session);
     }
 
-    return { envelopes, targets, rejected };
+    return { envelopes, rejected };
 }
 
 /**
- * Расшифровать входящий конверт.
- *
- * Возвращает строку либо null — читать нечем. null не ошибка: так выглядит
- * сообщение, отправленное до того, как это устройство появилось, и клиент
- * обязан показать заглушку, а не пустой пузырь.
+ * Открыть попарный конверт. Возвращает строку либо null — прочитать нечем.
+ * В кэш ничего не кладёт: что это — содержимое или раздача ключа, решает
+ * вызывающий.
  */
-export async function decryptIncoming(message) {
-    if (!state.ready || !message || !message.envelope) return null;
-
-    const senderDeviceId = message.envelope.sender_device_id || message.sender_device_id;
-    const senderUserId = message.user_id;
+async function openEnvelope(senderUserId, senderDeviceId, envelope) {
     if (!senderDeviceId || !senderUserId) return null;
 
-    const headerBytes = fromB64(message.envelope.header);
-    const ciphertext = fromB64(message.envelope.ciphertext);
-    const isPrekey = Number(message.envelope.envelope_type) === ENVELOPE_PREKEY;
+    const headerBytes = fromB64(envelope.header);
+    const ciphertext = fromB64(envelope.ciphertext);
+    const isPrekey = Number(envelope.envelope_type) === ENVELOPE_PREKEY;
 
-    let session = await loadSession(senderUserId, senderDeviceId);
-
+    const session = await loadSession(senderUserId, senderDeviceId);
     if (session) {
         try {
             const text = await decryptToText(session, headerBytes, ciphertext);
             await saveSession(senderUserId, senderDeviceId, session);
-            await store.plaintext.save(message.id, text);
             return text;
         } catch (e) {
             // Существующая сессия не подошла. Для prekey-сообщения это
@@ -336,7 +339,6 @@ export async function decryptIncoming(message) {
                 console.warn('[E2EE] сообщение не расшифровано:', e.message);
                 return null;
             }
-            session = null;
         }
     }
 
@@ -360,7 +362,6 @@ export async function decryptIncoming(message) {
         const text = await decryptToText(fresh, headerBytes, ciphertext);
         await rememberIdentity(senderUserId, senderDeviceId, signingKey, dhKey);
         await saveSession(senderUserId, senderDeviceId, fresh);
-        await store.plaintext.save(message.id, text);
         // Входящий первый контакт съел одноразовый prekey — пул мог
         // просесть, проверяем не дожидаясь следующего запуска.
         replenishOneTimePrekeys();
@@ -369,6 +370,279 @@ export async function decryptIncoming(message) {
         console.warn('[E2EE] не удалось построить сессию:', e.message);
         return null;
     }
+}
+
+/* ------------------------------------------------------------------
+   Шифрование для чата
+   ------------------------------------------------------------------ */
+
+// С какого числа участников комната шифруется sender keys. Разговор двоих
+// остаётся попарным: у Double Ratchet есть DH-рэтчет, и утечка состояния
+// «лечится» следующим же ответом собеседника, а у sender keys его нет.
+const GROUP_MIN_USERS = 3;
+// Свой sender key меняется не только при уходе участника, но и по числу
+// сообщений и возрасту: так утёкшее состояние цепочки открывает
+// ограниченный кусок переписки, а устройство, по какой-то причине не
+// получившее ключ, со временем получит новый.
+const SENDER_KEY_MAX_MESSAGES = 1000;
+const SENDER_KEY_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const DISTRIBUTION_TYPE = 'skdm';
+
+const noop = async () => {};
+
+/**
+ * Зашифровать сообщение для всех устройств чата, кроме своего.
+ *
+ * Возвращает { mode, envelopes, keyEnvelopes, group, targets, rejected,
+ * undelivered, readers, commit }:
+ *   - mode 'pairwise' — содержимое в envelopes, конверт на каждое устройство;
+ *   - mode 'group' — содержимое в group (один шифротекст на всех), а в
+ *     keyEnvelopes — sender key для устройств, у которых его ещё нет;
+ *   - readers — сколько устройств смогут прочитать сообщение;
+ *   - commit() надо вызвать, когда сервер принял сообщение: только тогда
+ *     раздача ключа считается состоявшейся.
+ */
+export function encryptForChat(chatId, plaintext) {
+    return serialized(() => encryptForChatNow(chatId, plaintext));
+}
+
+async function encryptForChatNow(chatId, plaintext) {
+    if (!state.ready) throw new Error('E2EE не инициализирован');
+
+    const info = await state.api(`/api/chats/${chatId}/devices`);
+    if (!info || !info.success) throw new Error('не удалось получить список устройств чата');
+
+    // Собственное устройство исключается: свой открытый текст кладётся в
+    // локальное хранилище, и конверт себе не нужен.
+    const targets = info.devices.filter(d => d.device_id !== state.deviceId);
+    if (targets.length === 0) {
+        return {
+            mode: 'none', envelopes: [], keyEnvelopes: [], group: null, targets,
+            rejected: [], undelivered: [], readers: 0, commit: noop,
+        };
+    }
+    // До запроса bundle: он расходует одноразовые prekeys, а отправка всё
+    // равно не состоится.
+    await assertVerifiedTargets(targets);
+
+    const users = new Set(info.devices.map(d => d.user_id));
+    if (info.room_id && users.size >= GROUP_MIN_USERS) {
+        return encryptForGroup(info.room_id, targets, plaintext);
+    }
+
+    const { envelopes, rejected } = await encryptPairwise(targets, plaintext);
+    return {
+        mode: 'pairwise', envelopes, keyEnvelopes: [], group: null, targets,
+        rejected, undelivered: [], readers: envelopes.length, commit: noop,
+    };
+}
+
+/**
+ * Групповой режим. sentTo у своего sender key — устройства, которым он уже
+ * роздан: им достаётся только шифротекст, остальным ещё и конверт с ключом.
+ */
+async function encryptForGroup(roomId, targets, plaintext) {
+    const targetIds = new Set(targets.map(t => t.device_id));
+    let senderKey = await store.senderKeys.load(roomId);
+    const mustRotate = !senderKey
+        || senderKey.iteration >= SENDER_KEY_MAX_MESSAGES
+        || Date.now() - senderKey.createdAt > SENDER_KEY_MAX_AGE_MS
+        // Кто-то из получивших ключ пропал из чата: ушёл сам или отозвал
+        // устройство. Старым ключом он читал бы и всё, что будет дальше.
+        || senderKey.sentTo.some(id => !targetIds.has(id));
+    if (mustRotate) senderKey = { ...(await createSenderKey()), sentTo: [] };
+
+    const needKey = targets.filter(t => !senderKey.sentTo.includes(t.device_id));
+    let keyEnvelopes = [];
+    let rejected = [];
+    if (needKey.length > 0) {
+        // Раздаётся состояние цепочки ДО этого сообщения: получатели должны
+        // прочитать и его.
+        const distribution = JSON.stringify({
+            v: 1, t: DISTRIBUTION_TYPE, room: roomId, ...senderKeyDistribution(senderKey),
+        });
+        ({ envelopes: keyEnvelopes, rejected } = await encryptPairwise(needKey, distribution));
+    }
+    const delivered = keyEnvelopes.map(e => e.recipientDeviceId);
+    const readers = targets.filter(t =>
+        senderKey.sentTo.includes(t.device_id) || delivered.includes(t.device_id)).length;
+    const undelivered = needKey.map(t => t.device_id)
+        .filter(id => !delivered.includes(id) && !rejected.includes(id));
+
+    // Прочитать не сможет никто — шифровать незачем. Номер в цепочке при
+    // этом не тратится.
+    if (readers === 0) {
+        return {
+            mode: 'group', envelopes: [], keyEnvelopes: [], group: null, targets,
+            rejected, undelivered, readers: 0, commit: noop,
+        };
+    }
+
+    const encrypted = await encryptGroup(senderKey, plaintext);
+    // Цепочка сохраняется ДО отправки — см. encryptGroup: повтор номера с
+    // другим текстом недопустим, даже если отправка не удастся.
+    await store.senderKeys.save(roomId, senderKey);
+
+    const distributionId = toB64(senderKey.distributionId);
+    return {
+        mode: 'group',
+        envelopes: [],
+        keyEnvelopes,
+        group: {
+            header: toB64(encrypted.header),
+            ciphertext: toB64(encrypted.ciphertext),
+            signature: toB64(encrypted.signature),
+        },
+        targets,
+        rejected,
+        undelivered,
+        readers,
+        commit: () => serialized(async () => {
+            const current = await store.senderKeys.load(roomId);
+            // Пока шла отправка, ключ мог смениться — тогда отметка не нужна.
+            if (!current || toB64(current.distributionId) !== distributionId) return;
+            current.sentTo = [...new Set([...current.sentTo, ...delivered])];
+            await store.senderKeys.save(roomId, current);
+        }),
+    };
+}
+
+/* ------------------------------------------------------------------
+   Приём sender keys
+   ------------------------------------------------------------------ */
+
+function parseDistribution(text) {
+    if (typeof text !== 'string' || !text.startsWith('{')) return null;
+    try {
+        const d = JSON.parse(text);
+        return d && d.v === 1 && d.t === DISTRIBUTION_TYPE ? d : null;
+    } catch {
+        return null;
+    }
+}
+
+async function importKeyDistribution(senderUserId, senderDeviceId, d) {
+    const roomId = Number(d.room);
+    if (!Number.isInteger(roomId) || roomId <= 0) throw new Error('distribution: некорректная комната');
+    const session = importDistribution(d);
+    const key = distributionKey(session.distributionId);
+    // Уже известный ключ не перезаписываем: у сохранённого могут быть
+    // пропущенные ключи сообщений, которых нет в повторной раздаче.
+    if (await store.groupSessions.load(roomId, senderDeviceId, key)) return;
+    // Устройство принадлежит одному пользователю. Запоминаем кому, чтобы
+    // сервер не мог выдать сообщение этого устройства за чужое.
+    session.senderUserId = senderUserId;
+    await store.groupSessions.save(roomId, senderDeviceId, key, session);
+}
+
+// Конверт с ключом может прийти дважды: по сокету и в истории, пока
+// подтверждение ещё не дошло до сервера. Второй раз его не расшифровать
+// (ключ сообщения одноразовый), и пытаться незачем.
+const processedKeyEnvelopes = new Set();
+
+async function acceptKeyEnvelopes(list) {
+    const done = [];
+    for (const e of list) {
+        if (processedKeyEnvelopes.has(e.id)) continue;
+        processedKeyEnvelopes.add(e.id);
+        try {
+            const text = await openEnvelope(e.sender_user_id, e.sender_device_id, e);
+            const d = parseDistribution(text);
+            if (d) await importKeyDistribution(e.sender_user_id, e.sender_device_id, d);
+            else if (text !== null) console.warn('[E2EE] в конверте ключа не раздача ключа — пропущен');
+        } catch (err) {
+            console.warn('[E2EE] sender key не принят:', err.message);
+        }
+        // Подтверждаем в любом случае: повторно этот конверт всё равно не
+        // расшифровать.
+        done.push(e.id);
+    }
+    if (done.length > 0) {
+        try {
+            await state.api('/api/sender-keys/ack', { method: 'POST', body: JSON.stringify({ ids: done }) });
+        } catch (err) {
+            console.warn('[E2EE] не удалось подтвердить получение ключей:', err.message);
+        }
+    }
+}
+
+/** Конверты с sender keys из истории чата — обработать до сообщений. */
+export function processKeyEnvelopes(list) {
+    if (!state.ready || !Array.isArray(list) || list.length === 0) return Promise.resolve();
+    return serialized(() => acceptKeyEnvelopes(list));
+}
+
+async function openGroupMessage(message) {
+    const senderDeviceId = message.sender_device_id;
+    const roomId = message.room_id;
+    if (!senderDeviceId || !roomId) return null;
+    try {
+        const header = fromB64(message.group.header);
+        const key = distributionKey(parseGroupHeader(header).distributionId);
+        const session = await store.groupSessions.load(roomId, senderDeviceId, key);
+        // Ключа нет: сообщение отправлено до того, как это устройство
+        // появилось в группе, — как и в попарной схеме, это заглушка.
+        if (!session || session.senderUserId !== message.user_id) return null;
+        const text = await decryptGroup(session, header,
+            fromB64(message.group.ciphertext), fromB64(message.group.signature));
+        await store.groupSessions.save(roomId, senderDeviceId, key, session);
+        return text;
+    } catch (e) {
+        console.warn('[E2EE] групповое сообщение не расшифровано:', e.message);
+        return null;
+    }
+}
+
+/* ------------------------------------------------------------------
+   Расшифровка
+   ------------------------------------------------------------------ */
+
+/**
+ * Расшифровать входящее сообщение.
+ *
+ * Возвращает строку либо null — читать нечем. null не ошибка: так выглядит
+ * сообщение, отправленное до того, как это устройство появилось, и клиент
+ * обязан показать заглушку, а не пустой пузырь.
+ */
+export function decryptIncoming(message) {
+    return serialized(() => decryptIncomingNow(message));
+}
+
+async function decryptIncomingNow(message) {
+    if (!state.ready || !message) return null;
+    const senderUserId = message.user_id;
+
+    // По сокету конверт с ключом приходит вместе с сообщением. Он первым:
+    // без ключа групповое сообщение не расшифровать.
+    if (message.keyEnvelope) {
+        await acceptKeyEnvelopes([{ ...message.keyEnvelope, sender_user_id: senderUserId }]);
+    }
+
+    if (message.group) {
+        const text = await openGroupMessage(message);
+        if (text !== null) await store.plaintext.save(message.id, text);
+        return text;
+    }
+
+    if (!message.envelope) return null;
+    const senderDeviceId = message.envelope.sender_device_id || message.sender_device_id;
+    const text = await openEnvelope(senderUserId, senderDeviceId, message.envelope);
+    if (text === null) return null;
+
+    // Раздача ключа — служебное, а не содержимое. Если она пришла как
+    // обычное сообщение (так её мог бы подсунуть сервер), ключ принимаем,
+    // но показывать нечего.
+    const d = parseDistribution(text);
+    if (d) {
+        try {
+            await importKeyDistribution(senderUserId, senderDeviceId, d);
+        } catch (err) {
+            console.warn('[E2EE] sender key не принят:', err.message);
+        }
+        return null;
+    }
+    await store.plaintext.save(message.id, text);
+    return text;
 }
 
 /* Локальный кэш расшифрованного — см. комментарий у store.plaintext. */

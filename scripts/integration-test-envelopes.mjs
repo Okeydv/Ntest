@@ -184,6 +184,49 @@ check('одно вложение нельзя отправить дважды',
   [w1, w2].filter(r => r.json?.success).length === 1 && countAfter === countBefore + 1,
   `статусы ${w1.status}, ${w2.status}; сообщений +${countAfter - countBefore}`);
 
+// --- групповой режим (sender keys) --------------------------------------
+const bytes = n => Buffer.alloc(n, 7).toString('base64');
+const group = { header: bytes(21), ciphertext: b64('один шифротекст на всех'), signature: bytes(64) };
+const keyFor = id => ({ recipientDeviceId: id, envelopeType: 2, header: b64('kh'), ciphertext: b64('sender key') });
+
+const waitGB1 = waitMsg(sB1), waitGB2 = waitMsg(sB2);
+const gSent = await req(A.j, 'POST', '/api/messages/encrypted', { chatId: chatIdA, group, keyEnvelopes: [keyFor(b1)] });
+check('групповое сообщение принято', gSent.json?.success === true, JSON.stringify(gSent.json)?.slice(0, 120));
+check('у группового сообщения нет «недостающих» устройств', gSent.json?.missingDeviceIds?.length === 0);
+const [onB1, onB2] = await Promise.all([waitGB1, waitGB2]);
+check('шифротекст по сокету получают все устройства',
+  onB1?.group?.ciphertext === group.ciphertext && onB2?.group?.ciphertext === group.ciphertext);
+check('конверт с ключом — только тому, кому он адресован',
+  onB1?.keyEnvelope?.ciphertext === b64('sender key') && onB2?.keyEnvelope === null);
+
+const gHist = await req(B.j, 'GET', `/api/messages/${chatIdB}`);
+const gMsg = gHist.json.messages.find(m => m.id === gSent.json.message.id);
+check('в истории групповое сообщение несёт шифротекст', gMsg?.group?.signature === group.signature && gMsg.envelope === null);
+const pending = gHist.json.keyEnvelopes ?? [];
+check('в истории — ещё не забранный ключ', pending.length === 1 && pending[0].sender_device_id === a1);
+const foreignAck = await req(Bj2, 'POST', '/api/sender-keys/ack', { ids: [pending[0].id] });
+check('чужой конверт с ключом подтвердить нельзя', foreignAck.json?.deleted === 0);
+const ownAck = await req(B.j, 'POST', '/api/sender-keys/ack', { ids: [pending[0].id] });
+check('свой — можно, и он удаляется', ownAck.json?.deleted === 1 &&
+  (await req(B.j, 'GET', `/api/messages/${chatIdB}`)).json.keyEnvelopes.length === 0);
+
+const mixed = await req(A.j, 'POST', '/api/messages/encrypted', { chatId: chatIdA, group,
+  envelopes: [{ recipientDeviceId: b1, envelopeType: 2, header: b64('h'), ciphertext: b64('c') }] });
+check('групповое и попарное содержимое сразу не принимается', mixed.status === 400, 'status ' + mixed.status);
+const keysOnly = await req(A.j, 'POST', '/api/messages/encrypted', { chatId: chatIdA,
+  envelopes: [{ recipientDeviceId: b1, envelopeType: 2, header: b64('h'), ciphertext: b64('c') }], keyEnvelopes: [keyFor(b1)] });
+check('раздача ключа без группового сообщения не принимается', keysOnly.status === 400, 'status ' + keysOnly.status);
+const badHeader = await req(A.j, 'POST', '/api/messages/encrypted', { chatId: chatIdA, group: { ...group, header: bytes(20) } });
+check('групповой заголовок неверной длины отвергается', badHeader.status === 400, 'status ' + badHeader.status);
+const outsiderKey = await req(A.j, 'POST', '/api/messages/encrypted', { chatId: chatIdA, group, keyEnvelopes: [keyFor(c1)] });
+check('ключ устройству вне чата не принимается', outsiderKey.status === 403, 'status ' + outsiderKey.status);
+
+// --- правка зашифрованного сообщения ------------------------------------
+const edit = await req(A.j, 'PUT', `/api/messages/${gSent.json.message.id}`, { text: 'открытым текстом' });
+const afterEdit = (await req(B.j, 'GET', `/api/messages/${chatIdB}`)).json.messages.find(m => m.id === gSent.json.message.id);
+check('зашифрованное сообщение нельзя «править» открытым текстом',
+  edit.status === 409 && afterEdit.text === null, `status ${edit.status}, text ${JSON.stringify(afterEdit?.text)}`);
+
 // --- чат с ботом не шифруется ------------------------------------------
 // У Боба два устройства. Если бы получателями бот-чата считались его
 // устройства, сообщения боту уходили бы шифротекстом и бот бы молчал.
