@@ -20,7 +20,9 @@ const rateLimit = require('express-rate-limit');
 const { ipKeyGenerator } = rateLimit;
 
 // Импорт новых модулей безопасности и приватности
-const { stripMetadataFromFile, VIDEO_WITH_METADATA } = require('./lib/metadata-stripper');
+const { stripMetadataFromFile } = require('./lib/metadata-stripper');
+const { shared } = require('./lib/shared');
+const { secureCookieFor, sessionCookieSecurity } = require('./lib/cookie-security');
 const { sweepOrphanUploads } = require('./lib/upload-sweeper');
 const DisappearingMessagesManager = require('./lib/disappearing-messages');
 const {
@@ -65,66 +67,28 @@ async function fetchAnonymousIdentity() {
     return null;
 }
 
-const ALLOWED_MIME_TYPES = [
-    'image/jpeg', 'image/png', 'image/gif', 'image/webp',
-    'video/mp4', 'video/webm', 'video/quicktime',
-    'application/pdf', 'text/plain',
-];
-
-// Жёсткий маппинг mimetype -> расширение на диске. Расширение НИКОГДА не
-// берётся из file.originalname (см. п.2 аудита): имя, присланное клиентом —
-// это просто строка, и path.extname() от неё может вернуть что угодно вплоть
-// до '.png"><svg onload=alert(1)>', что затем всплывает в file_url и рискует
-// быть вставлено как HTML. Здесь расширение выбирается только из этого
-// фиксированного списка по уже провалидированному через ALLOWED_MIME_TYPES
-// mimetype, так что итоговое имя файла всегда полностью предсказуемо.
-const MIME_EXTENSIONS = {
-    'image/jpeg': '.jpg',
-    'image/png': '.png',
-    'image/gif': '.gif',
-    'image/webp': '.webp',
-    'video/mp4': '.mp4',
-    'video/webm': '.webm',
-    'video/quicktime': '.mov',
-    'application/pdf': '.pdf',
-    'text/plain': '.txt',
-};
+// Какие вложения принимаются — общий с браузером список
+// (public/crypto/filetypes.js): один на оба пути, открытый и
+// зашифрованный. Тип определяется по содержимому файла, а не по тому, что
+// объявил клиент. Расширение на диске берётся из этого же списка по уже
+// проверенному типу и НИКОГДА из file.originalname (см. п.2 аудита): имя,
+// присланное клиентом, — просто строка, и path.extname() от неё может
+// вернуть что угодно вплоть до '.png"><svg onload=alert(1)>'.
+let fileTypes = null;
+const fileTypesReady = shared('filetypes.js').then(m => { fileTypes = m; return m; });
 
 // '.svg' явно в блок-листе как доп. защита (defense-in-depth, п.7 аудита):
-// image/svg+xml и так не входит в ALLOWED_MIME_TYPES, но SVG может нести
+// image/svg+xml и так не входит в список типов, но SVG может нести
 // <script>, поэтому расширение блокируется отдельно на случай, если формат
 // когда-либо попадёт в разрешённый список по ошибке.
 const BLOCKED_EXTENSIONS = new Set(['.html', '.htm', '.php', '.exe', '.js', '.sh', '.py', '.rb', '.pl', '.bat', '.cmd', '.ps1', '.vbs', '.jar', '.msi', '.svg']);
 
 // Итоговое имя файла на диске должно состоять только из "безопасных" для
-// файловой системы символов — доп. страховка на случай, если MIME_EXTENSIONS
+// файловой системы символов — доп. страховка на случай, если список типов
 // когда-нибудь получит некорректное значение (п.2 аудита, "валидировать
 // итоговое имя файла регуляркой").
 const SAFE_FILENAME_RE = /^[\w.-]+$/;
 
-function checkMagicBytes(buffer, mimetype) {
-    if (!buffer || buffer.length < 4) return false;
-    const b = buffer;
-    if (mimetype === 'image/jpeg') return b[0] === 0xFF && b[1] === 0xD8 && b[2] === 0xFF;
-    if (mimetype === 'image/png')  return b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47;
-    if (mimetype === 'image/gif')  return b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46;
-    if (mimetype === 'image/webp') return b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46;
-    if (mimetype === 'application/pdf') return b[0] === 0x25 && b[1] === 0x50 && b[2] === 0x44 && b[3] === 0x46;
-    // Единственная надёжная сигнатура MP4/ISO-BMFF — 'ftyp' на смещении 4-7.
-    // Раньше был ещё fallback b[0]===0 && b[1]===0 — под него подходит куча
-    // произвольных бинарных форматов, так что от него больше вреда, чем пользы.
-    if (mimetype === 'video/mp4')  return b[4] === 0x66 && b[5] === 0x74 && b[6] === 0x79 && b[7] === 0x70;
-    // WebM — всегда EBML-контейнер (1A 45 DF A3). Раньше здесь же проверялся
-    // audio/ogg, поэтому в качестве альтернативы допускалась и Ogg-сигнатура,
-    // из-за чего Ogg-файл проходил валидацию как video/webm. Аудио больше не
-    // загружается, так что проверка сузилась до одной корректной сигнатуры.
-    if (mimetype === 'video/webm') {
-        return b[0] === 0x1A && b[1] === 0x45 && b[2] === 0xDF && b[3] === 0xA3;
-    }
-    if (mimetype === 'text/plain') return true;
-    if (mimetype === 'video/quicktime') return b[4] === 0x66 && b[5] === 0x74 && b[6] === 0x79 && b[7] === 0x70;
-    return false;
-}
 const upload = multer({
     storage: multer.diskStorage({
         destination: (req, file, cb) => {
@@ -133,10 +97,10 @@ const upload = multer({
             cb(null, dir);
         },
         filename: (req, file, cb) => {
-            // Расширение — только из MIME_EXTENSIONS (жёсткий маппинг по
-            // уже проверенному в fileFilter mimetype), никогда из
-            // file.originalname — см. комментарий у MIME_EXTENSIONS выше.
-            const ext = MIME_EXTENSIONS[file.mimetype] || '';
+            // Расширение — только из общего списка типов (по уже
+            // проверенному в fileFilter mimetype), никогда из
+            // file.originalname — см. комментарий у fileTypes выше.
+            const ext = fileTypes.ATTACHMENT_TYPES[file.mimetype].ext;
             const safeName = `${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`;
             if (!SAFE_FILENAME_RE.test(safeName)) {
                 return cb(new Error('Не удалось сформировать безопасное имя файла'));
@@ -146,14 +110,13 @@ const upload = multer({
     }),
     limits: { fileSize: 50 * 1024 * 1024 },
     fileFilter: (req, file, cb) => {
-        const ext = path.extname(file.originalname).toLowerCase();
-        if (BLOCKED_EXTENSIONS.has(ext)) {
-            return cb(new Error('Неподдерживаемый тип файла'), false);
-        }
-        if (!ALLOWED_MIME_TYPES.includes(file.mimetype)) {
-            return cb(new Error('Неподдерживаемый тип файла'), false);
-        }
-        cb(null, true);
+        fileTypesReady.then(types => {
+            const ext = path.extname(file.originalname).toLowerCase();
+            if (BLOCKED_EXTENSIONS.has(ext) || !types.ATTACHMENT_TYPES[file.mimetype]) {
+                return cb(new Error('Неподдерживаемый тип файла'), false);
+            }
+            cb(null, true);
+        }, cb);
     }
 });
 
@@ -279,7 +242,38 @@ if (process.env.NODE_ENV === 'production') {
     }
 }
 
-const io = new Server(server);
+/**
+ * Проверка Origin у сокета.
+ *
+ * Сессионная кука уходит и с чужих страниц, а socket.io на рукопожатии
+ * смотрит только на неё. Без этой проверки любой сайт, который открыл
+ * вошедший пользователь, мог подключиться от его имени и получать события
+ * его чатов: метаданные переписки и открытый текст чатов без шифрования.
+ * SameSite=Lax закрывает это частично, проверка Origin — полностью.
+ *
+ * Разрешён Origin того же хоста, что и запрос, плюс список из
+ * ALLOWED_ORIGINS — для случаев, когда прокси переписывает Host (добавьте
+ * туда и .onion-адрес). Запрос без Origin пропускается: браузер всегда
+ * ставит его на межсайтовом WebSocket и XHR, а без него приходят не
+ * браузерные клиенты — у них нет чужой куки.
+ */
+const ALLOWED_ORIGINS = new Set((process.env.ALLOWED_ORIGINS || '')
+    .split(',').map(s => s.trim().replace(/\/+$/, '')).filter(Boolean));
+
+function isAllowedOrigin(req) {
+    const origin = req.headers.origin;
+    if (!origin) return true;
+    if (ALLOWED_ORIGINS.has(origin)) return true;
+    try {
+        return new URL(origin).host === req.headers.host;
+    } catch {
+        return false;
+    }
+}
+
+const io = new Server(server, {
+    allowRequest: (req, callback) => callback(null, isAllowedOrigin(req)),
+});
 const ipConnectionCount = new Map();
 
 setInterval(() => {
@@ -762,10 +756,15 @@ const sessionMiddleware = session({
     cookie: {
         maxAge: 24 * 60 * 60 * 1000,
         httpOnly: true,
+        // Уточняется на каждом запросе — см. lib/cookie-security.js.
         secure: process.env.NODE_ENV === 'production',
-        sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax'
+        // Было 'none' в production: кука уходила и с чужих сайтов. Фронтенд
+        // отдаёт этот же сервер, так что межсайтовая кука не нужна.
+        sameSite: 'lax'
     }
 });
+
+
 
 io.use((socket, next) => {
     sessionMiddleware(socket.request, socket.request.res || {}, next);
@@ -844,8 +843,8 @@ app.use((req, res, next) => {
     if (cookieWasMissing) {
         res.cookie('csrf_token', issuedToken, {
             httpOnly: false,
-            sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'lax',
+            secure: secureCookieFor(req),
             maxAge: 24 * 60 * 60 * 1000
         });
     }
@@ -884,11 +883,15 @@ app.use((req, res, next) => {
     res.set('Content-Security-Policy', `default-src 'self'; script-src 'self' 'nonce-${nonce}'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' ws: wss:; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; object-src 'none'`);
     res.set('X-Frame-Options', 'DENY');
     res.set('X-Content-Type-Options', 'nosniff');
-    res.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+    // Referrer-Policy здесь не ставится: её задаёт getPrivacyHeaders()
+    // (no-referrer). Раньше эта строка её перезаписывала на
+    // strict-origin-when-cross-origin, и адрес мессенджера уходил сайтам
+    // по ссылкам из переписки.
     next();
 });
 
 app.use(sessionMiddleware);
+app.use(sessionCookieSecurity());
 app.use(express.static(path.join(__dirname, 'public')));
 
 // pdf-lib для браузера: в зашифрованном чате метаданные PDF снимает
@@ -2220,6 +2223,17 @@ app.delete('/api/messages/:messageId', async (req, res) => {
         res.json({ success: false, message: 'Ошибка удаления' });
     }
 });
+/**
+ * Имя файла из multipart. Браузер присылает его в UTF-8, а multer (busboy)
+ * читает как latin1 — русские имена превращались в «Ð·Ð°Ð¼ÐµÑ…». Если после
+ * перекодировки получается некорректный UTF-8, значит имя и было latin1 —
+ * оставляем как есть.
+ */
+function decodeUploadName(name) {
+    const utf8 = Buffer.from(String(name || ''), 'latin1').toString('utf8');
+    return utf8.includes('\uFFFD') ? String(name || '') : utf8;
+}
+
 // multer(upload.single('file')) уже записал файл на диск ДО этого хендлера —
 // значит, ранние return (401/400/404) должны сами убирать за собой, иначе
 // каждая неудачная/подделанная попытка загрузки будет накапливать файлы-сироты.
@@ -2247,11 +2261,14 @@ app.post('/api/messages/file', upload.single('file'), async (req, res) => {
 
     const uploadedFilePath = path.join(__dirname, 'uploads', file.filename);
     try {
-        const buffer = Buffer.alloc(12);
-        const fd = fs.openSync(uploadedFilePath, 'r');
-        fs.readSync(fd, buffer, 0, 12, 0);
-        fs.closeSync(fd);
-        if (!checkMagicBytes(buffer, file.mimetype)) {
+        // Тип — по всему содержимому, а не по первым байтам: text/plain
+        // раньше не проверялся вовсе, и JPEG с координатами, названный
+        // .txt, уходил мимо очистки. Видео MP4/MOV/3GP — один контейнер, и
+        // расхождение внутри семейства не считается подменой.
+        const detected = fileTypes.detectType(await fs.promises.readFile(uploadedFilePath));
+        const sameFamily = detected === file.mimetype
+            || (fileTypes.ISO_BMFF_TYPES.has(detected) && fileTypes.ISO_BMFF_TYPES.has(file.mimetype));
+        if (!sameFamily) {
             fs.unlinkSync(uploadedFilePath);
             return res.status(400).json({ success: false, message: 'Содержимое файла не соответствует его типу' });
         }
@@ -2260,7 +2277,7 @@ app.post('/api/messages/file', upload.single('file'), async (req, res) => {
         // файл не отправляется: молча раздать фото с координатами хуже,
         // чем не отправить его вовсе.
         if (file.mimetype.startsWith('image/') || file.mimetype === 'application/pdf'
-            || VIDEO_WITH_METADATA.has(file.mimetype)) {
+            || fileTypes.ISO_BMFF_TYPES.has(file.mimetype)) {
             try {
                 await stripMetadataFromFile(uploadedFilePath, file.mimetype);
             } catch (stripErr) {
@@ -2292,10 +2309,13 @@ app.post('/api/messages/file', upload.single('file'), async (req, res) => {
         const socketRoomKey = getSocketRoomKey(chatId, roomId);
         const fileUrl = `/uploads/${file.filename}`;
         const fileType = file.mimetype;
-        const sanitizedFileName = path.basename(file.originalname).slice(0, 200).replace(/[<>&"']/g, '');
+        // Имя фото и видео выдаёт дату, время и приложение — оно
+        // заменяется нейтральным; имя документа остаётся (см. filetypes.js).
+        const sanitizedFileName = fileTypes.attachmentName(fileType, path.basename(decodeUploadName(file.originalname)))
+            .slice(0, 200).replace(/[<>&"']/g, '');
 
         const messageType = fileType.startsWith('image/') ? 'image' : fileType.startsWith('video/') ? 'video' : 'file';
-        const messageText = text ? String(text).trim() : file.originalname;
+        const messageText = text ? String(text).trim() : sanitizedFileName;
 
         const result = await pool.query(
             'INSERT INTO messages (chat_id, room_id, user_id, text, file_url, file_name, file_type, message_type, sent, time, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id',
@@ -2565,7 +2585,7 @@ app.use((err, req, res, next) => {
         return res.status(400).json({ success: false, message: `Ошибка загрузки: ${err.message}` });
     }
     if (err.message === 'Неподдерживаемый тип файла') {
-        return res.status(400).json({ success: false, message: 'Разрешены только фото, видео, аудио и PDF' });
+        return res.status(400).json({ success: false, message: 'Этот тип файла не поддерживается: можно фото, видео, PDF и текст' });
     }
     console.error('Unhandled error:', err);
     res.status(500).json({ success: false, message: 'Внутренняя ошибка сервера' });

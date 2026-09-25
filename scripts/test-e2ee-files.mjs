@@ -10,6 +10,9 @@
 //   - файл, который не картинка, можно только скачать, но не открыть
 //   - видео (MP4) и PDF уходят без метаданных: координат, модели, автора —
 //     и после очистки видео воспроизводится, а PDF открывается
+//   - тип определяется по содержимому: AVIF перерисовывается в JPEG, HEIC,
+//     который браузер не открывает, и TIFF не уходят, JPEG под видом .txt
+//     чистится как фото; имена фото и видео заменяются нейтральными
 //   - удаление сообщения удаляет вложение с диска по-настоящему
 //   - шапка чата честно говорит, шифруется ли переписка
 //
@@ -26,7 +29,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { withIphoneMetadata, boxes, GPS, MODEL } from './lib/mp4-fixtures.mjs';
+import { withIphoneMetadata, syntheticMp4, boxes, GPS, MODEL } from './lib/mp4-fixtures.mjs';
 
 const require = createRequire(import.meta.url);
 const { PDFDocument, PDFName, PDFString } = require('pdf-lib');
@@ -297,6 +300,80 @@ const gotPdf = await receivedBytes(bob.page, '#chat-messages a[download="contrac
 check('получатель видит PDF', !!gotPdf);
 check('в полученном PDF нет ни автора, ни XMP', gotPdf && !gotPdf.includes(AUTHOR) && !gotPdf.includes('xmpmeta'));
 check('и он открывается', gotPdf && (await PDFDocument.load(gotPdf)).getPageCount() === 1);
+
+/* ------------------------- тип по содержимому и имена ------------------------- */
+
+// Расшифрованная полезная нагрузка последнего вложения у получателя.
+const payloadOf = (page, selector) => page.evaluate(async selector => {
+    const nodes = document.querySelectorAll(selector);
+    const node = nodes[nodes.length - 1];
+    if (!node) return null;
+    const client = await import('/crypto/client.js');
+    const p = JSON.parse(await client.recallPlaintext(node.closest('.message').dataset.messageId));
+    return { mime: p.mime, name: p.name };
+}, selector);
+const messageCount = page => page.evaluate(() => document.querySelectorAll('#chat-messages .message').length);
+const lastToast = page => page.evaluate(() => document.getElementById('toast').textContent);
+async function sendFile(filePath) {
+    await alice.page.setInputFiles('#file-input', filePath);
+    await alice.page.waitForTimeout(1500);
+}
+
+const photoPayload = await payloadOf(bob.page, '#chat-messages img.message-image');
+check('имя фото нейтральное: IMG_0001.jpg ушло как photo.jpg', photoPayload?.name === 'photo.jpg', JSON.stringify(photoPayload));
+const videoPayload = await payloadOf(bob.page, '#chat-messages video');
+check('и видео: IMG_0002.mp4 ушло как video.mp4', videoPayload?.name === 'video.mp4', JSON.stringify(videoPayload));
+
+const avifPath = path.join(tmp, 'IMG_0003.avif');
+fs.writeFileSync(avifPath, await sharp({ create: { width: 32, height: 24, channels: 3, background: '#d5733a' } })
+    .avif().withExifMerge({ IFD0: { Copyright: AUTHOR, Make: 'Canon' } }).toBuffer());
+const avifHadExif = fs.readFileSync(avifPath).includes(AUTHOR);
+const imagesBefore = await bob.page.evaluate(() => document.querySelectorAll('#chat-messages img.message-image').length);
+await sendFile(avifPath);
+await bob.page.waitForFunction(n => document.querySelectorAll('#chat-messages img.message-image').length > n,
+    imagesBefore, { timeout: 8000 }).catch(() => {});
+const avifPayload = await payloadOf(bob.page, '#chat-messages img.message-image');
+const avifBytes = await receivedBytes(bob.page, '#chat-messages img.message-image');
+check('AVIF перерисован в JPEG и назван photo.jpg',
+    avifPayload?.mime === 'image/jpeg' && avifPayload.name === 'photo.jpg' && avifBytes?.[0] === 0xff && avifBytes[1] === 0xd8,
+    JSON.stringify(avifPayload));
+check('и метаданных в нём нет', avifHadExif && avifBytes && !avifBytes.includes(AUTHOR) && !avifBytes.includes('Canon'),
+    `в исходнике EXIF: ${avifHadExif}`);
+
+// HEIC, который этот браузер (Chromium) декодировать не умеет.
+const heicPath = path.join(tmp, 'IMG_0004.HEIC');
+fs.writeFileSync(heicPath, Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypheic'), Buffer.alloc(12), Buffer.from('GPS 55.7558')]));
+let count = await messageCount(alice.page);
+await sendFile(heicPath);
+check('HEIC, который браузер не открывает, не уходит, и сказано, что делать',
+    await messageCount(alice.page) === count && /HEIC.*JPEG/.test(await lastToast(alice.page)), await lastToast(alice.page));
+
+const tiffPath = path.join(tmp, 'scan.tiff');
+fs.writeFileSync(tiffPath, await sharp({ create: { width: 8, height: 8, channels: 3, background: '#000' } }).tiff().toBuffer());
+count = await messageCount(alice.page);
+await sendFile(tiffPath);
+check('TIFF не уходит: такого типа нет в списке', await messageCount(alice.page) === count
+    && /не поддерживается/.test(await lastToast(alice.page)), await lastToast(alice.page));
+
+const disguisedPath = path.join(tmp, 'notes.txt');
+fs.writeFileSync(disguisedPath, fs.readFileSync(photoPath));
+const imgs = await bob.page.evaluate(() => document.querySelectorAll('#chat-messages img.message-image').length);
+await sendFile(disguisedPath);
+await bob.page.waitForFunction(n => document.querySelectorAll('#chat-messages img.message-image').length > n,
+    imgs, { timeout: 8000 }).catch(() => {});
+const disguisedPayload = await payloadOf(bob.page, '#chat-messages img.message-image');
+const disguisedBytes = await receivedBytes(bob.page, '#chat-messages img.message-image');
+check('JPEG под видом .txt распознан по содержимому и очищен как фото',
+    disguisedPayload?.mime === 'image/jpeg' && disguisedPayload.name === 'photo.jpg'
+    && disguisedBytes && !disguisedBytes.includes(AUTHOR), JSON.stringify(disguisedPayload));
+
+const gpPath = path.join(tmp, 'VID_0005.3gp');
+fs.writeFileSync(gpPath, syntheticMp4({ brand: '3gp4' }).bytes);
+await sendFile(gpPath);
+await bob.page.waitForSelector('#chat-messages a[download="video.3gp"]', { timeout: 8000 }).catch(() => {});
+const gpBytes = await receivedBytes(bob.page, '#chat-messages a[download="video.3gp"]');
+check('3GP уходит без координат и модели, под нейтральным именем',
+    gpBytes && !gpBytes.includes(GPS) && !gpBytes.includes(MODEL));
 
 /* ------------------------- история после перезагрузки ------------------------- */
 

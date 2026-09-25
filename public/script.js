@@ -1424,8 +1424,24 @@ async function handleFileUpload() {
         return;
     }
 
+    // Открытый путь готовит файл так же: HEIC превращается в JPEG, имя фото
+    // и видео — в нейтральное. Сервер всё равно проверит и почистит сам,
+    // но переименовать HEIC в JPEG он не может, а имя видит уже в запросе.
+    let upload = file;
+    let uploadName = file.name;
+    if (e2ee) {
+        try {
+            const prepared = await e2ee.prepareAttachment(file);
+            upload = prepared.blob;
+            uploadName = prepared.name;
+        } catch (error) {
+            showToast(`Файл не отправлен: ${error.message}`, 'error');
+            return;
+        }
+    }
+
     const formData = new FormData();
-    formData.append('file', file);
+    formData.append('file', upload, uploadName);
     formData.append('chatId', chatId);
 
     const res = await fetch('/api/messages/file', {

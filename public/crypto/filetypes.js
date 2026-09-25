@@ -1,0 +1,87 @@
+// Какие вложения принимаются и как они называются. Общий для браузера и
+// сервера модуль: список разрешённых типов один на оба пути.
+//
+// Тип определяется по СОДЕРЖИМОМУ, а не по расширению и не по тому, что
+// объявил браузер. Иначе JPEG с координатами, переименованный в .txt, ушёл
+// бы «текстом» мимо очистки, а HEIC с GPS — как «незнакомый файл».
+
+export const ATTACHMENT_TYPES = {
+    'image/jpeg': { ext: '.jpg', neutral: 'photo' },
+    'image/png': { ext: '.png', neutral: 'photo' },
+    'image/webp': { ext: '.webp', neutral: 'photo' },
+    'image/gif': { ext: '.gif', neutral: 'animation' },
+    'video/mp4': { ext: '.mp4', neutral: 'video' },
+    'video/quicktime': { ext: '.mov', neutral: 'video' },
+    'video/3gpp': { ext: '.3gp', neutral: 'video' },
+    'video/webm': { ext: '.webm', neutral: 'video' },
+    'application/pdf': { ext: '.pdf' },
+    'text/plain': { ext: '.txt' },
+};
+
+// Эти форматы в исходном виде не отправляются: браузер декодирует их и
+// перерисовывает в JPEG (метаданные при этом не переносятся). Не умеет
+// декодировать — файл не уходит. Через cleanIsoBmff их пускать нельзя:
+// HEIF и AVIF — тоже ISO BMFF, но картинка там лежит в блоке meta, и
+// «очистка» стёрла бы само изображение.
+export const CONVERT_TO_JPEG = new Set(['image/heic', 'image/avif']);
+
+// Видео в контейнере ISO BMFF — чистятся cleanIsoBmff.
+export const ISO_BMFF_TYPES = new Set(['video/mp4', 'video/quicktime', 'video/3gpp']);
+
+const HEIF_BRANDS = new Set(['heic', 'heix', 'hevc', 'hevx', 'heim', 'heis', 'hevm', 'hevs', 'mif1', 'msf1']);
+const AVIF_BRANDS = new Set(['avif', 'avis']);
+const AUDIO_BRANDS = new Set(['M4A ', 'M4B ', 'M4P ', 'F4A ', 'F4B ']);
+
+const ascii = (b, from, len) => String.fromCharCode(...b.subarray(from, from + len));
+const startsWith = (b, sig) => b.length >= sig.length && sig.every((x, i) => x === b[i]);
+
+/**
+ * Файл — обычный текст: корректный UTF-8 без нулевых байтов. Нулевой байт
+ * в тексте не встречается, зато есть в любом бинарном формате.
+ */
+export function isPlainText(bytes) {
+    if (bytes.includes(0)) return false;
+    try {
+        new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/** Тип файла по содержимому или null, если формат не поддерживается. */
+export function detectType(input) {
+    const b = input instanceof Uint8Array ? input : new Uint8Array(input);
+    if (startsWith(b, [0xff, 0xd8, 0xff])) return 'image/jpeg';
+    if (startsWith(b, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return 'image/png';
+    if (b.length >= 6 && (ascii(b, 0, 6) === 'GIF87a' || ascii(b, 0, 6) === 'GIF89a')) return 'image/gif';
+    if (b.length >= 12 && ascii(b, 0, 4) === 'RIFF' && ascii(b, 8, 4) === 'WEBP') return 'image/webp';
+    if (b.length >= 5 && ascii(b, 0, 5) === '%PDF-') return 'application/pdf';
+    if (startsWith(b, [0x1a, 0x45, 0xdf, 0xa3])) return 'video/webm';
+    if (b.length >= 12 && ascii(b, 4, 4) === 'ftyp') {
+        const brand = ascii(b, 8, 4);
+        if (HEIF_BRANDS.has(brand)) return 'image/heic';
+        if (AVIF_BRANDS.has(brand)) return 'image/avif';
+        if (AUDIO_BRANDS.has(brand)) return null;
+        if (brand === 'qt  ') return 'video/quicktime';
+        if (brand.startsWith('3g')) return 'video/3gpp';
+        return 'video/mp4';
+    }
+    if (isPlainText(b)) return 'text/plain';
+    return null;
+}
+
+/**
+ * Имя, под которым файл уходит собеседнику.
+ *
+ * Имя фото и видео выдаёт дату, время и приложение
+ * (IMG_20260925_185512.jpg, Screenshot_…_com.whatsapp.jpg), поэтому оно
+ * заменяется нейтральным, с расширением по фактическому типу. Имя документа
+ * человек выбирал сам, и получателю оно нужно — оно остаётся.
+ */
+export function attachmentName(mime, originalName) {
+    const spec = ATTACHMENT_TYPES[mime];
+    if (spec && spec.neutral) return spec.neutral + spec.ext;
+    const name = String(originalName || '').replace(/[\\/\u0000-\u001f]/g, '').trim().slice(0, 255);
+    return name || `file${spec ? spec.ext : ''}`;
+}

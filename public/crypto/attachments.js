@@ -9,7 +9,8 @@
 // он отдельно от e2ee.js — ядро крипты остаётся чистым и тестируемым в Node.
 
 import { toB64, fromB64 } from './e2ee.js';
-import { cleanIsoBmff, cleanPdf, ISO_BMFF_TYPES } from './metadata.js';
+import { cleanIsoBmff, cleanPdf } from './metadata.js';
+import { detectType, attachmentName, ATTACHMENT_TYPES, CONVERT_TO_JPEG, ISO_BMFF_TYPES } from './filetypes.js';
 
 const subtle = globalThis.crypto.subtle;
 
@@ -81,89 +82,96 @@ export function payloadPreview(p) {
 }
 
 /* ========================================================================
-   Метаданные изображений
+   Подготовка вложения: тип, очистка, имя
    ===================================================================== */
 
-// Под E2EE сервер файл не видит и срезать EXIF не может. Но собеседник видит:
-// без очистки на клиенте он получил бы GPS-координаты, которые раньше срезал
-// сервер. Шифрование не должно делать переписку менее приватной, чем была.
-//
-// Очистка — перерисовка через canvas: так же поступал сервер (sharp
-// перекодирует). createImageBitmap применяет EXIF-ориентацию к пикселям, а
-// canvas при экспорте не пишет ни EXIF, ни XMP, ни IPTC.
+// Под E2EE сервер файл не видит и снять метаданные не может, а собеседник
+// видит всё. Поэтому файл готовит отправитель — до шифрования. В открытом
+// чате (бот, собеседника пока нет) тот же путь проходится перед загрузкой,
+// а сервер чистит ещё раз: ему клиент не указ.
+
+// JPEG, PNG и WebP перерисовываются через canvas: createImageBitmap
+// применяет EXIF-ориентацию к пикселям, а canvas при экспорте не пишет ни
+// EXIF, ни XMP, ни IPTC.
 const REENCODE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 // GIF не перерисовывается: canvas сохранил бы только первый кадр.
-// GPS-метаданных в GIF на практике не бывает — стандарта EXIF для него нет.
 export const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
 export const VIDEO_TYPES = new Set(['video/mp4', 'video/webm', 'video/quicktime']);
 
 const JPEG_QUALITY = 0.92;
-
-/**
- * Возвращает { blob, mime, sanitized }.
- *
- * Если перерисовать не удалось — исключение, а не исходный файл. Молча
- * отправить фото с координатами хуже, чем не отправить его вовсе.
- */
-export async function sanitizeImage(file) {
-    if (!REENCODE_TYPES.has(file.type)) {
-        return { blob: file, mime: file.type || 'application/octet-stream', sanitized: false };
-    }
-    let bitmap;
-    try {
-        bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
-    } catch {
-        throw new Error('не удалось прочитать изображение для очистки метаданных');
-    }
-    try {
-        const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-        canvas.getContext('2d').drawImage(bitmap, 0, 0);
-        const out = await canvas.convertToBlob({ type: file.type, quality: JPEG_QUALITY });
-        // Если браузер не умеет кодировать в исходный формат (например, WebP),
-        // он молча вернёт PNG — тип берём из результата, а не из исходника.
-        return { blob: out, mime: out.type, sanitized: true };
-    } finally {
-        bitmap.close();
-    }
-}
-
-/* ========================================================================
-   Метаданные видео и PDF
-   ===================================================================== */
 
 // pdf-lib весит полмегабайта, поэтому грузится только когда прикладывают PDF.
 let pdfLib = null;
 const loadPdfLib = () => (pdfLib = pdfLib || import('/vendor/pdf-lib.esm.min.js'));
 
 /**
- * Снять метаданные с вложения, если формат их несёт: фото — перерисовкой,
- * MP4/MOV — обезвреживанием блоков с координатами и датами, PDF —
- * пересохранением без Info и XMP. Возвращает { blob, mime, sanitized }.
- *
- * Не удалось — исключение, файл не уходит: как и с фото, молча отправить
- * видео с координатами хуже, чем не отправить его вовсе.
+ * Перерисовать картинку. targetType — в каком формате сохранить; если
+ * браузер в него не кодирует (WebP в Safari), он молча вернёт PNG — тип
+ * берётся из результата.
  */
-export async function sanitizeAttachment(file) {
-    if (REENCODE_TYPES.has(file.type)) return sanitizeImage(file);
-    if (ISO_BMFF_TYPES.has(file.type)) {
-        let cleaned;
+async function redraw(blob, targetType) {
+    const bitmap = await createImageBitmap(blob, { imageOrientation: 'from-image' });
+    try {
+        const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+        canvas.getContext('2d').drawImage(bitmap, 0, 0);
+        return await canvas.convertToBlob({ type: targetType, quality: JPEG_QUALITY });
+    } finally {
+        bitmap.close();
+    }
+}
+
+/**
+ * Подготовить файл к отправке. Возвращает { blob, mime, name }.
+ *
+ * - тип определяется по содержимому (filetypes.js); всё, чего нет в
+ *   списке, не уходит — в том числе TIFF, DNG, HEIC, который браузер не
+ *   умеет открыть;
+ * - HEIC и AVIF перерисовываются в JPEG, если браузер умеет их декодировать —
+ *   это проверяется пробной расшифровкой, а не по названию браузера;
+ * - фото перерисовываются, из MP4/MOV/3GP убираются координаты и даты, PDF
+ *   пересохраняется без автора и XMP;
+ * - имя фото и видео заменяется нейтральным, с расширением по итоговому типу.
+ *
+ * Не удалось — исключение, а не исходный файл: молча отправить фото с
+ * координатами хуже, чем не отправить его вовсе.
+ */
+export async function prepareAttachment(file) {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const detected = detectType(bytes);
+    if (!detected || !(detected in ATTACHMENT_TYPES || CONVERT_TO_JPEG.has(detected))) {
+        throw new Error('этот тип файла не поддерживается');
+    }
+
+    let blob = new Blob([bytes], { type: detected });
+    if (CONVERT_TO_JPEG.has(detected)) {
         try {
-            cleaned = cleanIsoBmff(new Uint8Array(await file.arrayBuffer())).bytes;
+            blob = await redraw(blob, 'image/jpeg');
+        } catch {
+            const format = detected === 'image/heic' ? 'HEIC' : 'AVIF';
+            throw new Error(`этот браузер не умеет открывать ${format} — сохраните фото как JPEG`);
+        }
+    } else if (REENCODE_TYPES.has(detected)) {
+        try {
+            blob = await redraw(blob, detected);
+        } catch {
+            throw new Error('не удалось прочитать изображение для очистки метаданных');
+        }
+    } else if (ISO_BMFF_TYPES.has(detected)) {
+        try {
+            blob = new Blob([cleanIsoBmff(bytes).bytes], { type: detected });
         } catch {
             throw new Error('не удалось удалить метаданные из видео');
         }
-        return { blob: new Blob([cleaned], { type: file.type }), mime: file.type, sanitized: true };
-    }
-    if (file.type === 'application/pdf') {
-        let cleaned;
+    } else if (detected === 'application/pdf') {
         try {
-            cleaned = await cleanPdf(new Uint8Array(await file.arrayBuffer()), await loadPdfLib());
+            blob = new Blob([await cleanPdf(bytes, await loadPdfLib())], { type: detected });
         } catch {
             throw new Error('не удалось удалить метаданные из PDF (возможно, он защищён паролем)');
         }
-        return { blob: new Blob([cleaned], { type: file.type }), mime: file.type, sanitized: true };
     }
-    return { blob: file, mime: file.type || 'application/octet-stream', sanitized: false };
+
+    const mime = blob.type || detected;
+    return { blob, mime, name: attachmentName(mime, file.name) };
 }
 
 /* ========================================================================
@@ -178,7 +186,7 @@ export async function sanitizeAttachment(file) {
  * GCM-тег проверяется ключом, который сервер не видит.
  */
 export async function encryptAttachment(file) {
-    const { blob, mime } = await sanitizeAttachment(file);
+    const { blob, mime, name } = await prepareAttachment(file);
     const plain = new Uint8Array(await blob.arrayBuffer());
 
     const key = await subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
@@ -191,7 +199,7 @@ export async function encryptAttachment(file) {
         meta: {
             key: toB64(rawKey),
             iv: toB64(iv),
-            name: (file.name || 'file').slice(0, MAX_NAME),
+            name: name.slice(0, MAX_NAME),
             mime,
             size: plain.length,
         },

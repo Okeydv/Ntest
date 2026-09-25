@@ -160,6 +160,36 @@ check('и без сдвигов: размер тот же, данные на м�
 const brokenClip = await upload(A, chatIdA, 'broken.mp4', 'video/mp4', mp4.subarray(0, mp4.length - 30));
 check('битое видео не отправляется «как есть»', brokenClip.status === 400, brokenClip.json?.message);
 
+/* ------------------------- тип по содержимому и имена ------------------------- */
+
+const named = await upload(A, chatIdA, 'IMG_20260925_185512.jpg', 'image/jpeg', jpeg);
+check('имя фото заменяется нейтральным — дата и время съёмки не уходят',
+    named.json?.message?.file_name === 'photo.jpg' && named.json.message.text === 'photo.jpg',
+    `${named.json?.message?.file_name} / ${named.json?.message?.text}`);
+const clipName = (await upload(A, chatIdA, 'VID_20260925_185512.mp4', 'video/mp4', mp4)).json?.message?.file_name;
+check('и имя видео', clipName === 'video.mp4', clipName);
+
+const disguised = await upload(A, chatIdA, 'notes.txt', 'text/plain', jpeg);
+check('JPEG под видом .txt не проходит мимо очистки', disguised.status === 400, disguised.json?.message);
+const nul = await upload(A, chatIdA, 'notes.txt', 'text/plain', Buffer.from('текст\0с нулевым байтом'));
+check('«текст» с нулевым байтом — не текст', nul.status === 400, nul.json?.message);
+const badUtf = await upload(A, chatIdA, 'notes.txt', 'text/plain', Buffer.from([0x68, 0x69, 0xff, 0xfe]));
+check('и некорректный UTF-8 — тоже', badUtf.status === 400, badUtf.json?.message);
+const notes = await upload(A, chatIdA, 'заметки к встрече.txt', 'text/plain', Buffer.from('Настоящий текст\nв UTF-8'));
+check('настоящий текст принимается, имя документа остаётся',
+    notes.json?.success === true && notes.json.message.file_name === 'заметки к встрече.txt', notes.json?.message?.file_name);
+
+const { bytes: threeGp } = syntheticMp4({ brand: '3gp4' });
+const gp = await upload(A, chatIdA, 'VID_0001.3gp', 'video/3gpp', threeGp);
+check('3GP принимается и называется нейтрально', gp.json?.success === true && gp.json.message.file_name === 'video.3gp',
+    JSON.stringify(gp.json)?.slice(0, 100));
+const gotGp = gp.json?.success ? (await download(B, gp.json.message.file_url)).bytes : Buffer.alloc(0);
+check('из 3GP координаты и модель тоже убираются', gotGp.length > 0 && !gotGp.includes(GPS) && !gotGp.includes(MODEL));
+
+const heic = Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypheic'), Buffer.alloc(12), Buffer.from('GPS 55.7558')]);
+const heicUp = await upload(A, chatIdA, 'IMG_0001.HEIC', 'image/heic', heic);
+check('HEIC напрямую на сервер не принимается (его перерисовывает браузер)', heicUp.status === 400, heicUp.json?.message);
+
 /* ------------------------- удаление ------------------------- */
 
 const reply = await req(B, 'POST', '/api/messages', { chatId: chatIdB, text: 'посмотрю план', replyToId: up.json.message.id });

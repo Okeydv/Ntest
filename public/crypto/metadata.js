@@ -7,6 +7,10 @@
 // Ни одна функция не пропускает файл «как есть» при ошибке: не удалось
 // разобрать — исключение, и файл не отправляется.
 
+import { detectType } from './filetypes.js';
+
+export { ISO_BMFF_TYPES } from './filetypes.js';
+
 /* ========================================================================
    MP4 / MOV (ISO BMFF и QuickTime)
    ===================================================================== */
@@ -80,8 +84,6 @@ function walk(buf, view, start, end, removed) {
     }
 }
 
-export const ISO_BMFF_TYPES = new Set(['video/mp4', 'video/quicktime']);
-
 /**
  * Очистить MP4/MOV. Возвращает новый массив того же размера и список
  * обезвреженных блоков. Исходный массив не меняется.
@@ -89,6 +91,10 @@ export const ISO_BMFF_TYPES = new Set(['video/mp4', 'video/quicktime']);
 export function cleanIsoBmff(input) {
     const buf = new Uint8Array(input);
     if (buf.length < 8 || boxType(buf, 4) !== 'ftyp') throw new Error('MP4: файл не начинается с ftyp');
+    // HEIC и AVIF — тоже ISO BMFF, но изображение там лежит в блоке meta:
+    // «очистка» стёрла бы саму картинку.
+    const kind = detectType(buf.subarray(0, 12));
+    if (!kind || !kind.startsWith('video/')) throw new Error('MP4: это не видео');
     const removed = [];
     walk(buf, new DataView(buf.buffer, buf.byteOffset, buf.byteLength), 0, buf.length, removed);
     return { bytes: buf, removed };
