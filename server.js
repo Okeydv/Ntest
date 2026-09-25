@@ -534,6 +534,26 @@ async function initDatabase() {
     `);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_envelopes_recipient ON message_envelopes(recipient_device_id, message_id);`);
 
+    // Зашифрованные вложения. Сервер хранит непрозрачные байты: файл
+    // шифруется на клиенте своим ключом, а ключ едет внутри E2EE-сообщения.
+    // Ни имени, ни типа, ни содержимого сервер не знает — только размер.
+    //
+    // message_id заполняется при отправке сообщения; до этого вложение
+    // принадлежит только загрузившему, и если сообщение так и не ушло,
+    // уборщик удалит его через час.
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS encrypted_blobs (
+            id TEXT PRIMARY KEY,
+            uploader_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            chat_id INTEGER REFERENCES chats(id) ON DELETE SET NULL,
+            room_id INTEGER REFERENCES rooms(id) ON DELETE CASCADE,
+            message_id INTEGER REFERENCES messages(id) ON DELETE CASCADE,
+            size INTEGER NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_blobs_message ON encrypted_blobs(message_id);`);
+
     // Текст больше не обязателен: у зашифрованного сообщения его нет вовсе,
     // содержимое живёт в конвертах.
     await pool.query(`ALTER TABLE messages ALTER COLUMN text DROP NOT NULL;`);
@@ -605,7 +625,9 @@ async function initDatabase() {
     // падало с `relation "messages" does not exist`, и сервер не поднимался
     // вообще. Незаметным это было потому, что на уже существующей базе всё
     // работает: ошибка возникает только при первом запуске с нуля.
-    disappearingMessagesManager = new DisappearingMessagesManager(pool);
+    disappearingMessagesManager = new DisappearingMessagesManager(pool, {
+        onDelete: purgeEncryptedContent,
+    });
     await disappearingMessagesManager.initialize();
 
     console.log('База данных инициализирована');
@@ -1188,18 +1210,21 @@ app.get('/api/chats', async (req, res) => {
 /**
  * Устройства, которым нужен конверт этого сообщения.
  *
- * Включает ВСЕ устройства участников, в том числе само устройство
- * отправителя. Исключать его нельзя: открытый текст нигде не хранится, и
- * после перезагрузки страницы отправитель не смог бы прочитать свои же
- * отправленные сообщения — шифротекста для себя нет, брать нечего. Конверт
- * «себе» и есть история отправителя.
+ * Включает ВСЕ устройства участников, в том числе устройство отправителя.
+ * Клиент сам себе конверт не шлёт (своё он хранит локально), но запрещать
+ * это серверу незачем: это всё ещё устройство участника.
  *
  * Для комнаты это все участники, для обычного чата — только владелец: у
  * групповых чатов участники лежат в room_participants, а одиночная запись
- * chats без room_id принадлежит одному человеку (чат с ботом либо ещё не
- * присоединённый чат).
+ * chats без room_id принадлежит одному человеку.
+ *
+ * Чат с ботом не шифруется вовсе: бот отвечает на открытый текст. Если бы
+ * здесь вернулись устройства владельца, то при двух устройствах сообщения
+ * боту уходили бы зашифрованными — бот бы молчал, а индикатор в шапке
+ * говорил бы «без шифрования».
  */
 async function resolveEnvelopeRecipients(chat) {
+    if (chat.is_bot) return [];
     const rows = chat.room_id
         ? await dbAll(
             `SELECT d.id, d.user_id FROM devices d
@@ -1239,6 +1264,161 @@ app.get('/api/chats/:chatId/devices', async (req, res) => {
         res.status(500).json({ success: false, message: 'Не удалось получить устройства чата' });
     }
 });
+
+/* ------------------------------------------------------------------
+   Зашифрованные вложения
+   ------------------------------------------------------------------ */
+
+// Отдельный каталог, а не uploads/: фоновый уборщик раз в час удаляет из
+// uploads/ ВСЕ файлы старше суток, не сверяясь с базой, — вложения
+// зашифрованных сообщений он уничтожал бы вместе с остальными. Здесь
+// время жизни файла совпадает со временем жизни сообщения.
+const BLOBS_DIR = path.join(__dirname, 'encrypted-blobs');
+if (!fs.existsSync(BLOBS_DIR)) fs.mkdirSync(BLOBS_DIR, { recursive: true });
+
+const BLOB_ID_RE = /^[0-9a-f]{32}$/;
+const MAX_BLOB_BYTES = 50 * 1024 * 1024;   // как у открытых вложений
+// Пустой файл после AES-GCM — это 16 байт тега. Меньше быть не может.
+const MIN_BLOB_BYTES = 16;
+const MAX_BLOBS_PER_MESSAGE = 10;
+// Сколько живёт загруженное, но так и не отправленное вложение.
+const ORPHAN_BLOB_TTL_MS = 60 * 60 * 1000;
+
+const blobPath = id => path.join(BLOBS_DIR, `${id}.bin`);
+
+/**
+ * Удалить всё зашифрованное содержимое сообщения: конверты и вложения.
+ *
+ * Удаление сообщения в приложении мягкое (deleted = 1), и для открытого
+ * текста это частично работает — исчезающие сообщения затирают text. Но у
+ * зашифрованного сообщения содержимое живёт в конвертах и файлах, и мягкое
+ * удаление оставляло бы их на сервере навсегда. Здесь они удаляются
+ * по-настоящему.
+ */
+async function purgeEncryptedContent(messageId) {
+    const blobs = await dbAll('SELECT id FROM encrypted_blobs WHERE message_id = $1', [messageId]);
+    for (const b of blobs) {
+        await fs.promises.unlink(blobPath(b.id)).catch(() => {});
+    }
+    await dbRun('DELETE FROM encrypted_blobs WHERE message_id = $1', [messageId]);
+    await dbRun('DELETE FROM message_envelopes WHERE message_id = $1', [messageId]);
+}
+
+/**
+ * POST /api/blobs?chatId=N — загрузить зашифрованное вложение.
+ *
+ * Тело — сырые байты шифротекста (application/octet-stream). Проверить
+ * их содержимое сервер не может и не должен: magic bytes, EXIF, тип файла —
+ * всё это теперь забота отправителя. Проверяется только, что чат свой и
+ * размер в пределах.
+ */
+app.post('/api/blobs',
+    express.raw({ type: 'application/octet-stream', limit: MAX_BLOB_BYTES }),
+    async (req, res) => {
+        if (!req.session.userId) return res.status(401).json({ success: false, message: 'Не авторизован' });
+        const chatId = Number(req.query.chatId);
+        if (!Number.isInteger(chatId) || chatId <= 0) {
+            return res.status(400).json({ success: false, message: 'Не указан чат' });
+        }
+        const body = req.body;
+        if (!Buffer.isBuffer(body) || body.length < MIN_BLOB_BYTES) {
+            return res.status(400).json({ success: false, message: 'Пустое или некорректное вложение' });
+        }
+        try {
+            const chat = await dbGet('SELECT id, room_id FROM chats WHERE id = $1 AND user_id = $2',
+                [chatId, req.session.userId]);
+            if (!chat) return res.status(404).json({ success: false, message: 'Чат не найден' });
+
+            const id = crypto.randomBytes(16).toString('hex');
+            await fs.promises.writeFile(blobPath(id), body, { flag: 'wx' });
+            await pool.query(
+                `INSERT INTO encrypted_blobs (id, uploader_user_id, chat_id, room_id, size)
+                 VALUES ($1, $2, $3, $4, $5)`,
+                [id, req.session.userId, chat.id, chat.room_id || null, body.length]
+            );
+            res.json({ success: true, blobId: id });
+        } catch (error) {
+            console.error('Blob upload error:', error);
+            res.status(500).json({ success: false, message: 'Не удалось сохранить вложение' });
+        }
+    }
+);
+
+/**
+ * GET /api/blobs/:id — скачать зашифрованное вложение.
+ *
+ * Доступ — как к самому сообщению: участникам чата. Пока вложение не
+ * привязано к сообщению, скачать его может только загрузивший. Отдаётся
+ * всегда как octet-stream: это шифротекст, и браузер не должен пытаться
+ * его интерпретировать.
+ */
+app.get('/api/blobs/:id', async (req, res) => {
+    if (!req.session.userId) return res.status(401).json({ success: false, message: 'Не авторизован' });
+    const id = req.params.id;
+    // Один ответ 404 на всё: и на кривой id, и на чужое, и на удалённое —
+    // иначе по кодам ответа можно перебором узнавать, какие id существуют.
+    const notFound = () => res.status(404).json({ success: false, message: 'Вложение не найдено' });
+    if (!BLOB_ID_RE.test(id)) return notFound();
+    try {
+        const blob = await dbGet(
+            `SELECT b.id, b.uploader_user_id, b.message_id, m.deleted
+             FROM encrypted_blobs b LEFT JOIN messages m ON m.id = b.message_id
+             WHERE b.id = $1`,
+            [id]
+        );
+        if (!blob) return notFound();
+        const allowed = blob.message_id
+            ? !blob.deleted && await userCanAccessMessage(req.session.userId, blob.message_id)
+            : blob.uploader_user_id === req.session.userId;
+        if (!allowed) return notFound();
+
+        res.set('Content-Type', 'application/octet-stream');
+        res.set('Cache-Control', 'private, no-store');
+        res.set('Content-Disposition', 'attachment');
+        res.sendFile(blobPath(id), err => {
+            if (err && !res.headersSent) notFound();
+        });
+    } catch (error) {
+        console.error('Blob download error:', error);
+        res.status(500).json({ success: false, message: 'Ошибка загрузки вложения' });
+    }
+});
+
+/**
+ * Уборка вложений, которые никому не принадлежат: загружены, но сообщение
+ * так и не отправлено, либо строка ушла каскадом вместе с сообщением,
+ * чатом или анонимным пользователем, а файл на диске остался.
+ */
+async function sweepOrphanBlobs() {
+    try {
+        const stale = await dbAll(
+            `SELECT id FROM encrypted_blobs
+             WHERE message_id IS NULL AND created_at < now() - ($1 || ' milliseconds')::interval`,
+            [String(ORPHAN_BLOB_TTL_MS)]
+        );
+        for (const b of stale) {
+            await fs.promises.unlink(blobPath(b.id)).catch(() => {});
+            await dbRun('DELETE FROM encrypted_blobs WHERE id = $1', [b.id]);
+        }
+
+        const known = new Set((await dbAll('SELECT id FROM encrypted_blobs')).map(r => r.id));
+        const cutoff = Date.now() - ORPHAN_BLOB_TTL_MS;
+        for (const name of await fs.promises.readdir(BLOBS_DIR)) {
+            const id = name.replace(/\.bin$/, '');
+            if (known.has(id)) continue;
+            const full = path.join(BLOBS_DIR, name);
+            const stat = await fs.promises.stat(full).catch(() => null);
+            // Свежие файлы не трогаем: между записью файла и строки в базе
+            // есть окно, и уборщик не должен съедать загрузку на лету.
+            if (stat && stat.isFile() && stat.mtimeMs < cutoff) {
+                await fs.promises.unlink(full).catch(() => {});
+            }
+        }
+    } catch (error) {
+        console.error('Blob sweep error:', error.message);
+    }
+}
+setInterval(sweepOrphanBlobs, ORPHAN_BLOB_TTL_MS).unref();
 
 const MAX_ENVELOPES = 256;
 const MAX_HEADER_B64 = 2048;
@@ -1280,8 +1460,13 @@ app.post('/api/messages/encrypted', async (req, res) => {
         return res.status(409).json({ success: false, message: 'Устройство не зарегистрировано' });
     }
 
-    const { chatId, replyToId, expirySeconds, envelopes } = req.body || {};
+    const { chatId, replyToId, expirySeconds, envelopes, blobIds = [] } = req.body || {};
     const replyTo = Number(replyToId) || null;
+
+    if (!Array.isArray(blobIds) || blobIds.length > MAX_BLOBS_PER_MESSAGE
+        || !blobIds.every(id => typeof id === 'string' && BLOB_ID_RE.test(id))) {
+        return res.status(400).json({ success: false, message: 'Некорректный список вложений' });
+    }
 
     if (!Array.isArray(envelopes) || envelopes.length === 0) {
         return res.status(400).json({ success: false, message: 'Нет конвертов' });
@@ -1328,6 +1513,20 @@ app.post('/api/messages/encrypted', async (req, res) => {
             parsed.push({ deviceId, type, header: header.buf, ciphertext: ciphertext.buf });
         }
 
+        // Привязать можно только своё, ещё не отправленное вложение из этого
+        // же чата. Иначе можно было бы «переотправить» чужой файл в другой
+        // чат и открыть к нему доступ его участникам.
+        if (blobIds.length > 0) {
+            const owned = await dbAll(
+                `SELECT id FROM encrypted_blobs
+                 WHERE id = ANY($1::text[]) AND uploader_user_id = $2 AND chat_id = $3 AND message_id IS NULL`,
+                [blobIds, req.session.userId, chat.id]
+            );
+            if (owned.length !== new Set(blobIds).size) {
+                return res.status(403).json({ success: false, message: 'Вложение не найдено или уже отправлено' });
+            }
+        }
+
         const time = getCurrentTime();
         const roomId = chat.room_id || null;
         const socketRoomKey = getSocketRoomKey(chatId, roomId);
@@ -1342,6 +1541,20 @@ app.post('/api/messages/encrypted', async (req, res) => {
                 [chatId, roomId, req.session.userId, 'text', 1, time, 'sent', replyTo, senderDeviceId]
             );
             messageId = inserted.rows[0].id;
+            if (blobIds.length > 0) {
+                const linked = await client.query(
+                    'UPDATE encrypted_blobs SET message_id = $1 WHERE id = ANY($2::text[]) AND message_id IS NULL',
+                    [messageId, blobIds]
+                );
+                // Проверка выше была до транзакции: параллельный запрос мог
+                // успеть привязать то же вложение. Тогда это сообщение
+                // ссылалось бы на файл, доступ к которому решает чужое.
+                if (linked.rowCount !== new Set(blobIds).size) {
+                    const conflict = new Error('вложение уже привязано');
+                    conflict.status = 409;
+                    throw conflict;
+                }
+            }
             for (const e of parsed) {
                 await client.query(
                     `INSERT INTO message_envelopes (message_id, recipient_device_id, sender_device_id, envelope_type, header, ciphertext)
@@ -1408,6 +1621,9 @@ app.post('/api/messages/encrypted', async (req, res) => {
             socketRoomKey,
         });
     } catch (error) {
+        if (error.status === 409) {
+            return res.status(409).json({ success: false, message: 'Вложение уже отправлено' });
+        }
         console.error('Encrypted message error:', error);
         res.status(500).json({ success: false, message: 'Не удалось отправить сообщение' });
     }
@@ -1734,6 +1950,7 @@ app.delete('/api/messages/:messageId', async (req, res) => {
         const message = await dbGet('SELECT * FROM messages WHERE id = $1 AND user_id = $2', [messageId, req.session.userId]);
         if (!message) return res.json({ success: false, message: 'Сообщение не найдено' });
         await dbRun('UPDATE messages SET deleted = 1 WHERE id = $1', [messageId]);
+        if (message.encrypted) await purgeEncryptedContent(message.id);
 
         const socketRoomKey = getSocketRoomKey(message.chat_id, message.room_id);
         io.to(socketRoomKey).emit('messageDeleted', {

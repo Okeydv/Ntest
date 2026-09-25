@@ -168,6 +168,34 @@ const after = (await req(B.j,'GET',`/api/messages/${chatIdB}`)).json.messages.le
 check('отказ по одному конверту не оставляет половину сообщения', before === after,
   `до ${before}, после ${after}`);
 
+// --- вложение привязывается только к одному сообщению -------------------
+// Два одновременных запроса с одним blobId: проверка владения идёт до
+// транзакции, и без повторной проверки внутри неё прошли бы оба.
+const up = await fetch(`${BASE}/api/blobs?chatId=${chatIdA}`, { method: 'POST',
+  headers: { Cookie: A.j.header(), 'X-CSRF-Token': A.j.csrf(), 'Content-Type': 'application/octet-stream' },
+  body: new Uint8Array(64) });
+const blobId = (await up.json()).blobId;
+const sendWithBlob = () => req(A.j, 'POST', '/api/messages/encrypted', { chatId: chatIdA, blobIds: [blobId],
+  envelopes: [{ recipientDeviceId: b1, envelopeType: 2, header: b64('h'), ciphertext: b64('file') }] });
+const countBefore = (await req(B.j, 'GET', `/api/messages/${chatIdB}`)).json.messages.length;
+const [w1, w2] = await Promise.all([sendWithBlob(), sendWithBlob()]);
+const countAfter = (await req(B.j, 'GET', `/api/messages/${chatIdB}`)).json.messages.length;
+check('одно вложение нельзя отправить дважды',
+  [w1, w2].filter(r => r.json?.success).length === 1 && countAfter === countBefore + 1,
+  `статусы ${w1.status}, ${w2.status}; сообщений +${countAfter - countBefore}`);
+
+// --- чат с ботом не шифруется ------------------------------------------
+// У Боба два устройства. Если бы получателями бот-чата считались его
+// устройства, сообщения боту уходили бы шифротекстом и бот бы молчал.
+const botChat = (await req(B.j, 'GET', '/api/chats')).json.chats.find(c => c.is_bot);
+const botDevices = await req(B.j, 'GET', `/api/chats/${botChat.id}/devices`);
+check('у чата с ботом нет устройств для шифрования',
+  botDevices.json?.success === true && botDevices.json.devices.length === 0,
+  JSON.stringify(botDevices.json?.devices));
+const botSend = await req(B.j, 'POST', '/api/messages/encrypted', { chatId: botChat.id,
+  envelopes: [{ recipientDeviceId: b2, envelopeType: 1, header: b64('h'), ciphertext: b64('c') }] });
+check('зашифрованное сообщение в чат с ботом не принимается', botSend.status === 403, 'status ' + botSend.status);
+
 sA1.close(); sB1.close(); sB2.close();
 console.log(fails ? `\n${fails} проверок провалено` : '\nвсе проверки пройдены');
 process.exit(fails ? 1 : 0);

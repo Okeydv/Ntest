@@ -91,6 +91,9 @@
         <symbol id="i-lock" viewBox="0 0 24 24">
             <rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>
         </symbol>
+        <symbol id="i-unlock" viewBox="0 0 24 24">
+            <rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8 10.5V7.5a4 4 0 0 1 7.6-1.7"/>
+        </symbol>
         <symbol id="i-shield" viewBox="0 0 24 24">
             <path d="M12 21s7.5-3.6 7.5-9.3V5.4L12 2.8 4.5 5.4v6.3C4.5 17.4 12 21 12 21Z"/>
         </symbol>
@@ -212,7 +215,13 @@
                     <div id="chat-avatar" class="chat-avatar"></div>
                     <div class="chat-details">
                         <h3 id="chat-name"></h3>
-                        <span id="chat-status" class="status"></span>
+                        <div class="chat-subline">
+                            <span id="chat-status" class="status"></span>
+                            <!-- Приложение смешанное: текст в общих чатах шифруется,
+                                 чат с ботом — нет. Без индикатора человек не может
+                                 отличить одно от другого. -->
+                            <span id="chat-encryption" class="encryption-badge hidden"></span>
+                        </div>
                     </div>
                 </div>
                 <div class="chat-actions">

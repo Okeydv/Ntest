@@ -1031,6 +1031,29 @@ input.is-invalid:focus {
     text-overflow: ellipsis;
 }
 
+.chat-subline {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.25rem 0.75rem;
+}
+
+/* Индикатор шифрования. Включённое шифрование — спокойный зелёный замок,
+   выключенное — нейтральный открытый замок: это не ошибка, а режим чата,
+   но человек обязан его видеть. */
+.encryption-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3125rem;
+    font-size: var(--fs-xs);
+    font-weight: 500;
+    letter-spacing: 0.01em;
+}
+
+.encryption-badge .icon { width: 0.8125rem; height: 0.8125rem; }
+.encryption-badge.is-on { color: var(--ok); }
+.encryption-badge.is-off { color: var(--text-3); }
+
 .status {
     display: inline-flex;
     align-items: center;
@@ -1122,6 +1145,23 @@ input.is-invalid:focus {
 }
 
 .message-time { font-weight: 500; }
+
+.message-encrypted {
+    display: inline-flex;
+    opacity: 0.85;
+}
+
+.message-encrypted .icon { width: 0.6875rem; height: 0.6875rem; }
+
+/* Место под вложение, пока оно скачивается и расшифровывается: форма
+   картинки, чтобы подгрузка не дёргала ленту. */
+.encrypted-attachment { margin-bottom: 0.5rem; }
+
+.attachment-skeleton {
+    width: min(15rem, 60vw);
+    aspect-ratio: 3 / 2;
+    border-radius: var(--r-md);
+}
 .message-status { font-weight: 600; }
 
 .message-image,

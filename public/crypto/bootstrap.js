@@ -7,6 +7,8 @@
 // того, кто успел первым.
 
 import * as client from './client.js';
+import * as attachments from './attachments.js';
 
-window.NyxoCrypto = client;
+// Одним объектом: script.js не должен знать, в каком из модулей что лежит.
+window.NyxoCrypto = Object.freeze({ ...client, ...attachments });
 window.dispatchEvent(new Event('nyxo-crypto-ready'));
