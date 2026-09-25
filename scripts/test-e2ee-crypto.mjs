@@ -19,6 +19,7 @@ import {
     exportSession, importSession, parseHeader, toB64, fromB64,
     ENVELOPE_PREKEY, ENVELOPE_NORMAL,
 } from '../public/crypto/e2ee.js';
+import { userFingerprint, combineFingerprints, formatSafetyNumber } from '../public/crypto/safety.js';
 
 let fails = 0;
 const check = (label, cond, detail = '') => {
@@ -318,6 +319,27 @@ check('второе сообщение расшифровано', await recv(bob
     check('устройство читает свой конверт', await recv(phoneSession, mPhone) === 'одно и то же');
     await throws('чужой конверт тем же устройством не читается',
         () => recv(phoneSession, mLaptop));
+}
+
+// --- код безопасности ------------------------------------------------------
+{
+    const dev = async deviceId => {
+        const pub = await exportIdentityPublic(await generateIdentity({ extractable: false }));
+        return { deviceId, signingKey: pub.identity_signing_key, dhKey: pub.identity_dh_key };
+    };
+    const a1 = await dev(1), b1 = await dev(2), b2 = await dev(3);
+
+    const fa = await userFingerprint(10, [a1]);
+    const fb = await userFingerprint(20, [b1, b2]);
+    check('отпечаток пользователя — 30 цифр', /^\d{30}$/.test(fa));
+    check('порядок устройств на отпечаток не влияет', fb === await userFingerprint(20, [b2, b1]));
+    check('код одинаков у обеих сторон', combineFingerprints(fa, fb) === combineFingerprints(fb, fa));
+    check('код — 12 групп по 5 цифр', formatSafetyNumber(combineFingerprints(fa, fb)).length === 12);
+    check('новое устройство меняет отпечаток', fb !== await userFingerprint(20, [b1]));
+    check('отпечаток привязан к пользователю', fb !== await userFingerprint(21, [b1, b2]));
+    const forged = { ...b2, dhKey: (await dev(3)).dhKey };
+    check('подмена одного лишь DH-ключа меняет отпечаток', fb !== await userFingerprint(20, [b1, forged]));
+    await throws('без устройств отпечатка нет', () => userFingerprint(20, []));
 }
 
 console.log(fails ? `\n${fails} проверок провалено` : '\nвсе проверки пройдены');

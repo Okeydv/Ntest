@@ -97,6 +97,12 @@
         <symbol id="i-shield" viewBox="0 0 24 24">
             <path d="M12 21s7.5-3.6 7.5-9.3V5.4L12 2.8 4.5 5.4v6.3C4.5 17.4 12 21 12 21Z"/>
         </symbol>
+        <symbol id="i-shield-check" viewBox="0 0 24 24">
+            <path d="M12 21s7.5-3.6 7.5-9.3V5.4L12 2.8 4.5 5.4v6.3C4.5 17.4 12 21 12 21Z"/><path d="m8.8 11.8 2.3 2.3 4.2-4.4"/>
+        </symbol>
+        <symbol id="i-alert" viewBox="0 0 24 24">
+            <path d="M10.3 4.2 2.9 17.3A2 2 0 0 0 4.6 20.3h14.8a2 2 0 0 0 1.7-3L13.7 4.2a2 2 0 0 0-3.4 0Z"/><path d="M12 9.5v4.2"/><path d="M12 16.9h.01"/>
+        </symbol>
         <symbol id="i-file" viewBox="0 0 24 24">
             <path d="M13.5 3.5H7a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9l-5.5-5.5Z"/><path d="M13.5 3.5V9H19"/>
         </symbol>
@@ -220,7 +226,9 @@
                             <!-- Приложение смешанное: текст в общих чатах шифруется,
                                  чат с ботом — нет. Без индикатора человек не может
                                  отличить одно от другого. -->
-                            <span id="chat-encryption" class="encryption-badge hidden"></span>
+                            <!-- Кнопка, а не подпись: в зашифрованном чате отсюда открывается
+                                 сверка ключей. В незашифрованном она disabled. -->
+                            <button id="chat-encryption" class="encryption-badge hidden" type="button" disabled></button>
                         </div>
                     </div>
                 </div>
@@ -413,6 +421,26 @@
                         <svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg>
                     </button>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="safety-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="safety-modal-title">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="safety-modal-title">Сверка ключей</h3>
+                <button class="icon-btn icon-btn-sm icon-btn-quiet close-modal" aria-label="Закрыть" type="button">
+                    <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <p class="safety-intro">
+                    Сравните код с собеседником — при встрече или по другому
+                    каналу связи. Если числа совпадают, между вами никто не
+                    подменил ключи. Код меняется, когда у кого-то из вас
+                    появляется новое устройство.
+                </p>
+                <div id="safety-list" class="safety-list"></div>
             </div>
         </div>
     </div>

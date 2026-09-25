@@ -89,6 +89,31 @@ check('исчерпание OPK у одного устройства не лом
   by[101].one_time_prekey === null && by[102].one_time_prekey !== null);
 check('устройство без OPK всё равно в наборе (X3DH деградирует, но работает)', !!by[101].signed_prekey);
 
+// Identity-ключи для сверки: отдаются без расхода OPK
+const before102 = (await call('GET', '/internal/v1/keys/one-time-prekeys/count', { user: 1, device: 102 })).json.count;
+const idn = await call('GET', '/internal/v1/keys/identities/1', { user: 2 });
+check('identity-ключи отдаются по всем устройствам',
+  JSON.stringify((idn.json?.devices ?? []).map(x => x.device_id)) === '[101,102]');
+check('и совпадают с теми, что в bundle',
+  idn.json.devices[0].identity_signing_key === by[101].identity_signing_key &&
+  idn.json.devices[1].identity_dh_key === by[102].identity_dh_key);
+const after102 = (await call('GET', '/internal/v1/keys/one-time-prekeys/count', { user: 1, device: 102 })).json.count;
+check('запрос identity-ключей не расходует OPK', before102 === after102, `${before102} → ${after102}`);
+check('у пользователя без устройств — пустой список, а не ошибка',
+  (await call('GET', '/internal/v1/keys/identities/999', { user: 1 })).json?.devices?.length === 0);
+
+// Identity устройства нельзя подменить
+const same = await call('PUT', '/internal/v1/keys/identity', { user: 1, device: 101,
+  body: { identity_signing_key: b64(raw(d101.id.publicKey)), identity_dh_key: b64(raw(d101.dh.publicKey)) } });
+check('повторная публикация тех же ключей идемпотентна', same.status === 200, 'status ' + same.status);
+const swap = makeDevice();
+const swapped = await call('PUT', '/internal/v1/keys/identity', { user: 1, device: 101,
+  body: { identity_signing_key: b64(raw(swap.id.publicKey)), identity_dh_key: b64(raw(swap.dh.publicKey)) } });
+check('подменить identity существующего устройства нельзя', swapped.status === 409, 'status ' + swapped.status);
+const still = await call('GET', '/internal/v1/keys/identities/1', { user: 2 });
+check('после попытки подмены ключ прежний',
+  still.json.devices[0].identity_signing_key === b64(raw(d101.id.publicKey)));
+
 // Отзыв одного устройства
 await call('DELETE', '/internal/v1/keys/device', { user: 1, device: 102 });
 b = await call('GET', '/internal/v1/keys/bundle/1', { user: 2 });

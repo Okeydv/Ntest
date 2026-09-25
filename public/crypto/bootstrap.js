@@ -8,7 +8,8 @@
 
 import * as client from './client.js';
 import * as attachments from './attachments.js';
+import { formatSafetyNumber } from './safety.js';
 
 // Одним объектом: script.js не должен знать, в каком из модулей что лежит.
-window.NyxoCrypto = Object.freeze({ ...client, ...attachments });
+window.NyxoCrypto = Object.freeze({ ...client, ...attachments, formatSafetyNumber });
 window.dispatchEvent(new Event('nyxo-crypto-ready'));

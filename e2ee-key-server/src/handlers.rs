@@ -17,8 +17,9 @@ pub async fn health() -> &'static str {
 }
 
 /// PUT /internal/v1/keys/identity
-/// Регистрирует/полностью заменяет identity-ключи ОДНОГО устройства.
-/// У пользователя столько identity, сколько у него активных устройств.
+/// Регистрирует identity-ключи ОДНОГО устройства. У пользователя столько
+/// identity, сколько у него активных устройств. Заменить ключи уже
+/// зарегистрированного устройства нельзя — 409 (см. db::insert_identity_keys).
 pub async fn put_identity_keys(
     State(state): State<AppState>,
     device: AuthedDevice,
@@ -27,15 +28,20 @@ pub async fn put_identity_keys(
     let signing_key = decode_pubkey("identity_signing_key", &req.identity_signing_key)?;
     let dh_key = decode_pubkey("identity_dh_key", &req.identity_dh_key)?;
 
-    db::upsert_identity_keys(
+    match db::insert_identity_keys(
         &state.pool,
         device.user_id,
         device.device_id,
         &signing_key,
         &dh_key,
     )
-    .await?;
-    Ok(Json(OkResponse::ok()))
+    .await?
+    {
+        db::IdentityWrite::Inserted | db::IdentityWrite::Unchanged => Ok(Json(OkResponse::ok())),
+        db::IdentityWrite::Conflict => Err(AppError::Conflict(
+            "identity keys of a device cannot be replaced; register a new device".into(),
+        )),
+    }
 }
 
 /// PUT /internal/v1/keys/signed-prekey
@@ -167,6 +173,28 @@ pub async fn get_bundle(
                     key_id: o.key_id,
                     public_key: encode_b64(&o.public_key),
                 }),
+            })
+            .collect(),
+    }))
+}
+
+/// GET /internal/v1/keys/identities/:target_user_id
+/// Identity-ключи всех устройств пользователя, без расхода prekeys.
+/// Пустой список — не ошибка: у пользователя может не быть ни одного
+/// устройства с ключами, и код безопасности тогда просто не из чего строить.
+pub async fn get_identities(
+    State(state): State<AppState>,
+    AuthedUser(_requesting_user_id): AuthedUser,
+    Path(target_user_id): Path<i64>,
+) -> Result<Json<IdentitiesResponse>, AppError> {
+    let rows = db::fetch_identities(&state.pool, target_user_id).await?;
+    Ok(Json(IdentitiesResponse {
+        devices: rows
+            .into_iter()
+            .map(|(device_id, identity)| DeviceIdentity {
+                device_id,
+                identity_signing_key: encode_b64(&identity.identity_signing_key),
+                identity_dh_key: encode_b64(&identity.identity_dh_key),
             })
             .collect(),
     }))

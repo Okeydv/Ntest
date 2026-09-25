@@ -1258,7 +1258,17 @@ app.get('/api/chats/:chatId/devices', async (req, res) => {
             [req.params.chatId, req.session.userId]);
         if (!chat) return res.status(404).json({ success: false, message: 'Чат не найден' });
         const devices = await resolveEnvelopeRecipients(chat);
-        res.json({ success: true, devices: devices.map(d => ({ device_id: d.id, user_id: d.user_id })) });
+        // Имена участников — для окна сверки ключей: код безопасности
+        // строится на каждого собеседника, и подписать его нужно по-человечески.
+        const userIds = [...new Set(devices.map(d => d.user_id))];
+        const users = userIds.length
+            ? await dbAll('SELECT id, username FROM users WHERE id = ANY($1::int[])', [userIds])
+            : [];
+        res.json({
+            success: true,
+            devices: devices.map(d => ({ device_id: d.id, user_id: d.user_id })),
+            users: users.map(u => ({ user_id: u.id, username: u.username })),
+        });
     } catch (error) {
         console.error('Chat devices error:', error);
         res.status(500).json({ success: false, message: 'Не удалось получить устройства чата' });

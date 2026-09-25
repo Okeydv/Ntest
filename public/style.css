@@ -1045,14 +1045,24 @@ input.is-invalid:focus {
     display: inline-flex;
     align-items: center;
     gap: 0.3125rem;
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
     font-size: var(--fs-xs);
     font-weight: 500;
     letter-spacing: 0.01em;
+    border-radius: var(--r-xs);
 }
+
+/* В зашифрованном чате индикатор — вход в сверку ключей. */
+.encryption-badge:not(:disabled) { cursor: pointer; }
+.encryption-badge:not(:disabled):hover { text-decoration: underline; text-underline-offset: 0.2em; }
 
 .encryption-badge .icon { width: 0.8125rem; height: 0.8125rem; }
 .encryption-badge.is-on { color: var(--ok); }
 .encryption-badge.is-off { color: var(--text-3); }
+.encryption-badge.is-warn { color: var(--danger); }
 
 .status {
     display: inline-flex;
@@ -1665,4 +1675,104 @@ input.is-invalid:focus {
     /* Блик скелетона — единственная анимация, которая несёт смысл
        («данные грузятся»), поэтому вместо бега он просто гаснет. */
     .skeleton::after { display: none; }
+}
+
+/* ============================================================================
+   Сверка ключей
+   ========================================================================== */
+
+.safety-intro {
+    margin-bottom: 1rem;
+    font-size: var(--fs-sm);
+    color: var(--text-2);
+}
+
+.safety-list {
+    display: grid;
+    gap: 0.875rem;
+}
+
+.safety-entry {
+    display: grid;
+    /* minmax(0, 1fr): без него ширину колонки задаёт самая длинная
+       неразрывная строка, и на телефоне карточка вылезает за экран. */
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.75rem;
+    padding: 1rem;
+    border: 1px solid var(--border-2);
+    border-radius: var(--r-lg);
+}
+
+.safety-entry-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    min-width: 0;
+}
+
+.safety-entry-head strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.safety-state {
+    flex-shrink: 0;
+    padding: 0.1875rem 0.5rem;
+    border-radius: var(--r-pill);
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    color: var(--text-3);
+    border: 1px solid var(--border-2);
+}
+
+.safety-state.is-verified { color: var(--ok); border-color: var(--ok-ring); }
+.safety-state.is-changed { color: var(--danger); border-color: var(--danger-line); background: var(--danger-soft); }
+
+/* 12 групп по 5 цифр: 4 колонки, 3 строки — так код читают вслух
+   по строкам. Раскладка одинакова на любом экране: иначе у собеседников
+   с телефоном и ноутбуком строки не совпали бы. Моноширинный шрифт и
+   табличные цифры держат колонки ровными. */
+.safety-number {
+    display: grid;
+    grid-template-columns: repeat(4, auto);
+    justify-content: space-between;
+    row-gap: 0.375rem;
+    column-gap: 0.5rem;
+    padding: 0.875rem 1rem;
+    border-radius: var(--r-md);
+    background: var(--accent-soft);
+    font-family: var(--f-mono);
+    font-size: 1.0625rem;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.06em;
+    color: var(--text);
+}
+
+.safety-warning {
+    display: flex;
+    gap: 0.5rem;
+    align-items: flex-start;
+    font-size: var(--fs-sm);
+    color: var(--danger);
+}
+
+.safety-warning .icon { flex-shrink: 0; width: 1rem; height: 1rem; margin-top: 0.125rem; }
+
+.safety-muted {
+    font-size: var(--fs-sm);
+    color: var(--text-3);
+}
+
+.safety-skeleton {
+    height: 12rem;
+    border-radius: var(--r-lg);
+}
+
+.safety-entry .btn { white-space: normal; }
+
+@media (max-width: 380px) {
+    .safety-entry { padding: 0.875rem; }
+    .safety-number { padding: 0.75rem; font-size: 0.9375rem; letter-spacing: 0.02em; }
 }

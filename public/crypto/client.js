@@ -14,6 +14,7 @@ import {
     ENVELOPE_PREKEY,
 } from './e2ee.js';
 import * as store from './store.js';
+import { userFingerprint, combineFingerprints } from './safety.js';
 
 // Пул одноразовых prekeys. Каждый входящий первый контакт съедает один,
 // поэтому пул пополняется заранее: пустой пул не ломает связь, но первое
@@ -23,6 +24,7 @@ const OPK_REFILL_THRESHOLD = 15;
 
 let state = {
     ready: false,
+    userId: null,
     deviceId: null,
     identity: null,
     signedPrekey: null,
@@ -103,8 +105,9 @@ async function registerFreshDevice(deviceName) {
  * устройство). Отсутствие E2EE не должно ломать приложение — вызывающий
  * просто остаётся на открытом пути.
  */
-export async function bootstrap({ api, deviceName = 'Браузер' }) {
+export async function bootstrap({ api, userId, deviceName = 'Браузер' }) {
     state.api = api;
+    state.userId = userId;
     state.ready = false;
 
     try {
@@ -156,6 +159,73 @@ async function loadSession(userId, deviceId) {
 const saveSession = async (userId, deviceId, session) =>
     store.sessions.save(userId, deviceId, await exportSession(session));
 
+/* ------------------------------------------------------------------
+   Доверие к ключам устройств
+   ------------------------------------------------------------------ */
+
+/**
+ * Сравнить ключ устройства с тем, что мы видели при первом контакте.
+ *
+ * 'new' — устройство незнакомо; 'known' — ключ совпал; 'changed' — ключ
+ * другой. Легитимно ключ устройства не меняется (новая личность = новое
+ * устройство, key-server перезапись запрещает), поэтому 'changed' —
+ * это подмена, и шифровать под такой ключ нельзя.
+ */
+async function identityStatus(userId, deviceId, signingKey, dhKey) {
+    const known = await store.identities.load(userId, deviceId);
+    if (!known) return 'new';
+    return known.signingKey === signingKey && known.dhKey === dhKey ? 'known' : 'changed';
+}
+
+/**
+ * Запомнить ключ незнакомого устройства. Вызывается только после того,
+ * как ключ себя оправдал (подпись prekey сошлась, сообщение расшифровалось):
+ * иначе мусорный конверт от имени устройства успел бы занять его место и
+ * настоящий ключ потом выглядел бы подменой.
+ */
+async function rememberIdentity(userId, deviceId, signingKey, dhKey) {
+    if (await store.identities.load(userId, deviceId)) return;
+    await store.identities.save(userId, deviceId, { signingKey, dhKey, firstSeen: Date.now() });
+}
+
+function verificationState(record, deviceIds) {
+    if (!record) return 'unverified';
+    const known = new Set(record.devices.map(d => d.deviceId));
+    // Пропавшее устройство (отозвали) сверку не портит: писать ему мы
+    // больше не будем. Портит только новое.
+    return deviceIds.every(id => known.has(id)) ? 'verified' : 'changed';
+}
+
+function groupByUser(devices) {
+    const byUser = new Map();
+    for (const d of devices) {
+        if (d.user_id === state.userId) continue;
+        if (!byUser.has(d.user_id)) byUser.set(d.user_id, []);
+        byUser.get(d.user_id).push(d.device_id);
+    }
+    return byUser;
+}
+
+/**
+ * Если собеседник сверен, а у него появилось устройство, которого при
+ * сверке не было, — не шифруем, пока пользователь не сверит код заново.
+ * Так делает и Signal: новое «устройство» у проверенного контакта —
+ * ровно то, как выглядела бы атака сервера.
+ */
+async function assertVerifiedTargets(targets) {
+    const changed = [];
+    for (const [userId, deviceIds] of groupByUser(targets)) {
+        const record = await store.verified.load(userId);
+        if (verificationState(record, deviceIds) === 'changed') changed.push(userId);
+    }
+    if (changed.length > 0) {
+        const error = new Error('ключи собеседника изменились после сверки — сверьте код заново');
+        error.code = 'verification-changed';
+        error.userIds = changed;
+        throw error;
+    }
+}
+
 /**
  * Собрать конверты для всех устройств чата.
  *
@@ -169,7 +239,10 @@ export async function encryptForChat(chatId, plaintext) {
     if (!info || !info.success) throw new Error('не удалось получить список устройств чата');
 
     const targets = info.devices.filter(d => d.device_id !== state.deviceId);
-    if (targets.length === 0) return { envelopes: [], targets: [] };
+    if (targets.length === 0) return { envelopes: [], targets: [], rejected: [] };
+    // До запроса bundle: он расходует одноразовые prekeys, а отправка всё
+    // равно не состоится.
+    await assertVerifiedTargets(targets);
 
     const live = new Map();
     const needBundle = [];
@@ -183,6 +256,7 @@ export async function encryptForChat(chatId, plaintext) {
     // расходует по одному одноразовому prekey на каждое. Поэтому запрос
     // делается только когда хоть с одним устройством сессии нет, и только
     // по одному разу на пользователя.
+    const rejected = [];
     const usersToFetch = [...new Set(needBundle.map(t => t.user_id))];
     for (const userId of usersToFetch) {
         const response = await state.api(`/api/keys/bundle/${userId}`);
@@ -193,11 +267,18 @@ export async function encryptForChat(chatId, plaintext) {
         for (const bundle of response.bundles) {
             const target = needBundle.find(t => t.user_id === userId && t.device_id === bundle.device_id);
             if (!target) continue;
+            const seen = await identityStatus(userId, bundle.device_id,
+                bundle.identity_signing_key, bundle.identity_dh_key);
+            if (seen === 'changed') {
+                console.error(`[E2EE] ключ устройства ${bundle.device_id} не совпадает с известным — подмена, устройство пропущено`);
+                rejected.push(bundle.device_id);
+                continue;
+            }
             try {
-                live.set(target.device_id, {
-                    target,
-                    session: await initiateSession({ identity: state.identity, bundle }),
-                });
+                const session = await initiateSession({ identity: state.identity, bundle });
+                await rememberIdentity(userId, bundle.device_id,
+                    bundle.identity_signing_key, bundle.identity_dh_key);
+                live.set(target.device_id, { target, session });
             } catch (e) {
                 // Подменённый bundle — единственный случай, когда молчать
                 // нельзя: это либо атака, либо испорченные ключи.
@@ -218,7 +299,7 @@ export async function encryptForChat(chatId, plaintext) {
         await saveSession(target.user_id, target.device_id, session);
     }
 
-    return { envelopes, targets };
+    return { envelopes, targets, rejected };
 }
 
 /**
@@ -262,13 +343,22 @@ export async function decryptIncoming(message) {
     if (!isPrekey) return null;
 
     try {
+        const header = parseHeader(headerBytes);
+        const signingKey = toB64(header.identitySigningKey);
+        const dhKey = toB64(header.identityDhKey);
+        // Проверка до acceptSession: тот съел бы одноразовый prekey.
+        if (await identityStatus(senderUserId, senderDeviceId, signingKey, dhKey) === 'changed') {
+            console.error(`[E2EE] сообщение от устройства ${senderDeviceId} подписано чужим ключом — отвергнуто`);
+            return null;
+        }
         const fresh = await acceptSession({
             identity: state.identity,
-            header: parseHeader(headerBytes),
+            header,
             lookupSignedPrekey,
             lookupOneTimePrekey,
         });
         const text = await decryptToText(fresh, headerBytes, ciphertext);
+        await rememberIdentity(senderUserId, senderDeviceId, signingKey, dhKey);
         await saveSession(senderUserId, senderDeviceId, fresh);
         await store.plaintext.save(message.id, text);
         // Входящий первый контакт съел одноразовый prekey — пул мог
@@ -288,3 +378,107 @@ export const recallPlaintext = messageId => store.plaintext.load(messageId);
 /* Превью последнего сообщения: сервер шифротекст прочитать не может. */
 export const rememberPreview = (chatId, text) => store.previews.save(chatId, text);
 export const recallPreview = chatId => store.previews.load(chatId);
+
+/* ------------------------------------------------------------------
+   Код безопасности
+   ------------------------------------------------------------------ */
+
+/**
+ * Устройства пользователя с теми ключами, которыми мы реально пользуемся.
+ *
+ * Список устройств приходит с сервера, но ключ знакомого устройства
+ * берётся из локальной памяти, а не из ответа: если сервер начал отдавать
+ * другой, это конфликт, и в отпечаток он не попадает. Своё текущее
+ * устройство — всегда по локальному ключу: серверу здесь верить не в чем.
+ */
+async function trustedDevices(userId) {
+    const response = await state.api(`/api/keys/identities/${userId}`);
+    if (!response || !Array.isArray(response.devices)) {
+        throw new Error('не удалось получить ключи устройств');
+    }
+
+    const devices = [];
+    const conflicts = [];
+    for (const d of response.devices) {
+        if (userId === state.userId && d.device_id === state.deviceId) {
+            const own = await exportIdentityPublic(state.identity);
+            // Сервер раздаёт от имени этого устройства чужой ключ — это
+            // подмена в сторону собеседников, и о ней надо сказать.
+            if (own.identity_signing_key !== d.identity_signing_key || own.identity_dh_key !== d.identity_dh_key) {
+                conflicts.push(d.device_id);
+            }
+            continue;
+        }
+        const status = await identityStatus(userId, d.device_id, d.identity_signing_key, d.identity_dh_key);
+        if (status === 'changed') {
+            conflicts.push(d.device_id);
+            const known = await store.identities.load(userId, d.device_id);
+            devices.push({ deviceId: d.device_id, signingKey: known.signingKey, dhKey: known.dhKey });
+            continue;
+        }
+        if (status === 'new') {
+            await rememberIdentity(userId, d.device_id, d.identity_signing_key, d.identity_dh_key);
+        }
+        devices.push({ deviceId: d.device_id, signingKey: d.identity_signing_key, dhKey: d.identity_dh_key });
+    }
+
+    if (userId === state.userId) {
+        const own = await exportIdentityPublic(state.identity);
+        devices.push({ deviceId: state.deviceId, signingKey: own.identity_signing_key, dhKey: own.identity_dh_key });
+    }
+    return { devices, conflicts };
+}
+
+/**
+ * Всё для окна сверки с одним собеседником.
+ *
+ * conflicts — его устройства, чей ключ на сервере не совпадает с
+ * известным нам; ownConflicts — то же про наши устройства.
+ */
+export async function safetyInfo(otherUserId) {
+    if (!state.ready) throw new Error('E2EE не инициализирован');
+    const [mine, theirs] = await Promise.all([trustedDevices(state.userId), trustedDevices(otherUserId)]);
+    if (theirs.devices.length === 0) return { available: false };
+
+    const [myFingerprint, theirFingerprint] = await Promise.all([
+        userFingerprint(state.userId, mine.devices),
+        userFingerprint(otherUserId, theirs.devices),
+    ]);
+    const record = await store.verified.load(otherUserId);
+    return {
+        available: true,
+        safetyNumber: combineFingerprints(myFingerprint, theirFingerprint),
+        devices: theirs.devices,
+        conflicts: theirs.conflicts,
+        ownConflicts: mine.conflicts,
+        state: verificationState(record, theirs.devices.map(d => d.deviceId)),
+    };
+}
+
+/**
+ * Отметить собеседника сверенным. devices — ровно тот набор, по которому
+ * был посчитан показанный код: если за время сверки появилось ещё одно
+ * устройство, оно в отметку не попадёт и отправка остановится снова.
+ */
+export async function markVerified(userId, devices) {
+    await store.verified.save(userId, {
+        devices: devices.map(d => ({ deviceId: d.deviceId, signingKey: d.signingKey, dhKey: d.dhKey })),
+        verifiedAt: Date.now(),
+    });
+}
+
+export const clearVerified = userId => store.verified.drop(userId);
+
+/**
+ * Состояние сверки по участникам чата — для шапки. Без сети и без
+ * хэширования: только сравнение списка устройств с отметкой.
+ *
+ * devices — ответ /api/chats/:id/devices. Возвращает Map userId → state.
+ */
+export async function verificationStatus(devices) {
+    const result = new Map();
+    for (const [userId, deviceIds] of groupByUser(devices)) {
+        result.set(userId, verificationState(await store.verified.load(userId), deviceIds));
+    }
+    return result;
+}

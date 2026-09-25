@@ -40,30 +40,96 @@ fn to_arr64(v: Vec<u8>) -> [u8; SIGNATURE_LEN] {
         .expect("corrupt row: expected 64-byte signature")
 }
 
-pub async fn upsert_identity_keys(
+/// Итог записи identity-ключей устройства.
+pub enum IdentityWrite {
+    /// Устройство публикует ключи впервые.
+    Inserted,
+    /// Повторная публикация тех же ключей — идемпотентна.
+    Unchanged,
+    /// У устройства уже другие ключи. Легитимно так не бывает: новая
+    /// личность — это всегда новое устройство с новым device_id.
+    Conflict,
+}
+
+/// Identity устройства записывается один раз и больше не меняется.
+///
+/// Раньше здесь был upsert, и любой, кто завладел сессией, мог молча
+/// подменить ключи чужого устройства — собеседники начали бы шифровать
+/// под его ключ. Клиенты такую подмену теперь ловят сами (они помнят ключ
+/// устройства с первого контакта), но и сервер не должен её допускать.
+pub async fn insert_identity_keys(
     pool: &PgPool,
     user_id: i64,
     device_id: i64,
     signing_key: &[u8; PUBKEY_LEN],
     dh_key: &[u8; PUBKEY_LEN],
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
+) -> Result<IdentityWrite, sqlx::Error> {
+    let inserted = sqlx::query_as::<_, (i64,)>(
         r#"
         INSERT INTO identity_keys (user_id, device_id, identity_signing_key, identity_dh_key, updated_at)
         VALUES ($1, $2, $3, $4, now())
-        ON CONFLICT (user_id, device_id) DO UPDATE
-            SET identity_signing_key = EXCLUDED.identity_signing_key,
-                identity_dh_key = EXCLUDED.identity_dh_key,
-                updated_at = now()
+        ON CONFLICT (user_id, device_id) DO NOTHING
+        RETURNING device_id
         "#,
     )
     .bind(user_id)
     .bind(device_id)
     .bind(&signing_key[..])
     .bind(&dh_key[..])
-    .execute(pool)
+    .fetch_optional(pool)
     .await?;
-    Ok(())
+    if inserted.is_some() {
+        return Ok(IdentityWrite::Inserted);
+    }
+
+    let existing = sqlx::query_as::<_, (Vec<u8>, Vec<u8>)>(
+        "SELECT identity_signing_key, identity_dh_key FROM identity_keys WHERE user_id = $1 AND device_id = $2",
+    )
+    .bind(user_id)
+    .bind(device_id)
+    .fetch_one(pool)
+    .await?;
+    if existing.0 == signing_key[..] && existing.1 == dh_key[..] {
+        Ok(IdentityWrite::Unchanged)
+    } else {
+        Ok(IdentityWrite::Conflict)
+    }
+}
+
+/// Identity-ключи всех устройств пользователя — для сверки ключей
+/// (safety numbers).
+///
+/// В отличие от fetch_bundles ничего не расходует: bundle забирает по
+/// одноразовому prekey с каждого устройства, и тратить их ради того, чтобы
+/// показать код безопасности, было бы расточительно.
+pub async fn fetch_identities(
+    pool: &PgPool,
+    target_user_id: i64,
+) -> Result<Vec<(i64, IdentityRow)>, sqlx::Error> {
+    let rows = sqlx::query_as::<_, (i64, Vec<u8>, Vec<u8>)>(
+        r#"
+        SELECT device_id, identity_signing_key, identity_dh_key
+        FROM identity_keys
+        WHERE user_id = $1
+        ORDER BY device_id ASC
+        "#,
+    )
+    .bind(target_user_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(device_id, signing, dh)| {
+            (
+                device_id,
+                IdentityRow {
+                    identity_signing_key: to_arr32(signing),
+                    identity_dh_key: to_arr32(dh),
+                },
+            )
+        })
+        .collect())
 }
 
 pub async fn get_identity_signing_key(

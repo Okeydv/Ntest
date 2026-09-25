@@ -14,7 +14,7 @@
 // на новом устройстве в этап A не входит.
 
 const DB_NAME = 'nyxo-e2ee';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 const STORE_META = 'meta';
 const STORE_IDENTITY = 'identity';
@@ -22,6 +22,11 @@ const STORE_SIGNED_PREKEYS = 'signedPrekeys';
 const STORE_ONE_TIME_PREKEYS = 'oneTimePrekeys';
 const STORE_SESSIONS = 'sessions';
 const STORE_PLAINTEXT = 'plaintext';
+const STORE_IDENTITIES = 'identities';
+const STORE_VERIFIED = 'verified';
+
+const ALL_STORES = [STORE_META, STORE_IDENTITY, STORE_SIGNED_PREKEYS,
+    STORE_ONE_TIME_PREKEYS, STORE_SESSIONS, STORE_PLAINTEXT, STORE_IDENTITIES, STORE_VERIFIED];
 
 let dbPromise = null;
 
@@ -31,8 +36,7 @@ function openDb() {
         const request = indexedDB.open(DB_NAME, DB_VERSION);
         request.onupgradeneeded = () => {
             const db = request.result;
-            for (const name of [STORE_META, STORE_IDENTITY, STORE_SIGNED_PREKEYS,
-                STORE_ONE_TIME_PREKEYS, STORE_SESSIONS, STORE_PLAINTEXT]) {
+            for (const name of ALL_STORES) {
                 if (!db.objectStoreNames.contains(name)) db.createObjectStore(name);
             }
         };
@@ -157,11 +161,34 @@ export const previews = {
     save: (chatId, text) => put(STORE_META, `preview:${chatId}`, text),
 };
 
+/**
+ * Identity-ключи чужих устройств в том виде, в каком мы увидели их впервые
+ * (trust on first use).
+ *
+ * Ключ устройства в этой системе не меняется никогда: новая личность —
+ * всегда новое устройство с новым id, а key-server перезапись запрещает.
+ * Поэтому другой ключ у знакомого устройства — это подмена, и шифровать
+ * под него нельзя.
+ */
+export const identities = {
+    load: (userId, deviceId) => get(STORE_IDENTITIES, sessionKey(userId, deviceId)),
+    save: (userId, deviceId, entry) => put(STORE_IDENTITIES, sessionKey(userId, deviceId), entry),
+};
+
+/**
+ * Отметки о сверке кода безопасности: по пользователю — набор его
+ * устройств с ключами на момент сверки.
+ */
+export const verified = {
+    load: userId => get(STORE_VERIFIED, String(userId)),
+    save: (userId, entry) => put(STORE_VERIFIED, String(userId), entry),
+    drop: userId => del(STORE_VERIFIED, String(userId)),
+};
+
 /** Полная очистка — при смене устройства или несовпадении с сервером. */
 export async function wipe() {
     const db = await openDb();
-    for (const name of [STORE_META, STORE_IDENTITY, STORE_SIGNED_PREKEYS,
-        STORE_ONE_TIME_PREKEYS, STORE_SESSIONS, STORE_PLAINTEXT]) {
+    for (const name of ALL_STORES) {
         await tx(db, name, 'readwrite', store => store.clear());
     }
 }

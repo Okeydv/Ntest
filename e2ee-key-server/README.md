@@ -79,11 +79,12 @@ X-User-Id: <числовой id уже аутентифицированного 
 | Метод | Путь | Назначение |
 |---|---|---|
 | GET | `/healthz` | health-check, без авторизации |
-| PUT | `/internal/v1/keys/identity` | зарегистрировать/заменить identity-ключи |
+| PUT | `/internal/v1/keys/identity` | зарегистрировать identity-ключи устройства (один раз; другие ключи для того же устройства — `409`) |
 | PUT | `/internal/v1/keys/signed-prekey` | ротация Signed PreKey |
 | POST | `/internal/v1/keys/one-time-prekeys` | пополнить пул OPK (батч) |
 | GET | `/internal/v1/keys/one-time-prekeys/count` | сколько OPK осталось у себя |
 | GET | `/internal/v1/keys/bundle/:target_user_id` | забрать bundle для старта сессии (атомарно расходует один OPK у target) |
+| GET | `/internal/v1/keys/identities/:target_user_id` | identity-ключи всех устройств target — для кода безопасности, OPK не расходует |
 | DELETE | `/internal/v1/keys` | стереть весь ключевой материал вызывающего |
 
 Ключи и подписи передаются как base64 (`STANDARD` алфавит, с padding).
