@@ -56,7 +56,6 @@ const elements = {
     replyPreviewText: document.getElementById('reply-preview-text'),
     cancelReplyBtn: document.getElementById('cancel-reply-btn'),
     toast: document.getElementById('toast'),
-    overlay: document.getElementById('overlay'),
     profileUsername: document.getElementById('profile-username'),
     profileEmail: document.getElementById('profile-email'),
     profileCode: document.getElementById('profile-code'),
@@ -508,12 +507,82 @@ function showApp() {
 
 let toastTimer = null;
 
-function showToast(message, type = 'info') {
-    elements.toast.textContent = message;
-    elements.toast.className = `toast ${type}`;
-    elements.toast.classList.remove('hidden');
+/**
+ * Кнопка недоступна, пока идёт запрос. Двойной клик по «Зарегистрироваться»
+ * отправлял две регистрации: вторая падала с «email занят», и человек
+ * видел ошибку, хотя аккаунт уже создан.
+ */
+async function withBusy(button, fn) {
+    if (button.disabled) return;
+    button.disabled = true;
+    button.setAttribute('aria-busy', 'true');
+    try {
+        await fn();
+    } finally {
+        button.disabled = false;
+        button.removeAttribute('aria-busy');
+    }
+}
+
+/**
+ * Тост. options.action — кнопка действия { label, onClick }, options.duration —
+ * сколько держать.
+ *
+ * Ошибка по таймеру не прячется: за три секунды её легко не успеть
+ * прочитать, а она объясняет, почему не сработало. Она висит, пока её не
+ * закроют или не сменит другой тост.
+ *
+ * Тост — popover="manual": он в верхнем слое и виден поверх открытого
+ * окна. Показ заново поднимает его над окном, открытым позже.
+ */
+function showToast(message, type = 'info', { action = null, duration = null } = {}) {
+    const toast = elements.toast;
+    const sticky = type === 'error' && !duration;
+    const text = document.createElement('span');
+    text.className = 'toast-text';
+    text.textContent = message;
+    toast.replaceChildren(text);
+    if (action) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'toast-action';
+        button.textContent = action.label;
+        button.addEventListener('click', () => {
+            hideToast();
+            action.onClick();
+        });
+        toast.appendChild(button);
+    }
+    if (sticky || action) {
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'icon-btn icon-btn-sm icon-btn-quiet toast-close';
+        close.setAttribute('aria-label', 'Закрыть');
+        close.appendChild(createIcon('i-close'));
+        close.addEventListener('click', hideToast);
+        toast.appendChild(close);
+    }
+    toast.className = `toast ${type}`;
+    // Открытое модальное окно делает всё вне себя inert — тост был бы виден,
+    // но крестик и «Вернуть» не нажимались бы. Поэтому тост кладётся внутрь
+    // открытого окна, а когда окна нет — обратно в body.
+    const host = document.querySelector('dialog.modal[open]') || document.body;
+    if (toast.parentElement !== host) {
+        if (toast.matches(':popover-open')) toast.hidePopover();
+        host.appendChild(toast);
+    }
+    // Ошибку экранный диктор зачитывает сразу, остальное — в паузе.
+    toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
+    toast.setAttribute('aria-live', type === 'error' ? 'assertive' : 'polite');
+    if (toast.matches(':popover-open')) toast.hidePopover();
+    toast.showPopover();
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => elements.toast.classList.add('hidden'), 3200);
+    if (!sticky) toastTimer = setTimeout(hideToast, duration || 3200);
+}
+
+function hideToast() {
+    clearTimeout(toastTimer);
+    if (elements.toast.matches(':popover-open')) elements.toast.hidePopover();
 }
 
 function getCsrfToken() {
@@ -547,7 +616,7 @@ function setupEventListeners() {
         });
     });
 
-    elements.loginBtn.addEventListener('click', async () => {
+    elements.loginBtn.addEventListener('click', () => withBusy(elements.loginBtn, async () => {
         clearFieldErrors(elements.loginForm);
         const email = document.getElementById('login-email').value.trim();
         const password = document.getElementById('login-password').value;
@@ -571,9 +640,9 @@ function setupEventListeners() {
         } else {
             setFieldError('login-password', data.message);
         }
-    });
+    }));
 
-    elements.registerBtn.addEventListener('click', async () => {
+    elements.registerBtn.addEventListener('click', () => withBusy(elements.registerBtn, async () => {
         clearFieldErrors(elements.registerForm);
         const username = document.getElementById('register-username').value.trim();
         const email = document.getElementById('register-email').value.trim();
@@ -605,9 +674,9 @@ function setupEventListeners() {
         } else {
             setFieldError('register-email', data.message);
         }
-    });
+    }));
 
-    elements.anonymousLoginBtn.addEventListener('click', async () => {
+    elements.anonymousLoginBtn.addEventListener('click', () => withBusy(elements.anonymousLoginBtn, async () => {
         const data = await api('/api/register/anonymous', { method: 'POST' });
         if (data.success) {
             currentUser = data.user;
@@ -618,7 +687,7 @@ function setupEventListeners() {
         } else {
             showToast(data.message, 'error');
         }
-    });
+    }));
 
     elements.logoutBtn.addEventListener('click', async () => {
         await api('/api/logout', { method: 'POST' });
@@ -736,8 +805,14 @@ function setupEventListeners() {
     });
 
     elements.sendBtn.addEventListener('click', sendMessage);
-    elements.messageInput.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') sendMessage();
+    // keydown, а не устаревший keypress. Enter, которым подтверждают слово
+    // в IME (японский, китайский, корейский ввод, часть экранных
+    // клавиатур), не должен отправлять недописанное сообщение: isComposing,
+    // а keyCode 229 — для Safari, где isComposing на этом Enter уже false.
+    elements.messageInput.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter' || e.isComposing || e.keyCode === 229) return;
+        e.preventDefault();
+        sendMessage();
     });
 
     elements.attachBtn.addEventListener('click', () => elements.fileInput.click());
@@ -745,32 +820,24 @@ function setupEventListeners() {
     elements.cancelReplyBtn.addEventListener('click', clearReply);
 
     elements.replyMessageBtn.addEventListener('click', () => {
-        replyToMessageId = elements.messageMenu.dataset.messageId;
-        const text = elements.messageMenu.dataset.messageText;
+        replyToMessageId = elements.messageMenu.dataset.forMessage;
+        const text = elements.messageMenu.dataset.forMessageText;
         elements.replyPreviewText.textContent = text.substring(0, 100);
         elements.replyPreview.classList.remove('hidden');
         hideMessageMenu();
     });
 
     elements.editMessageBtn.addEventListener('click', () => {
-        editingMessageId = elements.messageMenu.dataset.messageId;
-        const text = elements.messageMenu.dataset.messageText;
+        editingMessageId = elements.messageMenu.dataset.forMessage;
+        const text = elements.messageMenu.dataset.forMessageText;
         elements.messageInput.value = text;
         elements.messageInput.focus();
         hideMessageMenu();
     });
 
-    elements.deleteMessageBtn.addEventListener('click', async () => {
-        const messageId = elements.messageMenu.dataset.messageId;
-        const data = await api(`/api/messages/${messageId}`, { method: 'DELETE' });
-        if (data.success) {
-            showToast('Сообщение удалено', 'success');
-            const el = document.querySelector(`[data-message-id="${messageId}"]`);
-            if (el) el.remove();
-        } else {
-            showToast(data.message, 'error');
-        }
+    elements.deleteMessageBtn.addEventListener('click', () => {
         hideMessageMenu();
+        scheduleDelete(elements.messageMenu.dataset.forMessage);
     });
 
     let searchTimeout;
@@ -784,15 +851,32 @@ function setupEventListeners() {
     });
 
     document.querySelectorAll('.close-modal').forEach(btn => {
-        btn.addEventListener('click', () => {
-            document.querySelectorAll('.modal').forEach(m => closeModal(m));
+        btn.addEventListener('click', () => closeModal(btn.closest('dialog')));
+    });
+
+    document.querySelectorAll('dialog.modal').forEach(dialog => {
+        // Клик по затемнению вокруг окна. Сам dialog без полей, поэтому
+        // клик с target === dialog — это клик по ::backdrop, а не по окну.
+        dialog.addEventListener('click', e => {
+            if (e.target === dialog) closeModal(dialog);
+        });
+        // Esc закрывает окно сам (событие cancel) — ошибки полей чистим и тут.
+        // Тост, если он жил внутри окна, возвращается в body и остаётся виден.
+        dialog.addEventListener('close', () => {
+            clearFieldErrors(dialog);
+            const toast = elements.toast;
+            if (dialog.contains(toast)) {
+                const wasOpen = toast.matches(':popover-open');
+                if (wasOpen) toast.hidePopover();
+                document.body.appendChild(toast);
+                if (wasOpen) toast.showPopover();
+            }
         });
     });
 
-    elements.overlay.addEventListener('click', () => {
-        document.querySelectorAll('.modal').forEach(m => closeModal(m));
-        hideMessageMenu();
-    });
+    setupMessageMenu();
+    // Не дожидаемся таймера отмены, если страницу закрывают.
+    window.addEventListener('pagehide', flushPendingDeletes);
 
     // Сообщения обрабатываются строго по одному, в порядке прихода. Иначе
     // второе сообщение группы могло бы начать расшифровываться раньше, чем
@@ -806,7 +890,7 @@ function setupEventListeners() {
 
     socket.on('messageEdited', ({ id, text, chat_id, room_id }) => {
         if (chat_id == currentChatId || room_id == currentRoomId) {
-            const bubble = document.querySelector(`[data-message-id="${id}"]`);
+            const bubble = elements.chatMessages.querySelector(`[data-message-id="${id}"]`);
             if (!bubble) return;
             const textEl = bubble.querySelector('.message-text');
             if (textEl) textEl.textContent = text;
@@ -824,26 +908,29 @@ function setupEventListeners() {
 
     socket.on('messageDeleted', ({ id, chat_id, room_id }) => {
         if (chat_id == currentChatId || room_id == currentRoomId) {
-            const bubble = document.querySelector(`[data-message-id="${id}"]`);
-            if (bubble) bubble.remove();
+            const bubble = elements.chatMessages.querySelector(`[data-message-id="${id}"]`);
+            if (bubble) removeMessageElement(bubble);
         }
     });
 
-    document.addEventListener('click', () => hideMessageMenu());
-    document.addEventListener('scroll', () => hideMessageMenu(), true);
+    // Меню стоит на месте, а переписка под ним прокручивается — оно бы
+    // «отклеилось» от сообщения. Закрываем, как и системные меню.
+    elements.chatMessages.addEventListener('scroll', () => hideMessageMenu(), { passive: true });
 }
 
+/* --- Окна ------------------------------------------------------------------
+   <dialog> + showModal(): фокус заперт внутри окна и возвращается туда,
+   откуда окно открыли, Esc закрывает, фон недоступен для мыши и экранного
+   диктора (inert), а слой — верхний, без ручного оверлея и z-index. */
+
 function openModal(modal) {
-    modal.classList.remove('hidden');
-    elements.overlay.classList.remove('hidden');
+    if (!modal.open) modal.showModal();
 }
 
 function closeModal(modal) {
+    if (!modal) return;
     clearFieldErrors(modal);
-    modal.classList.add('hidden');
-    if (!document.querySelector('.modal:not(.hidden)')) {
-        elements.overlay.classList.add('hidden');
-    }
+    if (modal.open) modal.close();
 }
 
 // Скелетон повторяет форму реального элемента списка — круглая аватарка и
@@ -974,9 +1061,70 @@ async function openChat(chatId, roomId, name, avatar, online, isBot) {
     socket.emit('joinChat', roomKey);
 }
 
+/* --- Время и дни ----------------------------------------------------------
+   Сервер присылает момент отправки (created_at, с часовым поясом), а
+   форматирует клиент — в своём поясе. Раньше приходила строка «ЧЧ:ММ» в
+   поясе сервера: у собеседника в другом поясе время было неверным, а по
+   какому дню сообщение, не было видно вовсе. Язык — язык интерфейса. */
+
+const UI_LOCALE = document.documentElement.lang || 'ru';
+const timeFormat = new Intl.DateTimeFormat(UI_LOCALE, { hour: '2-digit', minute: '2-digit' });
+const dayFormat = new Intl.DateTimeFormat(UI_LOCALE, { day: 'numeric', month: 'long' });
+const dayWithYearFormat = new Intl.DateTimeFormat(UI_LOCALE, { day: 'numeric', month: 'long', year: 'numeric' });
+const fullFormat = new Intl.DateTimeFormat(UI_LOCALE, { dateStyle: 'long', timeStyle: 'short' });
+
+function messageDate(message) {
+    const date = message.created_at ? new Date(message.created_at) : null;
+    return date && !Number.isNaN(date.getTime()) ? date : null;
+}
+
+// Ключ дня в поясе пользователя: сравнивать надо по местному календарю.
+const dayKey = date => `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+
+function dayLabel(date) {
+    const today = new Date();
+    const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
+    if (dayKey(date) === dayKey(today)) return 'Сегодня';
+    if (dayKey(date) === dayKey(yesterday)) return 'Вчера';
+    return (date.getFullYear() === today.getFullYear() ? dayFormat : dayWithYearFormat).format(date);
+}
+
+function lastDayInChat() {
+    const bubbles = elements.chatMessages.querySelectorAll('[data-day]');
+    return bubbles.length ? bubbles[bubbles.length - 1].dataset.day : null;
+}
+
 function appendMessage(message) {
     const el = createMessageElement(message);
+    const date = messageDate(message);
+    if (date) {
+        el.dataset.day = dayKey(date);
+        if (lastDayInChat() !== el.dataset.day) {
+            const separator = document.createElement('div');
+            separator.className = 'day-separator';
+            separator.setAttribute('role', 'separator');
+            separator.dataset.day = el.dataset.day;
+            const label = document.createElement('span');
+            label.textContent = dayLabel(date);
+            separator.appendChild(label);
+            elements.chatMessages.appendChild(separator);
+        }
+    }
     elements.chatMessages.appendChild(el);
+}
+
+/**
+ * Убрать пузырь сообщения. Если это было последнее сообщение дня,
+ * вместе с ним уходит и разделитель, иначе он висел бы над пустотой.
+ */
+function removeMessageElement(el) {
+    const prev = el.previousElementSibling;
+    const next = el.nextElementSibling;
+    el.remove();
+    if (prev && prev.classList.contains('day-separator')
+        && (!next || next.classList.contains('day-separator'))) {
+        prev.remove();
+    }
 }
 
 // Элементы с файлом (img/video/audio/a) собираются через DOM API, а не через
@@ -1167,9 +1315,16 @@ function createMessageElement(message) {
         lock.appendChild(createIcon('i-lock'));
         metaDiv.appendChild(lock);
     }
-    const timeSpan = document.createElement('span');
+    const timeSpan = document.createElement('time');
     timeSpan.className = 'message-time';
-    timeSpan.textContent = message.time || '';
+    const sentAt = messageDate(message);
+    if (sentAt) {
+        timeSpan.dateTime = sentAt.toISOString();
+        timeSpan.textContent = timeFormat.format(sentAt);
+        timeSpan.title = fullFormat.format(sentAt);
+    } else {
+        timeSpan.textContent = message.time || '';
+    }
     metaDiv.appendChild(timeSpan);
     if (isMine) {
         const statusSpan = document.createElement('span');
@@ -1181,16 +1336,30 @@ function createMessageElement(message) {
     div.appendChild(contentDiv);
     div.appendChild(metaDiv);
 
+    // Кнопка «⋯» — меню для клавиатуры и тача, где правого клика нет.
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'icon-btn icon-btn-sm icon-btn-quiet message-more';
+    more.setAttribute('aria-label', 'Действия с сообщением');
+    more.setAttribute('aria-haspopup', 'menu');
+    more.appendChild(createIcon('i-more'));
+    more.addEventListener('click', e => {
+        e.stopPropagation();
+        const rect = more.getBoundingClientRect();
+        showMessageMenu(rect.left, rect.bottom + 4, message, more);
+    });
+    metaDiv.appendChild(more);
+
     div.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         if (message.deleted) return;
-        showMessageMenu(e.pageX, e.pageY, message);
+        showMessageMenu(e.clientX, e.clientY, message);
     });
 
     div.addEventListener('touchstart', (e) => {
         longPressTimer = setTimeout(() => {
             const touch = e.touches[0];
-            showMessageMenu(touch.pageX, touch.pageY, message);
+            showMessageMenu(touch.clientX, touch.clientY, message);
         }, 600);
     }, { passive: true });
 
@@ -1200,17 +1369,139 @@ function createMessageElement(message) {
     return div;
 }
 
-function showMessageMenu(x, y, message) {
-    elements.messageMenu.style.left = Math.min(x, window.innerWidth - 200) + 'px';
-    elements.messageMenu.style.top = Math.min(y, window.innerHeight - 150) + 'px';
-    elements.messageMenu.classList.remove('hidden');
-    elements.messageMenu.dataset.messageId = message.id;
-    elements.messageMenu.dataset.messageText = message.text || '';
+/* --- Меню сообщения --------------------------------------------------------
+   popover в верхнем слое. Открывается правым кликом, долгим нажатием и
+   кнопкой «⋯» — последняя нужна клавиатуре и тачу, где правого клика нет.
+
+   popover="manual", а закрытие по клику мимо и по Esc — своё. У
+   popover="auto" это делает браузер, но в Linux и macOS contextmenu
+   приходит на НАЖАТИИ кнопки мыши: меню открывалось, а отпускание той же
+   кнопки браузер считал кликом мимо и тут же меню закрывал. */
+
+let menuTrigger = null;
+
+function menuItems() {
+    return [...elements.messageMenu.querySelectorAll('.menu-item')].filter(b => !b.hidden);
+}
+
+/**
+ * Показать меню у точки (x, y) в координатах окна. trigger — кнопка «⋯»,
+ * если меню открыли ей: фокус уходит в меню и возвращается на неё.
+ */
+function showMessageMenu(x, y, message, trigger = null) {
+    const menu = elements.messageMenu;
+    // Не data-message-id: по этому атрибуту ищут пузыри сообщений, и после
+    // удаления пузыря находилось бы само меню.
+    menu.dataset.forMessage = message.id;
+    menu.dataset.forMessageText = message.text || '';
     const isMine = message.user_id === (currentUser ? currentUser.id : 0);
     // Правка зашифрованного сообщения ушла бы на сервер открытым текстом,
     // поэтому её нет вовсе — удалить и отправить заново можно.
-    elements.editMessageBtn.style.display = isMine && !message.encrypted ? 'block' : 'none';
-    elements.deleteMessageBtn.style.display = isMine ? 'block' : 'none';
+    elements.editMessageBtn.hidden = !(isMine && !message.encrypted);
+    elements.deleteMessageBtn.hidden = !isMine;
+
+    menuTrigger = trigger;
+    if (menu.matches(':popover-open')) menu.hidePopover();
+    menu.showPopover();
+    // Размер известен только после показа: прижимаем меню к краям окна.
+    const margin = 8;
+    menu.style.left = `${Math.max(margin, Math.min(x, window.innerWidth - menu.offsetWidth - margin))}px`;
+    menu.style.top = `${Math.max(margin, Math.min(y, window.innerHeight - menu.offsetHeight - margin))}px`;
+    if (trigger) menuItems()[0]?.focus();
+}
+
+function setupMessageMenu() {
+    const menu = elements.messageMenu;
+    // Нажатие мимо меню закрывает его. pointerdown, а не click: правый клик,
+    // открывающий меню, начинается раньше, чем меню появилось.
+    document.addEventListener('pointerdown', e => {
+        if (menu.matches(':popover-open') && !menu.contains(e.target) && e.target !== menuTrigger
+            && !(menuTrigger && menuTrigger.contains(e.target))) {
+            hideMessageMenu();
+        }
+    }, true);
+    document.addEventListener('keydown', e => {
+        if (e.key === 'Escape' && menu.matches(':popover-open')) {
+            e.preventDefault();
+            hideMessageMenu();
+        }
+    });
+    // Стрелки по пунктам — как в системных меню (role="menu").
+    menu.addEventListener('keydown', e => {
+        const items = menuItems();
+        const index = items.indexOf(document.activeElement);
+        let next = null;
+        if (e.key === 'ArrowDown') next = items[(index + 1) % items.length];
+        else if (e.key === 'ArrowUp') next = items[(index - 1 + items.length) % items.length];
+        else if (e.key === 'Home') next = items[0];
+        else if (e.key === 'End') next = items[items.length - 1];
+        if (next) {
+            e.preventDefault();
+            next.focus();
+        }
+    });
+    menu.addEventListener('toggle', e => {
+        if (e.newState === 'closed' && menuTrigger && menuTrigger.isConnected
+            && (!document.activeElement || document.activeElement === document.body || menu.contains(document.activeElement))) {
+            menuTrigger.focus();
+        }
+        if (e.newState === 'closed') menuTrigger = null;
+    });
+}
+
+/* --- Удаление с отменой ----------------------------------------------------
+   Сообщение сначала только прячется, а удаляется на сервере через 5 секунд
+   — если за это время не нажали «Вернуть». Удалённое на сервере вернуть
+   нельзя: содержимое стирается по-настоящему. */
+
+const UNDO_DELETE_MS = 5000;
+const pendingDeletes = new Map();
+
+function scheduleDelete(messageId) {
+    const el = elements.chatMessages.querySelector(`[data-message-id="${messageId}"]`);
+    if (!el || pendingDeletes.has(messageId)) return;
+    el.hidden = true;
+    pendingDeletes.set(messageId, { el, timer: setTimeout(() => commitDelete(messageId), UNDO_DELETE_MS) });
+    showToast('Сообщение удалено', 'info', {
+        duration: UNDO_DELETE_MS,
+        action: { label: 'Вернуть', onClick: () => undoDelete(messageId) },
+    });
+}
+
+function undoDelete(messageId) {
+    const pending = pendingDeletes.get(messageId);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    pendingDeletes.delete(messageId);
+    pending.el.hidden = false;
+}
+
+async function commitDelete(messageId) {
+    const pending = pendingDeletes.get(messageId);
+    if (!pending) return;
+    pendingDeletes.delete(messageId);
+    clearTimeout(pending.timer);
+    const data = await api(`/api/messages/${messageId}`, { method: 'DELETE' });
+    if (data && data.success) {
+        if (pending.el.isConnected) removeMessageElement(pending.el);
+    } else {
+        pending.el.hidden = false;
+        showToast(`Сообщение не удалено: ${(data && data.message) || 'ошибка сети'}`, 'error');
+    }
+}
+
+/** Страницу закрывают — удаляем сразу; keepalive доживает до конца запроса. */
+function flushPendingDeletes() {
+    for (const [messageId, pending] of pendingDeletes) {
+        clearTimeout(pending.timer);
+        fetch(`/api/messages/${messageId}`, {
+            method: 'DELETE',
+            keepalive: true,
+            credentials: 'same-origin',
+            headers: { 'X-CSRF-Token': getCsrfToken() },
+        });
+    }
+    pendingDeletes.clear();
 }
 
 async function handleNewMessage(message) {
@@ -1231,7 +1522,7 @@ async function handleNewMessage(message) {
 }
 
 function hideMessageMenu() {
-    elements.messageMenu.classList.add('hidden');
+    if (elements.messageMenu.matches(':popover-open')) elements.messageMenu.hidePopover();
 }
 
 function clearReply() {
@@ -1257,7 +1548,7 @@ async function sendMessage() {
         });
         if (data.success) {
             showToast('Сообщение изменено', 'success');
-            const el = document.querySelector(`[data-message-id="${editingMessageId}"] .message-text`);
+            const el = elements.chatMessages.querySelector(`[data-message-id="${editingMessageId}"] .message-text`);
             if (el) el.textContent = text;
         }
         editingMessageId = null;
@@ -1368,7 +1659,12 @@ async function sendEncrypted(text, payload) {
 
 function reportEncryptedSendError(prefix, chatId, error) {
     console.error('[E2EE] отправка не удалась:', error);
-    showToast(`${prefix}: ${error.message}`, 'error');
+    // Если отправку остановила сверка ключей, из ошибки сразу можно перейти
+    // к ней; неотправленный текст остался в поле — его можно отправить снова.
+    const action = error.code === 'verification-changed'
+        ? { label: 'Сверить ключи', onClick: () => openSafetyModal(chatId) }
+        : (prefix === 'Сообщение не отправлено' ? { label: 'Повторить', onClick: sendMessage } : null);
+    showToast(`${prefix}: ${error.message}`, 'error', { action });
     // Отправку остановила сверка — индикатор должен это показать сразу,
     // а не после переоткрытия чата.
     if (error.code === 'verification-changed' && chatId === currentChatId) {
@@ -1424,8 +1720,24 @@ async function handleFileUpload() {
         return;
     }
 
+    // Открытый путь готовит файл так же: HEIC превращается в JPEG, имя фото
+    // и видео — в нейтральное. Сервер всё равно проверит и почистит сам,
+    // но переименовать HEIC в JPEG он не может, а имя видит уже в запросе.
+    let upload = file;
+    let uploadName = file.name;
+    if (e2ee) {
+        try {
+            const prepared = await e2ee.prepareAttachment(file);
+            upload = prepared.blob;
+            uploadName = prepared.name;
+        } catch (error) {
+            showToast(`Файл не отправлен: ${error.message}`, 'error');
+            return;
+        }
+    }
+
     const formData = new FormData();
-    formData.append('file', file);
+    formData.append('file', upload, uploadName);
     formData.append('chatId', chatId);
 
     const res = await fetch('/api/messages/file', {

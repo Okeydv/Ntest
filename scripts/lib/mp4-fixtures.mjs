@@ -101,8 +101,8 @@ export function withIphoneMetadata(mp4) {
  * Синтетический MP4 с неподвижными смещениями: stco указывает в mdat, и
  * по нему видно, что очистка ничего не сдвинула.
  */
-export function syntheticMp4({ largeMdat = false } = {}) {
-    const ftyp = box('ftyp', Buffer.from('isom'), u32(512), Buffer.from('isomiso2mp41'));
+export function syntheticMp4({ largeMdat = false, brand = 'isom' } = {}) {
+    const ftyp = box('ftyp', Buffer.from(brand), u32(512), Buffer.from('isomiso2mp41'));
     const mvhd = fullBox('mvhd', 0, u32(SHOT_AT), u32(SHOT_AT), u32(1000), u32(1000), Buffer.alloc(80));
     const tkhd = fullBox('tkhd', 1, Buffer.alloc(8), Buffer.alloc(8), u32(1), Buffer.alloc(64));
     tkhd.writeBigUInt64BE(BigInt(SHOT_AT), 12);

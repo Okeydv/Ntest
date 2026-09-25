@@ -202,7 +202,7 @@ check('и читается', (await texts(dave.page)).includes('только т�
 
 const editVisible = await alice.page.evaluate(() => {
     showMessageMenu(10, 10, { id: 1, user_id: currentUser.id, encrypted: true, text: 'x' });
-    const shown = elements.editMessageBtn.style.display !== 'none';
+    const shown = !elements.editMessageBtn.hidden && elements.editMessageBtn.offsetParent !== null;
     hideMessageMenu();
     return shown;
 });
