@@ -291,7 +291,7 @@
         </div>
     </div>
 
-    <div id="new-chat-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="new-chat-modal-title">
+    <dialog id="new-chat-modal" class="modal" aria-labelledby="new-chat-modal-title">
         <div class="modal-content">
             <div class="modal-header">
                 <h3 id="new-chat-modal-title">Новый чат</h3>
@@ -317,9 +317,9 @@
                 <button id="join-chat-btn" class="btn btn-secondary btn-block" type="button">Присоединиться</button>
             </div>
         </div>
-    </div>
+    </dialog>
 
-    <div id="chat-menu-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="chat-menu-modal-title">
+    <dialog id="chat-menu-modal" class="modal" aria-labelledby="chat-menu-modal-title">
         <div class="modal-content modal-content-sm">
             <div class="modal-header">
                 <h3 id="chat-menu-modal-title">Меню чата</h3>
@@ -334,9 +334,9 @@
                 </button>
             </div>
         </div>
-    </div>
+    </dialog>
 
-    <div id="profile-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="profile-modal-title">
+    <dialog id="profile-modal" class="modal" aria-labelledby="profile-modal-title">
         <div class="modal-content">
             <div class="modal-header">
                 <h3 id="profile-modal-title">Профиль</h3>
@@ -374,9 +374,9 @@
                 </button>
             </div>
         </div>
-    </div>
+    </dialog>
 
-    <div id="password-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="password-modal-title">
+    <dialog id="password-modal" class="modal" aria-labelledby="password-modal-title">
         <div class="modal-content">
             <div class="modal-header">
                 <h3 id="password-modal-title">Смена пароля</h3>
@@ -403,9 +403,9 @@
                 <button id="save-password-btn" class="btn btn-primary btn-block" type="button">Сохранить</button>
             </div>
         </div>
-    </div>
+    </dialog>
 
-    <div id="invite-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="invite-modal-title">
+    <dialog id="invite-modal" class="modal" aria-labelledby="invite-modal-title">
         <div class="modal-content modal-content-sm">
             <div class="modal-header">
                 <h3 id="invite-modal-title">Код приглашения</h3>
@@ -423,9 +423,9 @@
                 </div>
             </div>
         </div>
-    </div>
+    </dialog>
 
-    <div id="safety-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="safety-modal-title">
+    <dialog id="safety-modal" class="modal" aria-labelledby="safety-modal-title">
         <div class="modal-content">
             <div class="modal-header">
                 <h3 id="safety-modal-title">Сверка ключей</h3>
@@ -443,9 +443,9 @@
                 <div id="safety-list" class="safety-list"></div>
             </div>
         </div>
-    </div>
+    </dialog>
 
-    <div id="message-menu" class="context-menu hidden" role="menu">
+    <div id="message-menu" class="context-menu" role="menu" aria-label="Действия с сообщением" popover="manual">
         <button id="reply-message-btn" class="menu-item" role="menuitem" type="button">
             <svg class="icon" aria-hidden="true"><use href="#i-reply"/></svg>
             Ответить
@@ -460,8 +460,8 @@
         </button>
     </div>
 
-    <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
-    <div id="overlay" class="overlay hidden"></div>
+    <!-- Тост — popover="manual": так он в верхнем слое и виден поверх открытого окна. -->
+    <div id="toast" class="toast" role="status" aria-live="polite" popover="manual"></div>
 
     <script src="/socket.io/socket.io.js"></script>
     <script src="script.js"></script>
