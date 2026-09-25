@@ -20,7 +20,8 @@ const rateLimit = require('express-rate-limit');
 const { ipKeyGenerator } = rateLimit;
 
 // Импорт новых модулей безопасности и приватности
-const { stripMetadataFromFile, cleanupOldFiles } = require('./lib/metadata-stripper');
+const { stripMetadataFromFile } = require('./lib/metadata-stripper');
+const { sweepOrphanUploads } = require('./lib/upload-sweeper');
 const DisappearingMessagesManager = require('./lib/disappearing-messages');
 const {
     addRandomDelay,
@@ -663,7 +664,7 @@ async function initDatabase() {
     // вообще. Незаметным это было потому, что на уже существующей базе всё
     // работает: ошибка возникает только при первом запуске с нуля.
     disappearingMessagesManager = new DisappearingMessagesManager(pool, {
-        onDelete: purgeEncryptedContent,
+        onDelete: purgeMessageContent,
     });
     await disappearingMessagesManager.initialize();
 
@@ -1355,6 +1356,30 @@ async function purgeEncryptedContent(messageId) {
     await dbRun('DELETE FROM message_group_payloads WHERE message_id = $1', [messageId]);
 }
 
+const UPLOADS_DIR = path.join(__dirname, 'uploads');
+// Сколько живёт файл в uploads/, на который не ссылается ни одно
+// сообщение: загрузка, оборвавшаяся между записью файла и строки в базе.
+const ORPHAN_UPLOAD_TTL_MS = 60 * 60 * 1000;
+
+/**
+ * Удалить содержимое удалённого сообщения по-настоящему.
+ *
+ * Удаление в приложении мягкое (deleted = 1): строка нужна, на неё ссылаются
+ * ответы и реакции. Но содержимому на сервере после удаления делать нечего:
+ * раньше текст оставался в базе (и всплывал в цитате ответа), а файл —
+ * на диске и по-прежнему скачивался по прямой ссылке.
+ */
+async function purgeMessageContent(messageId) {
+    const message = await dbGet('SELECT file_url, encrypted FROM messages WHERE id = $1', [messageId]);
+    if (!message) return;
+    if (message.file_url) {
+        const filename = path.basename(message.file_url);
+        await fs.promises.unlink(path.join(UPLOADS_DIR, filename)).catch(() => {});
+    }
+    await dbRun('UPDATE messages SET text = NULL, file_url = NULL, file_name = NULL WHERE id = $1', [messageId]);
+    if (message.encrypted) await purgeEncryptedContent(messageId);
+}
+
 /**
  * POST /api/blobs?chatId=N — загрузить зашифрованное вложение.
  *
@@ -1814,7 +1839,7 @@ app.get('/api/messages/:chatId', async (req, res) => {
         const selectParam = chat.room_id || chatId;
         const selectQuery = chat.room_id
             ? `SELECT m.*, u.username as sender_username, u.avatar as sender_avatar,
-                      rt.id as reply_to_id, rt.text as reply_to_text, ru.username as reply_to_sender_username, ru.avatar as reply_to_sender_avatar
+                      rt.id as reply_to_id, rt.text as reply_to_text, rt.deleted as reply_to_deleted, ru.username as reply_to_sender_username, ru.avatar as reply_to_sender_avatar
                FROM messages m
                JOIN users u ON m.user_id = u.id
                LEFT JOIN messages rt ON m.reply_to_id = rt.id
@@ -1822,7 +1847,7 @@ app.get('/api/messages/:chatId', async (req, res) => {
                WHERE m.room_id = $1 AND m.deleted = 0
                ORDER BY m.id ASC`
             : `SELECT m.*, u.username as sender_username, u.avatar as sender_avatar,
-                      rt.id as reply_to_id, rt.text as reply_to_text, ru.username as reply_to_sender_username, ru.avatar as reply_to_sender_avatar
+                      rt.id as reply_to_id, rt.text as reply_to_text, rt.deleted as reply_to_deleted, ru.username as reply_to_sender_username, ru.avatar as reply_to_sender_avatar
                FROM messages m
                JOIN users u ON m.user_id = u.id
                LEFT JOIN messages rt ON m.reply_to_id = rt.id
@@ -1917,7 +1942,7 @@ app.get('/api/messages/:chatId', async (req, res) => {
             // подключили после отправки (историю оно не получает), либо
             // отправитель не прислал конверт для него.
             envelope: m.encrypted ? (envelopeMap[m.id] || null) : undefined,
-            reply_to: m.reply_to_id ? { id: m.reply_to_id, text: m.reply_to_text, sender_username: m.reply_to_sender_username, sender_avatar: m.reply_to_sender_avatar } : null
+            reply_to: m.reply_to_id ? { id: m.reply_to_id, text: m.reply_to_text, deleted: Number(m.reply_to_deleted) === 1, sender_username: m.reply_to_sender_username, sender_avatar: m.reply_to_sender_avatar } : null
         }));
 
         const updateQuery = chat.room_id
@@ -2173,7 +2198,7 @@ app.delete('/api/messages/:messageId', async (req, res) => {
         const message = await dbGet('SELECT * FROM messages WHERE id = $1 AND user_id = $2', [messageId, req.session.userId]);
         if (!message) return res.json({ success: false, message: 'Сообщение не найдено' });
         await dbRun('UPDATE messages SET deleted = 1 WHERE id = $1', [messageId]);
-        if (message.encrypted) await purgeEncryptedContent(message.id);
+        await purgeMessageContent(message.id);
 
         const socketRoomKey = getSocketRoomKey(message.chat_id, message.room_id);
         io.to(socketRoomKey).emit('messageDeleted', {
@@ -2221,10 +2246,19 @@ app.post('/api/messages/file', upload.single('file'), async (req, res) => {
             return res.status(400).json({ success: false, message: 'Содержимое файла не соответствует его типу' });
         }
 
-        // Удаление метаданных из файла для защиты приватности
+        // Удаление метаданных из файла для защиты приватности. Не удалось —
+        // файл не отправляется: молча раздать фото с координатами хуже,
+        // чем не отправить его вовсе.
         if (file.mimetype.startsWith('image/') || file.mimetype === 'application/pdf') {
-            await stripMetadataFromFile(uploadedFilePath, file.mimetype);
-            console.log('[Privacy] Stripped metadata from uploaded file:', file.filename);
+            try {
+                await stripMetadataFromFile(uploadedFilePath, file.mimetype);
+            } catch (stripErr) {
+                console.error('Metadata strip error:', stripErr.message);
+                try { if (fs.existsSync(uploadedFilePath)) fs.unlinkSync(uploadedFilePath); } catch (_) { /* ignore */ }
+                return res.status(400).json({ success: false, message: file.mimetype === 'application/pdf'
+                    ? 'Не удалось удалить метаданные из PDF (возможно, он защищён паролем) — файл не отправлен'
+                    : 'Не удалось удалить метаданные из файла — он не отправлен' });
+            }
         }
     } catch (magicErr) {
         // Раньше при исключении здесь проверка молча пропускалась и файл
@@ -2327,7 +2361,9 @@ const ALLOWED_REACTION_EMOJIS = new Set(['👍', '❤️', '😂', '😢', '🔥
 
 async function userCanAccessFile(userId, filename) {
     const fileUrl = `/uploads/${filename}`;
-    const message = await dbGet('SELECT id FROM messages WHERE file_url = $1 LIMIT 1', [fileUrl]);
+    // Файл удалённого сообщения не отдаётся никому, даже если он ещё не
+    // успел исчезнуть с диска.
+    const message = await dbGet('SELECT id FROM messages WHERE file_url = $1 AND deleted = 0 LIMIT 1', [fileUrl]);
     if (!message) return false;
     return userCanAccessMessage(userId, message.id);
 }
@@ -2554,11 +2590,10 @@ server.listen(PORT, HOST, async () => {
         console.log('');
     }
 
-    // Запуск фоновой очистки старых файлов
-    setInterval(() => {
-        const uploadsDir = path.join(__dirname, 'uploads');
-        cleanupOldFiles(uploadsDir, 24 * 60 * 60 * 1000); // 24 часа
-    }, 60 * 60 * 1000); // Каждый час
+    // Фоновая уборка файлов, на которые не ссылается ни одно сообщение.
+    const sweepUploads = () => sweepOrphanUploads(UPLOADS_DIR, { dbAll, ttlMs: ORPHAN_UPLOAD_TTL_MS })
+        .catch(error => console.error('Uploads sweep error:', error.message));
+    setInterval(sweepUploads, ORPHAN_UPLOAD_TTL_MS).unref();
 
     console.log('Функции безопасности:');
     console.log('  ✓ CSRF Protection');

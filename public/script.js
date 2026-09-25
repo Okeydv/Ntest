@@ -1111,7 +1111,10 @@ function createMessageElement(message) {
             author.textContent = message.reply_to.sender_username || 'Неизвестно';
             const quoted = document.createElement('span');
             quoted.className = 'reply-to-text';
-            quoted.textContent = (message.reply_to.text || '').substring(0, 60);
+            // Текст удалённого сообщения сервер стирает — цитировать нечего.
+            quoted.textContent = message.reply_to.deleted
+                ? 'Сообщение удалено'
+                : (message.reply_to.text || '').substring(0, 60);
             replyDiv.append(author, quoted);
             contentDiv.appendChild(replyDiv);
         }
