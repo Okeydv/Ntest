@@ -591,6 +591,10 @@ async function initDatabase() {
     await pool.query(`ALTER TABLE messages ALTER COLUMN text DROP NOT NULL;`);
     await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS encrypted BOOLEAN NOT NULL DEFAULT FALSE;`);
     await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS sender_device_id INTEGER REFERENCES devices(id) ON DELETE SET NULL;`);
+    // Момент отправки с часовым поясом. Колонка time — строка «ЧЧ:ММ» в поясе
+    // СЕРВЕРА: у собеседника в другом поясе время было неверным, а дня не
+    // было вовсе. Форматирует теперь клиент, в своём поясе.
+    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();`);
 
     // Миграция: если таблицы chats/messages были созданы ДО появления комнат,
     // CREATE TABLE IF NOT EXISTS их не тронет и колонки room_id не будет.
@@ -1243,8 +1247,8 @@ app.get('/api/chats', async (req, res) => {
     try {
         const chats = await dbAll(`
             SELECT c.id, c.name, c.avatar, c.online, c.is_bot, c.room_id, r.code as invite_code,
-                   (SELECT text FROM messages WHERE ((c.room_id IS NOT NULL AND room_id = c.room_id) OR (c.room_id IS NULL AND chat_id = c.id)) ORDER BY id DESC LIMIT 1) as last_message,
-                   (SELECT time FROM messages WHERE ((c.room_id IS NOT NULL AND room_id = c.room_id) OR (c.room_id IS NULL AND chat_id = c.id)) ORDER BY id DESC LIMIT 1) as last_time,
+                   (SELECT text FROM messages WHERE ((c.room_id IS NOT NULL AND room_id = c.room_id) OR (c.room_id IS NULL AND chat_id = c.id)) AND deleted = 0 ORDER BY id DESC LIMIT 1) as last_message,
+                   (SELECT created_at FROM messages WHERE ((c.room_id IS NOT NULL AND room_id = c.room_id) OR (c.room_id IS NULL AND chat_id = c.id)) AND deleted = 0 ORDER BY id DESC LIMIT 1) as last_at,
                    (SELECT COUNT(*) FROM messages m WHERE ((c.room_id IS NOT NULL AND m.room_id = c.room_id) OR (c.room_id IS NULL AND m.chat_id = c.id)) AND m.sent = 0 AND m.status != 'read') as unread
             FROM chats c
             LEFT JOIN rooms r ON c.room_id = r.id
@@ -1679,14 +1683,16 @@ app.post('/api/messages/encrypted', async (req, res) => {
 
         const client = await pool.connect();
         let messageId;
+        let createdAt;
         try {
             await client.query('BEGIN');
             const inserted = await client.query(
                 `INSERT INTO messages (chat_id, room_id, user_id, text, message_type, sent, time, status, reply_to_id, encrypted, sender_device_id)
-                 VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, TRUE, $9) RETURNING id`,
+                 VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, TRUE, $9) RETURNING id, created_at`,
                 [chatId, roomId, req.session.userId, 'text', 1, time, 'sent', replyTo, senderDeviceId]
             );
             messageId = inserted.rows[0].id;
+            createdAt = inserted.rows[0].created_at;
             if (blobIds.length > 0) {
                 const linked = await client.query(
                     'UPDATE encrypted_blobs SET message_id = $1 WHERE id = ANY($2::text[]) AND message_id IS NULL',
@@ -1755,6 +1761,7 @@ app.post('/api/messages/encrypted', async (req, res) => {
             reply_to_id: replyTo,
             sent: true,
             time,
+            created_at: createdAt,
             status: 'sent',
         };
 
@@ -2100,7 +2107,9 @@ app.get('/api/chats/invite/:chatId', async (req, res) => {
 
 app.post('/api/chats/join', async (req, res) => {
     if (!req.session.userId) return res.json({ success: false, message: 'Не авторизован' });
-    const { code } = req.body;
+    // Код вводят руками и копируют из переписки: регистр, пробелы и дефисы
+    // («k7q2 mx», «K7Q-2MX») не должны мешать.
+    const code = String((req.body && req.body.code) || '').toUpperCase().replace(/[\s-]/g, '');
     if (!code) return res.json({ success: false, message: 'Введите код приглашения' });
 
     try {

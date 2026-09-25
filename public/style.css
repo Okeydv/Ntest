@@ -1156,6 +1156,29 @@ input.is-invalid:focus {
 
 .message-time { font-weight: 500; }
 
+/* Разделитель дней. Подпись прилипает к верху, пока листаешь день, —
+   так всегда видно, к какому дню относятся сообщения на экране. Та же
+   капсула, что у разделителя «или» на входе, но без линий: в переписке
+   они спорили бы с пузырями. */
+.day-separator {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: flex;
+    justify-content: center;
+    pointer-events: none;
+}
+
+.day-separator span {
+    padding: 0.25rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: var(--r-pill);
+    background: var(--layer-3);
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    color: var(--text-3);
+}
+
 .message-encrypted {
     display: inline-flex;
     opacity: 0.85;

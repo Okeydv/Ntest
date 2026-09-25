@@ -256,7 +256,7 @@
                     <button id="attach-btn" class="icon-btn" title="Прикрепить файл" aria-label="Прикрепить файл" type="button">
                         <svg class="icon" aria-hidden="true"><use href="#i-attach"/></svg>
                     </button>
-                    <input type="text" id="message-input" placeholder="Введите сообщение" maxlength="4000" autocomplete="off">
+                    <input type="text" id="message-input" placeholder="Введите сообщение" maxlength="4000" autocomplete="off" enterkeyhint="send">
                     <button id="send-btn" class="icon-btn icon-btn-accent" title="Отправить" aria-label="Отправить" type="button">
                         <svg class="icon" aria-hidden="true"><use href="#i-send"/></svg>
                     </button>
@@ -311,7 +311,7 @@
 
                 <div class="field">
                     <label class="field-label" for="join-chat-code">Код приглашения</label>
-                    <input type="text" id="join-chat-code" class="input-code" placeholder="XXXX-XXXX" autocomplete="off">
+                    <input type="text" id="join-chat-code" class="input-code" placeholder="K7Q2MX" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="12" enterkeyhint="go">
                     <p class="field-msg" data-msg-for="join-chat-code"></p>
                 </div>
                 <button id="join-chat-btn" class="btn btn-secondary btn-block" type="button">Присоединиться</button>

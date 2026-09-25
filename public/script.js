@@ -508,6 +508,23 @@ function showApp() {
 
 let toastTimer = null;
 
+/**
+ * Кнопка недоступна, пока идёт запрос. Двойной клик по «Зарегистрироваться»
+ * отправлял две регистрации: вторая падала с «email занят», и человек
+ * видел ошибку, хотя аккаунт уже создан.
+ */
+async function withBusy(button, fn) {
+    if (button.disabled) return;
+    button.disabled = true;
+    button.setAttribute('aria-busy', 'true');
+    try {
+        await fn();
+    } finally {
+        button.disabled = false;
+        button.removeAttribute('aria-busy');
+    }
+}
+
 function showToast(message, type = 'info') {
     elements.toast.textContent = message;
     elements.toast.className = `toast ${type}`;
@@ -547,7 +564,7 @@ function setupEventListeners() {
         });
     });
 
-    elements.loginBtn.addEventListener('click', async () => {
+    elements.loginBtn.addEventListener('click', () => withBusy(elements.loginBtn, async () => {
         clearFieldErrors(elements.loginForm);
         const email = document.getElementById('login-email').value.trim();
         const password = document.getElementById('login-password').value;
@@ -571,9 +588,9 @@ function setupEventListeners() {
         } else {
             setFieldError('login-password', data.message);
         }
-    });
+    }));
 
-    elements.registerBtn.addEventListener('click', async () => {
+    elements.registerBtn.addEventListener('click', () => withBusy(elements.registerBtn, async () => {
         clearFieldErrors(elements.registerForm);
         const username = document.getElementById('register-username').value.trim();
         const email = document.getElementById('register-email').value.trim();
@@ -605,9 +622,9 @@ function setupEventListeners() {
         } else {
             setFieldError('register-email', data.message);
         }
-    });
+    }));
 
-    elements.anonymousLoginBtn.addEventListener('click', async () => {
+    elements.anonymousLoginBtn.addEventListener('click', () => withBusy(elements.anonymousLoginBtn, async () => {
         const data = await api('/api/register/anonymous', { method: 'POST' });
         if (data.success) {
             currentUser = data.user;
@@ -618,7 +635,7 @@ function setupEventListeners() {
         } else {
             showToast(data.message, 'error');
         }
-    });
+    }));
 
     elements.logoutBtn.addEventListener('click', async () => {
         await api('/api/logout', { method: 'POST' });
@@ -736,8 +753,14 @@ function setupEventListeners() {
     });
 
     elements.sendBtn.addEventListener('click', sendMessage);
-    elements.messageInput.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') sendMessage();
+    // keydown, а не устаревший keypress. Enter, которым подтверждают слово
+    // в IME (японский, китайский, корейский ввод, часть экранных
+    // клавиатур), не должен отправлять недописанное сообщение: isComposing,
+    // а keyCode 229 — для Safari, где isComposing на этом Enter уже false.
+    elements.messageInput.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter' || e.isComposing || e.keyCode === 229) return;
+        e.preventDefault();
+        sendMessage();
     });
 
     elements.attachBtn.addEventListener('click', () => elements.fileInput.click());
@@ -766,7 +789,7 @@ function setupEventListeners() {
         if (data.success) {
             showToast('Сообщение удалено', 'success');
             const el = document.querySelector(`[data-message-id="${messageId}"]`);
-            if (el) el.remove();
+            if (el) removeMessageElement(el);
         } else {
             showToast(data.message, 'error');
         }
@@ -825,7 +848,7 @@ function setupEventListeners() {
     socket.on('messageDeleted', ({ id, chat_id, room_id }) => {
         if (chat_id == currentChatId || room_id == currentRoomId) {
             const bubble = document.querySelector(`[data-message-id="${id}"]`);
-            if (bubble) bubble.remove();
+            if (bubble) removeMessageElement(bubble);
         }
     });
 
@@ -974,9 +997,70 @@ async function openChat(chatId, roomId, name, avatar, online, isBot) {
     socket.emit('joinChat', roomKey);
 }
 
+/* --- Время и дни ----------------------------------------------------------
+   Сервер присылает момент отправки (created_at, с часовым поясом), а
+   форматирует клиент — в своём поясе. Раньше приходила строка «ЧЧ:ММ» в
+   поясе сервера: у собеседника в другом поясе время было неверным, а по
+   какому дню сообщение, не было видно вовсе. Язык — язык интерфейса. */
+
+const UI_LOCALE = document.documentElement.lang || 'ru';
+const timeFormat = new Intl.DateTimeFormat(UI_LOCALE, { hour: '2-digit', minute: '2-digit' });
+const dayFormat = new Intl.DateTimeFormat(UI_LOCALE, { day: 'numeric', month: 'long' });
+const dayWithYearFormat = new Intl.DateTimeFormat(UI_LOCALE, { day: 'numeric', month: 'long', year: 'numeric' });
+const fullFormat = new Intl.DateTimeFormat(UI_LOCALE, { dateStyle: 'long', timeStyle: 'short' });
+
+function messageDate(message) {
+    const date = message.created_at ? new Date(message.created_at) : null;
+    return date && !Number.isNaN(date.getTime()) ? date : null;
+}
+
+// Ключ дня в поясе пользователя: сравнивать надо по местному календарю.
+const dayKey = date => `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+
+function dayLabel(date) {
+    const today = new Date();
+    const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
+    if (dayKey(date) === dayKey(today)) return 'Сегодня';
+    if (dayKey(date) === dayKey(yesterday)) return 'Вчера';
+    return (date.getFullYear() === today.getFullYear() ? dayFormat : dayWithYearFormat).format(date);
+}
+
+function lastDayInChat() {
+    const bubbles = elements.chatMessages.querySelectorAll('[data-day]');
+    return bubbles.length ? bubbles[bubbles.length - 1].dataset.day : null;
+}
+
 function appendMessage(message) {
     const el = createMessageElement(message);
+    const date = messageDate(message);
+    if (date) {
+        el.dataset.day = dayKey(date);
+        if (lastDayInChat() !== el.dataset.day) {
+            const separator = document.createElement('div');
+            separator.className = 'day-separator';
+            separator.setAttribute('role', 'separator');
+            separator.dataset.day = el.dataset.day;
+            const label = document.createElement('span');
+            label.textContent = dayLabel(date);
+            separator.appendChild(label);
+            elements.chatMessages.appendChild(separator);
+        }
+    }
     elements.chatMessages.appendChild(el);
+}
+
+/**
+ * Убрать пузырь сообщения. Если это было последнее сообщение дня,
+ * вместе с ним уходит и разделитель, иначе он висел бы над пустотой.
+ */
+function removeMessageElement(el) {
+    const prev = el.previousElementSibling;
+    const next = el.nextElementSibling;
+    el.remove();
+    if (prev && prev.classList.contains('day-separator')
+        && (!next || next.classList.contains('day-separator'))) {
+        prev.remove();
+    }
 }
 
 // Элементы с файлом (img/video/audio/a) собираются через DOM API, а не через
@@ -1167,9 +1251,16 @@ function createMessageElement(message) {
         lock.appendChild(createIcon('i-lock'));
         metaDiv.appendChild(lock);
     }
-    const timeSpan = document.createElement('span');
+    const timeSpan = document.createElement('time');
     timeSpan.className = 'message-time';
-    timeSpan.textContent = message.time || '';
+    const sentAt = messageDate(message);
+    if (sentAt) {
+        timeSpan.dateTime = sentAt.toISOString();
+        timeSpan.textContent = timeFormat.format(sentAt);
+        timeSpan.title = fullFormat.format(sentAt);
+    } else {
+        timeSpan.textContent = message.time || '';
+    }
     metaDiv.appendChild(timeSpan);
     if (isMine) {
         const statusSpan = document.createElement('span');
