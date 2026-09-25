@@ -20,7 +20,7 @@ const rateLimit = require('express-rate-limit');
 const { ipKeyGenerator } = rateLimit;
 
 // Импорт новых модулей безопасности и приватности
-const { stripMetadataFromFile } = require('./lib/metadata-stripper');
+const { stripMetadataFromFile, VIDEO_WITH_METADATA } = require('./lib/metadata-stripper');
 const { sweepOrphanUploads } = require('./lib/upload-sweeper');
 const DisappearingMessagesManager = require('./lib/disappearing-messages');
 const {
@@ -890,6 +890,16 @@ app.use((req, res, next) => {
 
 app.use(sessionMiddleware);
 app.use(express.static(path.join(__dirname, 'public')));
+
+// pdf-lib для браузера: в зашифрованном чате метаданные PDF снимает
+// отправитель, до шифрования. Сборка самодостаточная (без импортов), а
+// отдаётся со своего origin, потому что CSP разрешает скрипты только
+// отсюда. Клиент подгружает её лишь тогда, когда прикладывают PDF.
+const PDF_LIB_BROWSER = path.join(__dirname, 'node_modules', 'pdf-lib', 'dist', 'pdf-lib.esm.min.js');
+app.get('/vendor/pdf-lib.esm.min.js', (req, res) => {
+    res.set('Cache-Control', 'public, max-age=86400');
+    res.type('application/javascript').sendFile(PDF_LIB_BROWSER);
+});
 
 app.get('/uploads/:filename', async (req, res) => {
     if (!req.session.userId) return res.status(401).json({ success: false, message: 'Не авторизован' });
@@ -2249,7 +2259,8 @@ app.post('/api/messages/file', upload.single('file'), async (req, res) => {
         // Удаление метаданных из файла для защиты приватности. Не удалось —
         // файл не отправляется: молча раздать фото с координатами хуже,
         // чем не отправить его вовсе.
-        if (file.mimetype.startsWith('image/') || file.mimetype === 'application/pdf') {
+        if (file.mimetype.startsWith('image/') || file.mimetype === 'application/pdf'
+            || VIDEO_WITH_METADATA.has(file.mimetype)) {
             try {
                 await stripMetadataFromFile(uploadedFilePath, file.mimetype);
             } catch (stripErr) {

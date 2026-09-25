@@ -1,9 +1,9 @@
 // Тесты ядра E2EE (этап A2). Запуск: node scripts/test-e2ee-crypto.mjs
 //
-// Node выведет предупреждение MODULE_TYPELESS_PACKAGE_JSON: в package.json
-// нет "type": "module", потому что server.js — CommonJS, и добавить его
-// нельзя. Node распознаёт ES-модуль по синтаксису и работает, предупреждение
-// косметическое. Браузеру package.json не важен вовсе.
+// public/crypto — ES-модули, а корневой package.json без "type": "module"
+// (server.js — CommonJS). Поэтому в public/crypto лежит свой package.json с
+// "type": "module": без него Node на каждый импорт печатал бы предупреждение
+// MODULE_TYPELESS_PACKAGE_JSON. Браузеру package.json не важен вовсе.
 //
 // Ни сервера, ни базы, ни браузера здесь не нужно: public/crypto/e2ee.js
 // написан на чистом WebCrypto, поэтому тот же файл исполняется в Node.

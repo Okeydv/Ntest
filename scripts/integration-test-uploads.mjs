@@ -5,7 +5,7 @@
 //   - PDF после очистки цел (таблица xref указывает на объекты), без автора
 //     и XMP; раньше очистка регулярками ломала файл и оставляла автора
 //   - зашифрованный PDF не отправляется: очистить его нельзя (fail closed)
-//   - фото уходит без EXIF
+//   - фото уходит без EXIF, видео — без координат и модели камеры
 //   - удалённое сообщение стирает файл с диска и текст из базы, файл больше
 //     не скачивается, цитата ответа говорит «удалено»
 //   - исчезающее сообщение делает то же самое
@@ -22,6 +22,8 @@ import sharp from 'sharp';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+
+import { syntheticMp4, GPS, MODEL } from './lib/mp4-fixtures.mjs';
 
 const require = createRequire(import.meta.url);
 const { PDFDocument, PDFName, PDFString } = require('pdf-lib');
@@ -147,6 +149,16 @@ const jpeg = await sharp({ create: { width: 40, height: 20, channels: 3, backgro
 const photo = await upload(A, chatIdA, 'IMG_0001.jpg', 'image/jpeg', jpeg);
 const gotPhoto = await download(B, photo.json.message.file_url);
 check('фото уходит без EXIF', !(await sharp(gotPhoto.bytes).metadata()).exif && !gotPhoto.bytes.includes('Ivan Petrov'));
+
+const { bytes: mp4, payload, offset } = syntheticMp4();
+const clip = await upload(A, chatIdA, 'IMG_0003.mp4', 'video/mp4', mp4);
+check('видео загружено', clip.json?.success === true, JSON.stringify(clip.json)?.slice(0, 100));
+const gotClip = (await download(B, clip.json.message.file_url)).bytes;
+check('видео уходит без координат и модели камеры', !gotClip.includes(GPS) && !gotClip.includes(MODEL));
+check('и без сдвигов: размер тот же, данные на месте',
+    gotClip.length === mp4.length && gotClip.subarray(offset, offset + payload.length).equals(payload));
+const brokenClip = await upload(A, chatIdA, 'broken.mp4', 'video/mp4', mp4.subarray(0, mp4.length - 30));
+check('битое видео не отправляется «как есть»', brokenClip.status === 400, brokenClip.json?.message);
 
 /* ------------------------- удаление ------------------------- */
 

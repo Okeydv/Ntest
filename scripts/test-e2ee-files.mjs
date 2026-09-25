@@ -8,6 +8,8 @@
 //   - сервер хранит непрозрачные байты: ни JPEG-сигнатуры, ни строк из EXIF
 //   - чужой скачать вложение не может
 //   - файл, который не картинка, можно только скачать, но не открыть
+//   - видео (MP4) и PDF уходят без метаданных: координат, модели, автора —
+//     и после очистки видео воспроизводится, а PDF открывается
 //   - удаление сообщения удаляет вложение с диска по-настоящему
 //   - шапка чата честно говорит, шифруется ли переписка
 //
@@ -23,6 +25,11 @@ import pg from 'pg';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createRequire } from 'node:module';
+import { withIphoneMetadata, boxes, GPS, MODEL } from './lib/mp4-fixtures.mjs';
+
+const require = createRequire(import.meta.url);
+const { PDFDocument, PDFName, PDFString } = require('pdf-lib');
 
 const BASE = 'http://127.0.0.1:3006';
 const BLOBS_DIR = path.resolve('encrypted-blobs');
@@ -203,6 +210,93 @@ const rendered = await probe.evaluate(() => (document.body ? document.body.inner
 check('ссылка на файл не рисует его в нашем origin, а только скачивает',
     wasDownloaded && !rendered.includes('секретный план'), `download=${wasDownloaded}`);
 await probe.close();
+
+/* ------------------------- видео и PDF ------------------------- */
+
+// Байты, которые видит получатель: ключ — из расшифрованной полезной
+// нагрузки в его локальном кэше, шифротекст — с сервера (fetch по blob:
+// запрещён CSP, см. выше).
+const receivedBytes = (page, selector) => page.evaluate(async selector => {
+    const nodes = document.querySelectorAll(selector);
+    const node = nodes[nodes.length - 1];
+    if (!node) return null;
+    const client = await import('/crypto/client.js');
+    const payload = JSON.parse(await client.recallPlaintext(node.closest('.message').dataset.messageId));
+    const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+    const ct = await (await fetch(`/api/blobs/${payload.blob}`)).arrayBuffer();
+    const key = await crypto.subtle.importKey('raw', b64(payload.key), { name: 'AES-GCM' }, false, ['decrypt']);
+    const bytes = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64(payload.iv) }, key, ct));
+    let s = ''; for (const x of bytes) s += String.fromCharCode(x);
+    return btoa(s);
+}, selector).then(b64 => (b64 ? Buffer.from(b64, 'base64') : null));
+
+// Воспроизводится ли MP4 в браузере: грузятся ли метаданные потока.
+const playable = (page, bytes) => page.evaluate(async b64 => {
+    const data = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+    const v = document.createElement('video');
+    v.muted = true;
+    v.src = URL.createObjectURL(new Blob([data], { type: 'video/mp4' }));
+    return new Promise(resolve => {
+        v.onloadedmetadata = () => resolve({ ok: true, width: v.videoWidth });
+        v.onerror = () => resolve({ ok: false, error: v.error && v.error.message });
+        setTimeout(() => resolve({ ok: false, error: 'timeout' }), 5000);
+    });
+}, bytes.toString('base64'));
+
+// Настоящее видео: записано MediaRecorder в самом браузере. В него
+// дописаны метаданные так, как их пишет iPhone.
+const recorded = Buffer.from(await alice.page.evaluate(async () => {
+    const c = document.createElement('canvas'); c.width = 64; c.height = 48;
+    const ctx = c.getContext('2d'); let f = 0;
+    const t = setInterval(() => { ctx.fillStyle = `hsl(${f++ * 20},80%,50%)`; ctx.fillRect(0, 0, 64, 48); }, 40);
+    const rec = new MediaRecorder(c.captureStream(25), { mimeType: 'video/mp4' });
+    const chunks = []; rec.ondataavailable = e => chunks.push(e.data);
+    rec.start(); await new Promise(r => setTimeout(r, 1200)); rec.stop();
+    await new Promise(r => { rec.onstop = r; }); clearInterval(t);
+    const bytes = new Uint8Array(await new Blob(chunks).arrayBuffer());
+    let s = ''; for (const x of bytes) s += String.fromCharCode(x);
+    return btoa(s);
+}), 'base64');
+const video = withIphoneMetadata(recorded);
+const videoPath = path.join(tmp, 'IMG_0002.mp4');
+fs.writeFileSync(videoPath, video);
+check('исходное видео несёт координаты и модель и воспроизводится',
+    video.includes(GPS) && video.includes(MODEL) && (await playable(bob.page, video)).ok);
+
+await alice.page.setInputFiles('#file-input', videoPath);
+await bob.page.waitForSelector('#chat-messages video', { timeout: 10000 }).catch(() => {});
+await bob.page.waitForTimeout(500);
+const gotVideo = await receivedBytes(bob.page, '#chat-messages video');
+check('получатель видит видео', !!gotVideo);
+check('в полученном видео нет ни координат, ни модели, ни XMP',
+    gotVideo && !gotVideo.includes(GPS) && !gotVideo.includes(MODEL) && !gotVideo.includes('xmpmeta'));
+const moov = gotVideo && boxes(gotVideo).find(b => b.type === 'moov');
+const mvhd = moov && boxes(gotVideo, moov.start + 8, moov.start + moov.size).find(b => b.type === 'mvhd');
+check('дата съёмки обнулена, размер тот же',
+    mvhd && gotVideo.readUInt32BE(mvhd.start + 12) === 0 && gotVideo.length === video.length);
+const inApp = await bob.page.evaluate(async () => {
+    const list = document.querySelectorAll('#chat-messages video');
+    const v = list[list.length - 1];
+    if (v.readyState < 1) await new Promise(r => { v.onloadedmetadata = r; v.onerror = r; setTimeout(r, 5000); });
+    return { ready: v.readyState, error: v.error && v.error.message };
+});
+check('после очистки видео воспроизводится у получателя', inApp.ready >= 1 && !inApp.error, JSON.stringify(inApp));
+
+const pdfDoc = await PDFDocument.create({ updateMetadata: false });
+pdfDoc.addPage([200, 200]).drawText('plan');
+pdfDoc.context.trailerInfo.Info = pdfDoc.context.register(pdfDoc.context.obj({ Author: PDFString.of(AUTHOR) }));
+pdfDoc.catalog.set(PDFName.of('Metadata'), pdfDoc.context.register(pdfDoc.context.stream(
+    `<x:xmpmeta xmlns:x="adobe:ns:meta/"><dc:creator>${AUTHOR}</dc:creator></x:xmpmeta>`, { Type: 'Metadata', Subtype: 'XML' })));
+const pdfPath = path.join(tmp, 'contract.pdf');
+fs.writeFileSync(pdfPath, await pdfDoc.save({ useObjectStreams: false }));
+check('исходный PDF несёт автора', fs.readFileSync(pdfPath).includes(AUTHOR));
+
+await alice.page.setInputFiles('#file-input', pdfPath);
+await bob.page.waitForSelector('#chat-messages a[download="contract.pdf"]', { timeout: 10000 }).catch(() => {});
+const gotPdf = await receivedBytes(bob.page, '#chat-messages a[download="contract.pdf"]');
+check('получатель видит PDF', !!gotPdf);
+check('в полученном PDF нет ни автора, ни XMP', gotPdf && !gotPdf.includes(AUTHOR) && !gotPdf.includes('xmpmeta'));
+check('и он открывается', gotPdf && (await PDFDocument.load(gotPdf)).getPageCount() === 1);
 
 /* ------------------------- история после перезагрузки ------------------------- */
 

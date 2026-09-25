@@ -9,6 +9,7 @@
 // он отдельно от e2ee.js — ядро крипты остаётся чистым и тестируемым в Node.
 
 import { toB64, fromB64 } from './e2ee.js';
+import { cleanIsoBmff, cleanPdf, ISO_BMFF_TYPES } from './metadata.js';
 
 const subtle = globalThis.crypto.subtle;
 
@@ -127,6 +128,45 @@ export async function sanitizeImage(file) {
 }
 
 /* ========================================================================
+   Метаданные видео и PDF
+   ===================================================================== */
+
+// pdf-lib весит полмегабайта, поэтому грузится только когда прикладывают PDF.
+let pdfLib = null;
+const loadPdfLib = () => (pdfLib = pdfLib || import('/vendor/pdf-lib.esm.min.js'));
+
+/**
+ * Снять метаданные с вложения, если формат их несёт: фото — перерисовкой,
+ * MP4/MOV — обезвреживанием блоков с координатами и датами, PDF —
+ * пересохранением без Info и XMP. Возвращает { blob, mime, sanitized }.
+ *
+ * Не удалось — исключение, файл не уходит: как и с фото, молча отправить
+ * видео с координатами хуже, чем не отправить его вовсе.
+ */
+export async function sanitizeAttachment(file) {
+    if (REENCODE_TYPES.has(file.type)) return sanitizeImage(file);
+    if (ISO_BMFF_TYPES.has(file.type)) {
+        let cleaned;
+        try {
+            cleaned = cleanIsoBmff(new Uint8Array(await file.arrayBuffer())).bytes;
+        } catch {
+            throw new Error('не удалось удалить метаданные из видео');
+        }
+        return { blob: new Blob([cleaned], { type: file.type }), mime: file.type, sanitized: true };
+    }
+    if (file.type === 'application/pdf') {
+        let cleaned;
+        try {
+            cleaned = await cleanPdf(new Uint8Array(await file.arrayBuffer()), await loadPdfLib());
+        } catch {
+            throw new Error('не удалось удалить метаданные из PDF (возможно, он защищён паролем)');
+        }
+        return { blob: new Blob([cleaned], { type: file.type }), mime: file.type, sanitized: true };
+    }
+    return { blob: file, mime: file.type || 'application/octet-stream', sanitized: false };
+}
+
+/* ========================================================================
    Шифрование файла
    ===================================================================== */
 
@@ -138,7 +178,7 @@ export async function sanitizeImage(file) {
  * GCM-тег проверяется ключом, который сервер не видит.
  */
 export async function encryptAttachment(file) {
-    const { blob, mime } = await sanitizeImage(file);
+    const { blob, mime } = await sanitizeAttachment(file);
     const plain = new Uint8Array(await blob.arrayBuffer());
 
     const key = await subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
