@@ -22,7 +22,7 @@
 //
 // Запуск: TEST_DATABASE_URL=... node scripts/test-e2ee-files.mjs
 
-import { chromium } from '/opt/node22/lib/node_modules/playwright/index.mjs';
+import { chromium } from 'playwright';
 import sharp from 'sharp';
 import pg from 'pg';
 import { execFileSync } from 'node:child_process';
@@ -69,7 +69,7 @@ check('исходное фото действительно несёт EXIF и �
 
 /* ------------------------- участники и чат ------------------------- */
 
-const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' });
+const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH });
 async function openApp(label) {
     const page = await (await browser.newContext()).newPage();
     const errors = [];

@@ -7,9 +7,10 @@
 //   - состояние сессии переживает IndexedDB
 //
 // Запуск: node scripts/test-e2ee-crypto-browser.mjs
-import { chromium } from '/opt/node22/lib/node_modules/playwright/index.mjs';
+import { chromium } from 'playwright';
 import http from 'node:http'; import fs from 'node:fs'; import path from 'node:path';
-const ROOT='/home/user/Ntest/public';
+import { fileURLToPath } from 'node:url';
+const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const srv = http.createServer((q,r) => {
   const u = q.url.split('?')[0];
   if (u === '/') { r.writeHead(200,{'content-type':'text/html'});
@@ -20,7 +21,7 @@ const srv = http.createServer((q,r) => {
   r.end(fs.readFileSync(f));
 });
 await new Promise(r => srv.listen(4181, r));
-const b = await chromium.launch({ executablePath:'/opt/pw-browsers/chromium-1194/chrome-linux/chrome' });
+const b = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH });
 const p = await (await b.newContext()).newPage();
 p.on('pageerror', e => console.error('PAGEERROR:', e.message));
 await p.goto('http://127.0.0.1:4181/');

@@ -13,7 +13,7 @@
 // Требует поднятых Postgres, key-server и server.js на 3006 и ЧИСТОЙ базы.
 // Запуск: TEST_DATABASE_URL=... node scripts/test-ui-basics.mjs
 
-import { chromium } from '/opt/node22/lib/node_modules/playwright/index.mjs';
+import { chromium } from 'playwright';
 import pg from 'pg';
 
 const BASE = 'http://127.0.0.1:3006';
@@ -22,7 +22,7 @@ const db = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
 let fails = 0;
 const check = (l, c, d = '') => { console.log(`${c ? 'ok  ' : 'FAIL'}  ${l}${d ? '  — ' + d : ''}`); if (!c) fails++; };
 
-const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' });
+const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH });
 const errors = [];
 let nextIp = 30;
 async function openApp(label, timezoneId) {

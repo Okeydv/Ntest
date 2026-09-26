@@ -5,7 +5,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "NODE_ENV=development node server.js"
+    "dev": "NODE_ENV=development node server.js",
+    "test": "scripts/run-all-tests.sh"
   },
   "keywords": [
     "messenger",
@@ -39,6 +40,7 @@
     "socks-proxy-agent": "^10.1.0"
   },
   "devDependencies": {
+    "playwright": "^1.56.1",
     "socket.io-client": "^4.8.4"
   }
 }

@@ -101,22 +101,27 @@ HiddenServicePort 80 127.0.0.1:3000
 
 ## Тесты
 
-Все тесты лежат в `scripts/`.
+Все тесты лежат в `scripts/`, запускаются одной командой:
 
-- `node scripts/test-e2ee-crypto.mjs` и `node scripts/test-metadata.mjs`
-  не требуют ни сервера, ни базы.
-- `test-pdf-cleaning.mjs` и `test-media-cleaning.mjs` тоже обходятся без
-  сервера, но проверяют очистку на файлах от настоящих программ, так что
-  им нужны qpdf, exiftool, Ghostscript, LibreOffice, OpenJPEG, ffmpeg,
-  webpmux и mkvinfo. ffmpeg нужен и `integration-test-uploads.mjs`.
-- Остальным нужен запущенный на порту 3006 сервер вместе с сервером
-  ключей и пустая база. Для проверок, которые лезут в базу напрямую,
-  нужна ещё переменная `TEST_DATABASE_URL`. `integration-test-access.mjs`
-  ждёт, что сервер запущен с `ANON_SWEEP_INTERVAL_MS=2000`: так уборка
-  брошенных анонимных аккаунтов идёт раз в две секунды, а не в десять
-  минут.
-- Браузерным тестам нужны Playwright и Chromium. Пути к ним в скриптах
-  пока прописаны жёстко, их придётся поправить под свою машину.
+```bash
+(cd e2ee-key-server && cargo build)
+npx playwright install chromium
+TEST_DATABASE_URL=postgres://postgres@localhost/nyxo_test npm test
+```
+
+База из `TEST_DATABASE_URL` пересоздаётся перед каждым набором, так что
+рабочую туда не указывайте. Скрипт `scripts/run-all-tests.sh` сам
+поднимает сервер ключей и сервер на портах 7422 и 3006 и показывает, какие
+наборы прошли. Можно запустить только нужные:
+`npm test -- test-ui-dialogs integration-test-access`.
+
+- `test-e2ee-crypto` и `test-metadata` обходятся без сервера и без базы.
+- `test-pdf-cleaning` и `test-media-cleaning` тоже работают без сервера,
+  но проверяют очистку на файлах от настоящих программ. Для них нужны
+  qpdf, exiftool, Ghostscript, LibreOffice, OpenJPEG, ffmpeg, webpmux и
+  mkvinfo. ffmpeg нужен ещё и `integration-test-uploads`.
+- Браузерные тесты берут Chromium из Playwright. Если нужен другой,
+  путь к нему можно задать в `CHROMIUM_PATH`.
 
 ## Что пока не доделано
 
