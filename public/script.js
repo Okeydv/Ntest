@@ -361,6 +361,195 @@ function safetyNote(text) {
     return p;
 }
 
+/* --- QR-код сверки ----------------------------------------------------------
+   Тот же код безопасности, что цифрами, но сверяется одним наведением
+   камеры. В QR два сегмента: префикс буквенно-цифровым режимом и 60 цифр —
+   цифровым; так код меньше и читается с экрана телефона издалека.
+   Библиотеки грузятся только когда открывают сверку. */
+
+const SAFETY_QR_PREFIX = 'NYXO1:';
+const vendorScripts = new Map();
+
+function loadVendor(src, globalName) {
+    if (!vendorScripts.has(src)) {
+        vendorScripts.set(src, new Promise((resolve, reject) => {
+            const script = document.createElement('script');
+            script.src = src;
+            script.onload = () => (window[globalName] ? resolve(window[globalName]) : reject(new Error(`${src} не загрузился`)));
+            script.onerror = () => { vendorScripts.delete(src); reject(new Error(`${src} не загрузился`)); };
+            document.head.appendChild(script);
+        }));
+    }
+    return vendorScripts.get(src);
+}
+
+async function drawSafetyQr(canvas, safetyNumber) {
+    const qrcode = await loadVendor('/vendor/qrcode.js', 'qrcode');
+    const qr = qrcode(0, 'M');
+    qr.addData(SAFETY_QR_PREFIX, 'Alphanumeric');
+    qr.addData(safetyNumber, 'Numeric');
+    qr.make();
+    const count = qr.getModuleCount();
+    const cell = 6;
+    const quiet = cell * 4;
+    canvas.width = canvas.height = count * cell + quiet * 2;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#000';
+    // Сами: renderTo2dContext библиотеки рисует код транспонированным.
+    for (let row = 0; row < count; row++) {
+        for (let col = 0; col < count; col++) {
+            if (qr.isDark(row, col)) ctx.fillRect(quiet + col * cell, quiet + row * cell, cell, cell);
+        }
+    }
+}
+
+/**
+ * Распознать QR на картинке или кадре. Кадр уменьшается до ~1000 px по
+ * длинной стороне: крупнее — распознавание тормозит, мельче — модули
+ * сливаются. Сначала BarcodeDetector браузера, если он есть, потом jsQR.
+ */
+async function decodeQr(source, width, height) {
+    const scale = Math.min(1, 1000 / Math.max(width, height));
+    const w = Math.max(1, Math.round(width * scale));
+    const h = Math.max(1, Math.round(height * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(source, 0, 0, w, h);
+    if ('BarcodeDetector' in window) {
+        try {
+            const codes = await new window.BarcodeDetector({ formats: ['qr_code'] }).detect(canvas);
+            if (codes.length > 0) return codes[0].rawValue;
+        } catch {
+            // формат не поддержан — ниже jsQR
+        }
+    }
+    const jsQR = await loadVendor('/vendor/jsqr.js', 'jsQR');
+    const code = jsQR(ctx.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: 'attemptBoth' });
+    return code ? code.data : null;
+}
+
+/** Камера до первого распознанного кода или до «Отмена». */
+async function scanWithCamera(container) {
+    const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+    });
+    const video = document.createElement('video');
+    video.className = 'safety-scan-video';
+    video.muted = true;
+    video.playsInline = true;
+    video.srcObject = stream;
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'btn btn-secondary btn-block';
+    cancel.textContent = 'Отмена';
+    container.replaceChildren(video, cancel);
+    container.hidden = false;
+    try {
+        await video.play();
+        return await new Promise(resolve => {
+            let done = false;
+            cancel.addEventListener('click', () => { done = true; resolve(null); });
+            const tick = async () => {
+                if (done) return;
+                if (video.readyState >= 2 && video.videoWidth > 0) {
+                    const value = await decodeQr(video, video.videoWidth, video.videoHeight).catch(() => null);
+                    if (value) { done = true; resolve(value); return; }
+                }
+                setTimeout(tick, 200);
+            };
+            tick();
+        });
+    } finally {
+        stream.getTracks().forEach(t => t.stop());
+        container.replaceChildren();
+        container.hidden = true;
+    }
+}
+
+async function decodeQrFromFile(file) {
+    const bitmap = await createImageBitmap(file);
+    try {
+        return await decodeQr(bitmap, bitmap.width, bitmap.height);
+    } finally {
+        bitmap.close();
+    }
+}
+
+/** Блок QR в сверке: показать свой код, отсканировать код собеседника. */
+function safetyQrBlock(info, onMatch) {
+    const block = document.createElement('div');
+    block.className = 'safety-qr';
+    const canvas = document.createElement('canvas');
+    canvas.className = 'safety-qr-code';
+    canvas.setAttribute('role', 'img');
+    canvas.setAttribute('aria-label', 'QR-код с кодом безопасности');
+    drawSafetyQr(canvas, info.safetyNumber).catch(() => { canvas.hidden = true; });
+    block.appendChild(canvas);
+
+    const warn = document.createElement('p');
+    warn.className = 'safety-muted';
+    warn.textContent = 'Не пересылайте снимок этого кода через Nyxo: если сервер подменяет ключи, '
+        + 'он подменит и снимок. Покажите код на экране при встрече или сверьте цифры по другому каналу.';
+    block.appendChild(warn);
+
+    const check = async value => {
+        if (value === null) return;
+        if (!value || !value.startsWith(SAFETY_QR_PREFIX)) {
+            showToast('Это не код сверки Nyxo', 'error');
+        } else if (value.slice(SAFETY_QR_PREFIX.length) !== info.safetyNumber) {
+            showToast('Код не совпал: ключи могли подменить. Не отмечайте собеседника сверенным — сверьте цифры при встрече.', 'error');
+        } else {
+            await onMatch();
+            showToast('Код совпал — собеседник сверен', 'success');
+        }
+    };
+
+    const actions = document.createElement('div');
+    actions.className = 'safety-qr-actions';
+    const scanArea = document.createElement('div');
+    scanArea.className = 'safety-scan';
+    scanArea.hidden = true;
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        const scan = document.createElement('button');
+        scan.type = 'button';
+        scan.className = 'btn btn-secondary';
+        scan.textContent = 'Сканировать камерой';
+        scan.addEventListener('click', async () => {
+            try {
+                await check(await scanWithCamera(scanArea));
+            } catch {
+                showToast('Камера недоступна — распознайте код с фото или сверьте цифры', 'error');
+            }
+        });
+        actions.appendChild(scan);
+    }
+    const photoInput = document.createElement('input');
+    photoInput.type = 'file';
+    photoInput.accept = 'image/*';
+    photoInput.hidden = true;
+    photoInput.className = 'safety-qr-photo';
+    photoInput.addEventListener('change', async () => {
+        const file = photoInput.files[0];
+        photoInput.value = '';
+        if (!file) return;
+        const value = await decodeQrFromFile(file).catch(() => '');
+        await check(value || '');
+    });
+    const photo = document.createElement('button');
+    photo.type = 'button';
+    photo.className = 'btn btn-ghost';
+    photo.textContent = 'Распознать с фото';
+    photo.addEventListener('click', () => photoInput.click());
+    actions.append(photo, photoInput);
+    block.append(actions, scanArea);
+    return block;
+}
+
 async function renderSafetyEntry(chatId, user) {
     const section = document.createElement('section');
     section.className = 'safety-entry';
@@ -424,6 +613,14 @@ async function renderSafetyEntry(chatId, user) {
     meta.className = 'safety-muted';
     meta.textContent = `Устройств собеседника: ${info.devices.length}`;
     section.appendChild(meta);
+
+    if (info.state !== 'verified') {
+        section.appendChild(safetyQrBlock(info, async () => {
+            await e2ee.markVerified(user.user_id, info.devices);
+            section.replaceWith(await renderSafetyEntry(chatId, user));
+            refreshEncryptionBadge(chatId, currentChatIsBot);
+        }));
+    }
 
     const action = document.createElement('button');
     action.type = 'button';

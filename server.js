@@ -977,6 +977,20 @@ app.get('/vendor/pdf-lib.esm.min.js', (req, res) => {
     res.type('application/javascript').sendFile(PDF_LIB_BROWSER);
 });
 
+// QR-код для сверки ключей: рисует qrcode-generator, распознаёт jsQR (там,
+// где у браузера нет своего BarcodeDetector). Тоже со своего origin и
+// только когда открывают сверку.
+const QR_VENDOR = {
+    '/vendor/qrcode.js': path.join(__dirname, 'node_modules', 'qrcode-generator', 'qrcode.js'),
+    '/vendor/jsqr.js': path.join(__dirname, 'node_modules', 'jsqr', 'dist', 'jsQR.js'),
+};
+for (const [route, file] of Object.entries(QR_VENDOR)) {
+    app.get(route, (req, res) => {
+        res.set('Cache-Control', 'public, max-age=86400');
+        res.type('application/javascript').sendFile(file);
+    });
+}
+
 app.get('/uploads/:filename', async (req, res) => {
     if (!req.session.userId) return res.status(401).json({ success: false, message: 'Не авторизован' });
     const filename = path.basename(req.params.filename);

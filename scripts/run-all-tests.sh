@@ -27,7 +27,7 @@ LOGS=$(mktemp -d)
 OFFLINE="test-e2ee-crypto test-metadata test-media-cleaning test-pdf-cleaning test-e2ee-crypto-browser"
 ONLINE="integration-test-access integration-test-migrations integration-test-security integration-test-devices
 integration-test-envelopes integration-test-uploads test-e2ee-files test-e2ee-safety test-e2ee-groups
-test-e2ee-sessions test-e2ee-local-data test-e2ee-ui test-ui-basics test-ui-dialogs"
+test-e2ee-sessions test-e2ee-local-data test-e2ee-qr test-e2ee-ui test-ui-basics test-ui-dialogs"
 if [ $# -gt 0 ]; then
     SELECTED=" $* "
 else
