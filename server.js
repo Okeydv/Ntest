@@ -691,7 +691,17 @@ async function initDatabase() {
     // вообще. Незаметным это было потому, что на уже существующей базе всё
     // работает: ошибка возникает только при первом запуске с нуля.
     disappearingMessagesManager = new DisappearingMessagesManager(pool, {
-        onDelete: purgeMessageContent,
+        // Исчезнувшее по сроку — как удалённое: содержимое стирается, а
+        // клиенты узнают об этом сразу и чистят свою расшифрованную копию.
+        onDelete: async messageId => {
+            await purgeMessageContent(messageId);
+            const message = await dbGet('SELECT chat_id, room_id FROM messages WHERE id = $1', [messageId]);
+            if (message) {
+                io.to(getSocketRoomKey(message.chat_id, message.room_id)).emit('messageDeleted', {
+                    id: Number(messageId), chat_id: message.chat_id, room_id: message.room_id,
+                });
+            }
+        },
     });
     await disappearingMessagesManager.initialize();
 

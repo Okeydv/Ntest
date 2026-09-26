@@ -667,7 +667,7 @@ async function decryptIncomingNow(message) {
 
     if (message.group) {
         const text = await openGroupMessage(message);
-        if (text !== null) await store.plaintext.save(message.id, text);
+        if (text !== null) await rememberPlaintext(message, text);
         return text;
     }
 
@@ -688,17 +688,113 @@ async function decryptIncomingNow(message) {
         }
         return null;
     }
-    await store.plaintext.save(message.id, text);
+    await rememberPlaintext(message, text);
     return text;
 }
 
-/* Локальный кэш расшифрованного — см. комментарий у store.plaintext. */
-export const rememberSent = (messageId, text) => store.plaintext.save(messageId, text);
+/* ------------------------------------------------------------------
+   Локальный кэш расшифрованного — см. комментарий у store.plaintext.
+   ------------------------------------------------------------------ */
+
+// Переписка — комната, а чат без комнаты (бот) — сам по себе. У сообщения
+// в комнате chat_id — чат отправителя, а не читающего, поэтому ключ по
+// комнате: иначе превью полученных сообщений ложились не туда.
+const conversationKey = message => (message.room_id ? `room:${message.room_id}` : `chat:${message.chat_id}`);
+const conversationOfChat = chat => (chat.room_id ? `room:${chat.room_id}` : `chat:${chat.id}`);
+
+async function rememberPlaintext(message, text) {
+    await store.plaintext.save(message.id, text);
+    const key = conversationKey(message);
+    const ids = await store.conversations.load(key);
+    if (!ids.includes(message.id)) {
+        ids.push(message.id);
+        await store.conversations.save(key, ids);
+    }
+}
+
+async function forgetNow(message) {
+    await store.plaintext.drop(message.id);
+    const key = conversationKey(message);
+    const ids = await store.conversations.load(key);
+    if (ids.includes(message.id)) await store.conversations.save(key, ids.filter(id => id !== message.id));
+    const preview = await store.previews.load(key);
+    if (preview && preview.messageId === message.id) await store.previews.drop(key);
+}
+
+/** Своё отправленное: конверт себе не шлётся, текст кладём сами. */
+export const rememberSent = (message, text) => serialized(() => rememberPlaintext(message, text));
 export const recallPlaintext = messageId => store.plaintext.load(messageId);
 
+/**
+ * Сообщение удалено или исчезло по сроку — стереть его расшифрованный
+ * текст (а вместе с ним и ключ вложения, он лежит там же) и превью, если
+ * оно было про это сообщение.
+ */
+export const forgetMessage = message => serialized(() => forgetNow(message));
+
+/**
+ * Что из этой переписки у нас лежит расшифрованным. Берётся ДО запроса
+ * истории, чтобы forgetMissing не тронул сообщение, пришедшее, пока
+ * история загружалась.
+ */
+export const knownMessages = chat => store.conversations.load(conversationOfChat(chat));
+
+/**
+ * Стереть расшифрованное для сообщений, которых в истории больше нет:
+ * удалены или исчезли, пока это устройство было не в сети.
+ */
+export function forgetMissing(chat, known, liveIds) {
+    const live = new Set(liveIds.map(Number));
+    const gone = known.filter(id => !live.has(Number(id)));
+    if (gone.length === 0) return Promise.resolve();
+    return serialized(async () => {
+        for (const id of gone) await forgetNow({ id, room_id: chat.room_id, chat_id: chat.id });
+    });
+}
+
+/** Из чата вышли — стереть всё, что от него осталось на устройстве. */
+export function forgetConversation(chat) {
+    return serialized(async () => {
+        const key = conversationOfChat(chat);
+        for (const id of await store.conversations.load(key)) await store.plaintext.drop(id);
+        await store.conversations.drop(key);
+        await store.previews.drop(key);
+        if (chat.room_id) {
+            await store.senderKeys.drop(chat.room_id);
+            await store.groupSessions.dropRoom(chat.room_id);
+        }
+    });
+}
+
+/**
+ * Выход из аккаунта: стереть всё — ключи, сессии, расшифрованную
+ * переписку. Устройство при этом отзывается на сервере, иначе собеседники
+ * продолжали бы шифровать для него.
+ */
+export function wipeDevice() {
+    return serialized(async () => {
+        const deviceId = state.deviceId;
+        if (deviceId && state.api) {
+            try {
+                await state.api(`/api/devices/${deviceId}`, { method: 'DELETE' });
+            } catch (e) {
+                console.warn('[E2EE] устройство не отозвано:', e.message);
+            }
+        }
+        await store.wipe();
+        state.ready = false;
+        state.deviceId = null;
+        state.identity = null;
+    });
+}
+
 /* Превью последнего сообщения: сервер шифротекст прочитать не может. */
-export const rememberPreview = (chatId, text) => store.previews.save(chatId, text);
-export const recallPreview = chatId => store.previews.load(chatId);
+export const rememberPreview = (message, text) =>
+    store.previews.save(conversationKey(message), { text, messageId: message.id });
+export const recallPreview = async chat => {
+    const entry = await store.previews.load(conversationOfChat(chat));
+    return entry && typeof entry.text === 'string' ? entry.text : null;
+};
 
 /* ------------------------------------------------------------------
    Код безопасности

@@ -185,7 +185,7 @@ async function appendMessageDecrypted(message) {
         applyDecryptedContent(message, content);
         if (content) {
             const preview = e2ee.payloadPreview(content);
-            await e2ee.rememberPreview(message.chat_id, preview);
+            await e2ee.rememberPreview(message, preview);
             updateChatPreviewInList(message, preview);
         }
     }
@@ -693,6 +693,18 @@ function setupEventListeners() {
     }));
 
     elements.logoutBtn.addEventListener('click', async () => {
+        // Выход стирает с устройства ключи и расшифрованную переписку и
+        // отзывает устройство: иначе всё это оставалось бы в браузере для
+        // любого, кто сядет за него следом. Анонимный аккаунт удаляется
+        // целиком и так — спрашивать не о чем.
+        if (e2ee && e2ee.isReady()) {
+            if (!(currentUser && currentUser.isAnonymous)
+                && !confirm('Выйти? Переписка на этом устройстве будет стёрта, прочитать её здесь снова не получится.')) {
+                return;
+            }
+            await e2ee.wipeDevice();
+            e2eeDeviceId = null;
+        }
         await api('/api/logout', { method: 'POST' });
         currentUser = null;
         currentChatId = null;
@@ -918,6 +930,8 @@ function setupEventListeners() {
     });
 
     socket.on('messageDeleted', ({ id, chat_id, room_id }) => {
+        // Расшифрованная копия удалённого сообщения не должна пережить его.
+        if (e2ee) e2ee.forgetMessage({ id, chat_id, room_id });
         if (chat_id == currentChatId || room_id == currentRoomId) {
             const bubble = elements.chatMessages.querySelector(`[data-message-id="${id}"]`);
             if (bubble) removeMessageElement(bubble);
@@ -1039,7 +1053,7 @@ async function loadChats() {
 async function chatPreview(chat) {
     if (chat.last_message) return chat.last_message.substring(0, 30);
     if (e2ee) {
-        const cached = await e2ee.recallPreview(chat.id);
+        const cached = await e2ee.recallPreview(chat);
         if (cached) return cached.substring(0, 30);
     }
     return 'Нет сообщений';
@@ -1104,8 +1118,14 @@ async function openChat(chatId, roomId, name, avatar, online, isBot) {
     elements.emptyState.classList.add('hidden');
     elements.chatMessages.innerHTML = '';
 
+    // Что из этого чата лежит у нас расшифрованным — до запроса истории:
+    // сообщение, пришедшее, пока она грузится, не должно попасть под чистку.
+    const known = e2ee && e2ee.isReady() ? await e2ee.knownMessages({ id: chatId, room_id: roomId }) : [];
     const data = await api(`/api/messages/${chatId}`);
     if (!data.success) return;
+    // Удалённое и исчезнувшее, пока устройство было не в сети, стираем и
+    // отсюда: в истории его уже нет.
+    if (e2ee && data.messages) await e2ee.forgetMissing({ id: chatId, room_id: roomId }, known, data.messages.map(m => m.id));
 
     if (data.messages) {
         // Последовательно, а не Promise.all: у Double Ratchet состояние
@@ -1642,7 +1662,7 @@ async function handleNewMessage(message) {
         if (message.encrypted && e2ee) {
             const raw = await resolveMessageText(message);
             if (raw !== null) {
-                await e2ee.rememberPreview(message.chat_id, e2ee.payloadPreview(e2ee.decodePayload(raw)));
+                await e2ee.rememberPreview(message, e2ee.payloadPreview(e2ee.decodePayload(raw)));
             }
         }
         loadChats();
@@ -1733,10 +1753,10 @@ async function sendEncryptedPayload(chatId, encoded, { replyToId = null, blobIds
     // Своё содержимое — локально: конверт себе не отправляется. По этой же
     // причине своё сообщение приходится дорисовать самому: сокет-события о
     // нём не будет.
-    await e2ee.rememberSent(data.message.id, encoded);
+    await e2ee.rememberSent(data.message, encoded);
     const content = e2ee.decodePayload(encoded);
     const preview = e2ee.payloadPreview(content);
-    await e2ee.rememberPreview(chatId, preview);
+    await e2ee.rememberPreview(data.message, preview);
     updateChatPreviewInList(data.message, preview);
 
     if (chatId === currentChatId) {
@@ -1949,8 +1969,10 @@ async function joinChat() {
 async function deleteChat() {
     if (!currentChatId) return;
     if (!confirm('Удалить чат?')) return;
+    const leaving = { id: currentChatId, room_id: currentRoomId };
     const data = await api(`/api/chats/${currentChatId}`, { method: 'DELETE' });
     if (data.success) {
+        if (e2ee) await e2ee.forgetConversation(leaving);
         showToast('Чат удалён', 'success');
         closeModal(elements.chatMenuModal);
         currentChatId = null;
