@@ -98,9 +98,10 @@ check('X-XSS-Protection: 0 (старый фильтр только мешал)',
 
 /* ------------------------- чужое вложение ------------------------- */
 
-const owner = await fetch(BASE + '/api/chats', { method: 'POST',
-    headers: { Cookie: j.header(), 'X-CSRF-Token': j.csrf(), 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Файлы' }) });
-const ownerChat = (await owner.json()).chat.id;
+// Открытый файл можно отправить только туда, где он и так не шифруется, —
+// в чат с ботом: в группу без собеседников сервер ничего не примет.
+const ownerChats = await (await fetch(BASE + '/api/chats', { headers: { Cookie: j.header() } })).json();
+const ownerChat = ownerChats.chats.find(c => c.is_bot).id;
 const form = new FormData();
 form.append('file', new Blob(['секретная заметка'], { type: 'text/plain' }), 'note.txt');
 form.append('chatId', String(ownerChat));
