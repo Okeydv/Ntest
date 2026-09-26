@@ -25,6 +25,7 @@
 import { chromium } from '/opt/node22/lib/node_modules/playwright/index.mjs';
 import sharp from 'sharp';
 import pg from 'pg';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -354,6 +355,14 @@ count = await messageCount(alice.page);
 await sendFile(tiffPath);
 check('TIFF не уходит: такого типа нет в списке', await messageCount(alice.page) === count
     && /не поддерживается/.test(await lastToast(alice.page)), await lastToast(alice.page));
+
+// PDF под паролем владельца: открывается без пароля, но очистить его нельзя.
+const lockedPath = path.join(tmp, 'locked.pdf');
+execFileSync('qpdf', ['--encrypt', '', 'owner-secret', '256', '--', pdfPath, lockedPath]);
+count = await messageCount(alice.page);
+await sendFile(lockedPath);
+check('PDF с паролем не уходит, и сказано, как снять защиту', await messageCount(alice.page) === count
+    && /защищён паролем.*Сохранить как PDF/.test(await lastToast(alice.page)), await lastToast(alice.page));
 
 const disguisedPath = path.join(tmp, 'notes.txt');
 fs.writeFileSync(disguisedPath, fs.readFileSync(photoPath));

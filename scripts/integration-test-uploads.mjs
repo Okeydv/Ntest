@@ -139,7 +139,7 @@ const before = uploadsCount();
 const encrypted = Buffer.concat([pdf.subarray(0, pdf.lastIndexOf('trailer')),
     Buffer.from('trailer\n<< /Size 9 /Root 1 0 R /Encrypt << /Filter /Standard /V 1 /R 2 /O (x) /U (y) /P -4 >> >>\nstartxref\n0\n%%EOF')]);
 const encUp = await upload(A, chatIdA, 'locked.pdf', 'application/pdf', encrypted);
-check('зашифрованный PDF не отправляется', encUp.status === 400 && /PDF/.test(encUp.json?.message), encUp.json?.message);
+check('зашифрованный PDF не отправляется, и сказано, что он защищён', encUp.status === 400 && /защищён паролем/.test(encUp.json?.message), encUp.json?.message);
 check('и не остаётся на диске', uploadsCount() === before);
 
 /* ------------------------- фото ------------------------- */
