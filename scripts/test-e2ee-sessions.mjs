@@ -7,7 +7,9 @@
 //     друга) не ломает разговор: прежняя сессия уходит в архив, а не
 //     стирается, и сообщения по ней читаются;
 //   - раздача sender key «для» другой комнаты не принимается: комната
-//     внутри раздачи обязана совпасть с комнатой, где пришёл конверт.
+//     внутри раздачи обязана совпасть с комнатой, где пришёл конверт;
+//   - signed prekey меняется раз в неделю; сообщение по старому bundle,
+//     пришедшее после смены, читается; прежний ключ удаляется через 30 дней.
 //
 // Требует поднятых Postgres, key-server и server.js на 3006 и ЧИСТОЙ базы.
 // Запуск: TEST_DATABASE_URL=... node scripts/test-e2ee-sessions.mjs
@@ -162,6 +164,74 @@ const stored = await bob.page.evaluate(async ({ roomB, carolDevice }) => {
 }, { roomB: roomB.roomId, carolDevice: carolInfo.deviceId });
 check('ключ «для другой комнаты» не принят', stored === 0, `${stored} сохранено`);
 check('и об этом предупреждение', warnings.some(w => w.includes('ключ для другой комнаты')), warnings.join(' | '));
+
+/* ------------------------- ротация signed prekey ------------------------- */
+
+// Запись в IndexedDB страницы — чтобы «состарить» ключи, не дожидаясь недели.
+const idbPut = (page, key, value) => page.evaluate(async ({ key, value }) => {
+    const idb = await new Promise((resolve, reject) => {
+        const r = indexedDB.open('nyxo-e2ee');
+        r.onsuccess = () => resolve(r.result);
+        r.onerror = () => reject(r.error);
+    });
+    await new Promise((resolve, reject) => {
+        const t = idb.transaction('meta', 'readwrite');
+        t.objectStore('meta').put(value, key);
+        t.oncomplete = resolve;
+        t.onerror = () => reject(t.error);
+    });
+    idb.close();
+}, { key, value });
+const idbKeys = (page, store) => page.evaluate(async store => {
+    const idb = await new Promise(resolve => { const r = indexedDB.open('nyxo-e2ee'); r.onsuccess = () => resolve(r.result); });
+    const keys = await new Promise(resolve => {
+        const r = idb.transaction(store).objectStore(store).getAllKeys();
+        r.onsuccess = () => resolve(r.result);
+    });
+    idb.close();
+    return keys;
+}, store);
+const serverSpk = async deviceId => Number((await db.query(
+    'SELECT key_id FROM signed_prekeys WHERE device_id = $1', [deviceId])).rows[0].key_id);
+
+const erin = await openApp('erin');
+await register(erin, 'erin');
+const frank = await openApp('frank');
+const frankInfo = await register(frank, 'frank');
+const spkRoom = await createRoom(erin, 'Ротация');
+await join(frank, spkRoom.code);
+check('у нового устройства signed prekey №1', await serverSpk(frankInfo.deviceId) === 1);
+
+// Ключу Фрэнка «восемь дней»; сам Фрэнк не в сети.
+await idbPut(frank.page, 'signedPrekeyCreatedAt', Date.now() - 8 * 24 * 3600 * 1000);
+await frank.page.goto('about:blank');
+await openRoom(erin.page, spkRoom.roomId);
+await send(erin.page, 'по старому ключу');   // bundle ещё со старым SPK
+frank.page = await frank.context.newPage();
+frank.page.on('pageerror', e => errors.push(`frank: ${e.message}`));
+await frank.page.goto(BASE, { waitUntil: 'networkidle' });
+await frank.page.waitForTimeout(1500);
+check('при запуске старый ключ сменился: на сервере №2', await serverSpk(frankInfo.deviceId) === 2);
+await openRoom(frank.page, spkRoom.roomId);
+check('сообщение по старому bundle, пришедшее после смены, читается', (await texts(frank.page)).includes('по старому ключу'));
+check('прежний ключ пока хранится', JSON.stringify((await idbKeys(frank.page, 'signedPrekeys')).sort()) === '[1,2]',
+    JSON.stringify(await idbKeys(frank.page, 'signedPrekeys')));
+
+const gina = await openApp('gina');
+await register(gina, 'gina');
+const ginaRoom = await createRoom(gina, 'После ротации');
+await join(frank, ginaRoom.code);
+await openRoom(gina.page, ginaRoom.roomId);
+await openRoom(frank.page, ginaRoom.roomId);
+await send(gina.page, 'по новому ключу');
+check('первый контакт после смены — по новому ключу, читается', await waitText(frank.page, 'по новому ключу'));
+
+// Прошёл месяц: прежний ключ удаляется.
+await idbPut(frank.page, 'retiredSignedPrekeys', [{ keyId: 1, retiredAt: Date.now() - 31 * 24 * 3600 * 1000 }]);
+await frank.page.reload({ waitUntil: 'networkidle' });
+await frank.page.waitForTimeout(1500);
+check('через 30 дней прежний ключ удалён', JSON.stringify(await idbKeys(frank.page, 'signedPrekeys')) === '[2]',
+    JSON.stringify(await idbKeys(frank.page, 'signedPrekeys')));
 
 check('ошибок на страницах нет', errors.length === 0, errors.join('; '));
 await browser.close();

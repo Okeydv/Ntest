@@ -75,6 +75,60 @@ export async function replenishOneTimePrekeys() {
     }
 }
 
+/* ------------------------------------------------------------------
+   Ротация signed prekey
+   ------------------------------------------------------------------ */
+
+// Signed prekey меняется раз в неделю, как в Signal. Его приватная часть
+// участвует в каждом первом контакте с устройством, а без одноразового
+// prekey — только она и ключ личности. Утечка вечного SPK открыла бы все
+// такие первые сообщения за всё время; меняющегося — только за неделю.
+//
+// Прежний хранится ещё 30 дней: сообщение, зашифрованное по старому
+// bundle, может прийти с опозданием (собеседник был не в сети), и без
+// этого ключа оно бы не открылось. Потом удаляется.
+const SIGNED_PREKEY_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const SIGNED_PREKEY_GRACE_MS = 30 * 24 * 60 * 60 * 1000;
+
+async function pruneRetiredSignedPrekeys(now) {
+    const retired = (await store.meta.get('retiredSignedPrekeys')) || [];
+    const keep = [];
+    for (const r of retired) {
+        if (now - r.retiredAt > SIGNED_PREKEY_GRACE_MS) await store.signedPrekeys.drop(r.keyId);
+        else keep.push(r);
+    }
+    if (keep.length !== retired.length) await store.meta.set('retiredSignedPrekeys', keep);
+}
+
+/**
+ * Сменить signed prekey, если текущему больше недели. Новый сначала
+ * публикуется и только потом становится текущим: не удалась публикация —
+ * остаётся прежний, и собеседники продолжают получать рабочий bundle.
+ */
+export async function rotateSignedPrekeyIfDue(now = Date.now()) {
+    if (!state.ready) return false;
+    await pruneRetiredSignedPrekeys(now);
+    // У устройств, заведённых до ротации, даты нет — их ключ меняем сразу.
+    const createdAt = (await store.meta.get('signedPrekeyCreatedAt')) || 0;
+    if (now - createdAt < SIGNED_PREKEY_MAX_AGE_MS) return false;
+
+    const previous = state.signedPrekey;
+    const fresh = await generateSignedPrekey(state.identity, previous.keyId + 1);
+    await store.signedPrekeys.save(fresh);
+    const published = await state.api('/api/keys/signed-prekey', { method: 'PUT', body: JSON.stringify(fresh.upload) });
+    if (!published || published.success !== true) {
+        await store.signedPrekeys.drop(fresh.keyId);
+        throw new Error((published && published.message) || 'новый signed prekey не принят');
+    }
+    await store.meta.set('signedPrekeyId', fresh.keyId);
+    await store.meta.set('signedPrekeyCreatedAt', now);
+    const retired = (await store.meta.get('retiredSignedPrekeys')) || [];
+    retired.push({ keyId: previous.keyId, retiredAt: now });
+    await store.meta.set('retiredSignedPrekeys', retired);
+    state.signedPrekey = fresh;
+    return true;
+}
+
 async function registerFreshDevice(deviceName) {
     const created = await state.api('/api/devices', {
         method: 'POST',
@@ -95,6 +149,7 @@ async function registerFreshDevice(deviceName) {
     await store.signedPrekeys.save(state.signedPrekey);
     await store.meta.set('deviceId', state.deviceId);
     await store.meta.set('signedPrekeyId', state.signedPrekey.keyId);
+    await store.meta.set('signedPrekeyCreatedAt', Date.now());
 
     await publishKeys();
     await createOneTimePrekeys(OPK_POOL_SIZE);
@@ -128,6 +183,7 @@ export async function bootstrap({ api, userId, deviceName = 'Браузер' }) 
                 state.signedPrekey = storedSpk;
                 state.ready = true;
                 replenishOneTimePrekeys();
+                rotateSignedPrekeyIfDue().catch(e => console.warn('[E2EE] signed prekey не обновлён:', e.message));
                 return { deviceId: state.deviceId, fresh: false };
             }
             // Устройство отозвано или удалено на сервере. Держаться за

@@ -106,6 +106,7 @@ export const identity = {
 export const signedPrekeys = {
     load: keyId => get(STORE_SIGNED_PREKEYS, keyId),
     save: entry => put(STORE_SIGNED_PREKEYS, entry.keyId, entry),
+    drop: keyId => del(STORE_SIGNED_PREKEYS, keyId),
 };
 
 export const oneTimePrekeys = {
