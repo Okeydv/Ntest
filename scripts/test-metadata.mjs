@@ -5,7 +5,8 @@
 // (открытые), поэтому проверяется здесь один раз, на уровне байтов.
 
 import { createRequire } from 'node:module';
-import { cleanIsoBmff, cleanPdf } from '../public/crypto/metadata.js';
+import sharp from 'sharp';
+import { cleanIsoBmff, cleanJpeg, cleanPdf } from '../public/crypto/metadata.js';
 import { syntheticMp4, boxes, GPS, MODEL, SHOT_AT } from './lib/mp4-fixtures.mjs';
 
 const require = createRequire(import.meta.url);
@@ -61,6 +62,55 @@ await throws('блок с размером больше файла — отка�
 const zeroSized = Buffer.from(sample);
 zeroSized.writeUInt32BE(0, boxes(zeroSized).find(b => b.type === 'mdat').start);
 check('блок с размером 0 (до конца файла) разбирается', !has(Buffer.from(cleanIsoBmff(zeroSized).bytes), GPS));
+
+/* ------------------------- JPEG без перекодирования ------------------------- */
+
+const segment = (marker, body) => {
+    const data = Buffer.from(body, 'latin1');
+    const head = Buffer.alloc(4);
+    head.writeUInt16BE(0xff00 | marker, 0);
+    head.writeUInt16BE(data.length + 2, 2);
+    return Buffer.concat([head, data]);
+};
+const markers = buf => {
+    const out = [];
+    for (let pos = 2; pos + 4 <= buf.length && buf[pos] === 0xff && buf[pos + 1] !== 0xda;) {
+        out.push(buf[pos + 1]);
+        pos += 2 + buf.readUInt16BE(pos + 2);
+    }
+    return out;
+};
+// Фото с профилем Display P3 и EXIF (автор, камера), к которому дописаны
+// XMP, комментарий и хвост после EOI — туда приклеивают миниатюры.
+// Шум, а не заливка: у заливки сжатых данных пара байт, и обрезать нечего.
+const noise = Buffer.from(Array.from({ length: 32 * 24 * 3 }, (_, i) => (i * 7919) % 251));
+const withExif = await sharp(noise, { raw: { width: 32, height: 24, channels: 3 } })
+    .withIccProfile('p3').withExif({ IFD0: { Artist: 'Ivan Petrov', Model: 'EOS R5' } }).jpeg().toBuffer();
+const photo = Buffer.concat([
+    withExif.subarray(0, 2),
+    segment(0xe1, 'http://ns.adobe.com/xap/1.0/\0<x:xmpmeta><dc:creator>Ivan Petrov</dc:creator></x:xmpmeta>'),
+    segment(0xfe, 'shot by Ivan Petrov'),
+    withExif.subarray(2),
+    Buffer.from('tail: Ivan Petrov'),
+]);
+check('исходное фото несёт EXIF, XMP, комментарий, профиль и хвост',
+    has(photo, 'Exif') && has(photo, 'xmpmeta') && has(photo, 'shot by') && has(photo, 'ICC_PROFILE') && has(photo, 'tail:'));
+const cleanPhoto = Buffer.from(cleanJpeg(photo));
+check('после очистки нет ни автора, ни камеры, ни XMP, ни хвоста',
+    !has(cleanPhoto, 'Ivan Petrov') && !has(cleanPhoto, 'EOS R5') && !has(cleanPhoto, 'xmpmeta') && !has(cleanPhoto, 'tail:'));
+check('цветовой профиль остался', markers(cleanPhoto).includes(0xe2) && has(cleanPhoto, 'ICC_PROFILE'));
+check('файл кончается на EOI', cleanPhoto.subarray(-2).equals(Buffer.from([0xff, 0xd9])));
+const pixels = buf => sharp(buf).raw().toBuffer();
+check('пиксели те же', (await pixels(cleanPhoto)).equals(await pixels(photo)));
+
+// Обрезанный файл: данные кончаются без EOI. Просмотрщики такие
+// показывают, и отказывать незачем — в сжатых данных сегментов нет.
+const cut = photo.subarray(0, photo.lastIndexOf(Buffer.from([0xff, 0xd9])) - 10);
+const cleanCut = Buffer.from(cleanJpeg(cut));
+check('обрезанный JPEG: EOI дописан, EXIF убран',
+    cleanCut.subarray(-2).equals(Buffer.from([0xff, 0xd9])) && !has(cleanCut, 'Ivan Petrov'));
+await throws('не JPEG — отказ', () => cleanJpeg(Buffer.from('GIF89a')), /SOI/);
+await throws('обрезанный заголовок — отказ', () => cleanJpeg(photo.subarray(0, 30)), /JPEG/);
 
 /* ------------------------- PDF ------------------------- */
 

@@ -2292,8 +2292,10 @@ app.post('/api/messages/file', upload.single('file'), async (req, res) => {
             } catch (stripErr) {
                 console.error('Metadata strip error:', stripErr.message);
                 try { if (fs.existsSync(uploadedFilePath)) fs.unlinkSync(uploadedFilePath); } catch (_) { /* ignore */ }
-                return res.status(400).json({ success: false, message: file.mimetype === 'application/pdf'
-                    ? 'Не удалось удалить метаданные из PDF (возможно, он защищён паролем) — файл не отправлен'
+                // У PDF причина бывает двух видов — защищён паролем или
+                // повреждён, — и советы для них разные.
+                return res.status(400).json({ success: false, message: stripErr.name === 'PdfCleanError'
+                    ? `Файл не отправлен: ${stripErr.message}`
                     : 'Не удалось удалить метаданные из файла — он не отправлен' });
             }
         }

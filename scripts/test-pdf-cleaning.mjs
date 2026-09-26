@@ -4,17 +4,21 @@
 //   - LibreOffice: Info и XMP с автором, названием, ключевыми словами;
 //   - Ghostscript, как сканер: JPEG лежит в PDF байт в байт, с EXIF и GPS;
 //   - то же, но JPEG дополнительно сжат: /Filter [/FlateDecode /DCTDecode];
+//   - JPEG 2000 от OpenJPEG с EXIF и XMP, которые дописал exiftool: так
+//     картинку кладут в PDF сканеры и img2pdf;
 //   - как сохраняет Acrobat: инкрементальное обновление поверх файла
 //     LibreOffice — новый Info, комментарий с автором и датой, PieceInfo,
-//     вложенный файл, поле формы. Старый Info с именем автора остаётся в
-//     файле недостижимым — именно его раньше выписывал обратно pdf-lib;
+//     миниатюра страницы, «статья» со своим словарём сведений, вложенный
+//     файл, поле формы. Старый Info с именем автора остаётся в файле
+//     недостижимым — именно его раньше выписывал обратно pdf-lib;
 //   - вложенный файл, добавленный qpdf, и потоки объектов;
 //   - защищённые паролем (владельца и пользователя) и битый.
 //
 // Проверка результата — сторонними инструментами: qpdf --check, exiftool,
 // поиск по распакованному qpdf файлу, отрисовка Ghostscript.
 //
-// Требует qpdf, exiftool, Ghostscript и LibreOffice (soffice) в PATH.
+// Требует qpdf, exiftool, Ghostscript, LibreOffice (soffice) и OpenJPEG
+// (opj_compress) в PATH.
 // Запуск: node scripts/test-pdf-cleaning.mjs — сервер и база не нужны.
 
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -28,9 +32,9 @@ import { cleanPdf, PdfCleanError } from '../public/crypto/metadata.js';
 
 const require = createRequire(import.meta.url);
 const pdfLib = require('pdf-lib');
-const { PDFDocument, PDFName, PDFArray } = pdfLib;
+const { PDFDocument, PDFName, PDFArray, pushGraphicsState, popGraphicsState, concatTransformationMatrix, drawObject } = pdfLib;
 
-for (const tool of ['qpdf', 'exiftool', 'gs', 'soffice']) {
+for (const tool of ['qpdf', 'exiftool', 'gs', 'soffice', 'opj_compress']) {
     if (spawnSync('which', [tool]).status !== 0) {
         console.error(`нужен ${tool} в PATH`);
         process.exit(2);
@@ -44,6 +48,8 @@ const file = (name, bytes) => { const p = path.join(tmp, name); if (bytes) fs.wr
 
 const AUTHOR = 'Ivan Petrov';
 const SECRETS = [AUTHOR, 'EOS R5', 'Exif', 'confidential', 'xmpmeta', 'D:20260925'];
+// Текстовая строка PDF не в ASCII — UTF-16BE с BOM, записанная в hex.
+const pdfText = text => `<FEFF${Buffer.from(text, 'utf16le').swap16().toString('hex')}>`;
 
 /* ------------------------- инструменты проверки ------------------------- */
 
@@ -55,10 +61,17 @@ function expanded(bytes) {
     spawnSync('qpdf', ['--qdf', '--object-streams=disable', src, out]);
     return fs.existsSync(out) ? fs.readFileSync(out) : Buffer.alloc(0);
 }
-const utf16 = text => Buffer.concat([Buffer.from([0xfe, 0xff]), Buffer.from(text, 'utf16le').swap16()]).subarray(2);
+const utf16 = text => Buffer.from(text, 'utf16le').swap16();
+// Строка в PDF бывает литеральной, (Ivan Petrov), и шестнадцатеричной,
+// <FEFF0049...>, — так пишет, например, LibreOffice. Ищем все формы.
+function forms(secret) {
+    const raw = [Buffer.from(secret, 'latin1'), utf16(secret)];
+    const hex = raw.map(b => b.toString('hex')).flatMap(h => [h, h.toUpperCase()]);
+    return [...raw, ...hex];
+}
 function leaks(bytes) {
     const text = expanded(bytes);
-    return SECRETS.filter(s => text.includes(s) || text.includes(utf16(s)));
+    return SECRETS.filter(s => forms(s).some(f => text.includes(f)));
 }
 function qpdfCheck(bytes) {
     const r = spawnSync('qpdf', ['--check', file('check.pdf', bytes)], { encoding: 'utf8' });
@@ -130,6 +143,26 @@ for (const [, obj] of wrappedDoc.context.enumerateIndirectObjects()) {
 const wrapped = Buffer.from(await wrappedDoc.save({ useObjectStreams: false, updateFieldAppearances: false }));
 await cleanedAndChecked('JPEG под Flate (фильтр-массив)', wrapped, { samePixels: true });
 
+/* ------------------------- JPEG 2000 ------------------------- */
+
+// Картинку кодирует OpenJPEG, EXIF и XMP дописывает exiftool — в блоки uuid.
+// В PDF она ложится байт в байт, как это делают сканеры и img2pdf.
+await sharp({ create: { width: 60, height: 40, channels: 3, background: '#d5733a' } }).png().toFile(file('photo2.png'));
+execFileSync('opj_compress', ['-i', file('photo2.png'), '-o', file('photo2.jp2')], { stdio: 'ignore' });
+execFileSync('exiftool', ['-q', '-overwrite_original', '-GPSLatitude=55.7558', '-GPSLatitudeRef=N',
+    '-GPSLongitude=37.6173', '-GPSLongitudeRef=E', `-Artist=${AUTHOR}`, '-Model=EOS R5',
+    `-XMP-dc:Creator=${AUTHOR}`, file('photo2.jp2')]);
+const jp2 = fs.readFileSync(file('photo2.jp2'));
+check('в JPEG 2000 лежат EXIF и XMP', jp2.includes('EOS R5') && jp2.includes('xmpmeta'));
+const jpxDoc = await PDFDocument.create({ updateMetadata: false });
+const jpxPage = jpxDoc.addPage([60, 40]);
+const jpxRef = jpxDoc.context.register(jpxDoc.context.stream(jp2,
+    { Type: 'XObject', Subtype: 'Image', Width: 60, Height: 40, Filter: 'JPXDecode' }));
+jpxPage.node.setXObject(PDFName.of('Im0'), jpxRef);
+jpxPage.pushOperators(pushGraphicsState(), concatTransformationMatrix(60, 0, 0, 40, 0, 0), drawObject('Im0'), popGraphicsState());
+const jpx = Buffer.from(await jpxDoc.save({ useObjectStreams: false }));
+await cleanedAndChecked('JPEG 2000 (JPXDecode)', jpx, { samePixels: true });
+
 /* ------------------------- как сохраняет Acrobat ------------------------- */
 
 // Инкрементальное обновление: новые версии объектов дописываются в конец,
@@ -140,18 +173,27 @@ async function incrementalUpdate(base) {
     const pageRef = page.ref;
     let next = doc.context.largestObjectNumber + 1;
     const infoNum = next++, annotNum = next++, widgetNum = next++, efNum = next++, fsNum = next++, attachNum = next++;
+    const thumbNum = next++, threadNum = next++, beadNum = next++;
     const pageDict = page.node.toString().replace(/>>\s*$/, '')
         .replace(/\/Annots\s*\[[^\]]*\]/, '')
         + `/Annots [${annotNum} 0 R ${widgetNum} 0 R ${attachNum} 0 R]\n`
+        + `/Thumb ${thumbNum} 0 R\n/B [${beadNum} 0 R]\n`
         + `/PieceInfo << /Illustrator << /LastModified (D:20260925120000) /Private << /Author (${AUTHOR}) >> >> >>\n>>`;
+    const catalogDict = doc.catalog.toString().replace(/>>\s*$/, '') + `/Threads [${threadNum} 0 R]\n>>`;
     const objects = [
+        [doc.context.trailerInfo.Root.objectNumber, catalogDict],
         [pageRef.objectNumber, pageDict],
-        [infoNum, `<< /Author (Редакция) /Producer (Adobe Acrobat Pro 2026) /ModDate (D:20260925120000) >>`],
-        [annotNum, `<< /Type /Annot /Subtype /Text /Rect [20 20 40 40] /Contents (Проверь цифры) /T (${AUTHOR}) /M (D:20260925120000) /CreationDate (D:20260925115900) >>`],
-        [widgetNum, `<< /Type /Annot /Subtype /Widget /FT /Tx /Rect [60 20 160 40] /T (client_name) /V (ООО Ромашка) >>`],
+        [infoNum, `<< /Author ${pdfText('Редакция')} /Producer (Adobe Acrobat Pro 2026) /ModDate (D:20260925120000) >>`],
+        [annotNum, `<< /Type /Annot /Subtype /Text /Rect [20 20 40 40] /Contents ${pdfText('Проверь цифры')} /T (${AUTHOR}) /M (D:20260925120000) /CreationDate (D:20260925115900) >>`],
+        [widgetNum, `<< /Type /Annot /Subtype /Widget /FT /Tx /Rect [60 20 160 40] /T (client_name) /V ${pdfText('ООО Ромашка')} /M (D:20260925120100) >>`],
         [efNum, `<< /Type /EmbeddedFile /Length 30 >>\nstream\n${AUTHOR} private attachment \nendstream`],
         [fsNum, `<< /Type /Filespec /F (notes.txt) /EF << /F ${efNum} 0 R >> >>`],
         [attachNum, `<< /Type /Annot /Subtype /FileAttachment /Rect [200 20 220 40] /FS ${fsNum} 0 R /T (${AUTHOR}) >>`],
+        // Миниатюра 2×2 RGB: 12 байт, и это имя автора — если миниатюра
+        // переживёт очистку, его найдёт проверка на утечки.
+        [thumbNum, `<< /Width 2 /Height 2 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length 12 >>\nstream\n${AUTHOR} \nendstream`],
+        [threadNum, `<< /Type /Thread /F ${beadNum} 0 R /I << /Title (Plan) /Author (${AUTHOR}) /CreationDate (D:20260925110000) >> >>`],
+        [beadNum, `<< /Type /Bead /T ${threadNum} 0 R /N ${beadNum} 0 R /V ${beadNum} 0 R /P ${pageRef} /R [0 0 100 100] >>`],
     ];
     const prev = Number(/startxref\s+(\d+)\s+%%EOF\s*$/.exec(base.toString('latin1'))[1]);
     let body = Buffer.from('\n');
@@ -180,7 +222,11 @@ check('у комментария нет автора и дат, текст на 
     !comment.get(PDFName.of('T')) && !comment.get(PDFName.of('M')) && !comment.get(PDFName.of('CreationDate'))
     && comment.get(PDFName.of('Contents')).decodeText() === 'Проверь цифры');
 const widget = annots.asArray().map((_, i) => annots.lookup(i)).find(a => String(a.get(PDFName.of('Subtype'))) === '/Widget');
-check('у поля формы /T — имя поля — сохранено', widget && widget.get(PDFName.of('T')).decodeText() === 'client_name');
+check('у поля формы /T — имя поля — сохранено, дата правки — нет',
+    widget && widget.get(PDFName.of('T')).decodeText() === 'client_name' && !widget.get(PDFName.of('M')));
+check('миниатюры страницы нет', !after.getPage(0).node.get(PDFName.of('Thumb')));
+const thread = after.catalog.lookup(PDFName.of('Threads'), PDFArray).lookup(0);
+check('«статья» на месте, её словаря сведений нет', thread.get(PDFName.of('F')) && !thread.get(PDFName.of('I')));
 
 /* ------------------------- вложения qpdf и потоки объектов ------------------------- */
 

@@ -9,7 +9,7 @@
 // он отдельно от e2ee.js — ядро крипты остаётся чистым и тестируемым в Node.
 
 import { toB64, fromB64 } from './e2ee.js';
-import { cleanIsoBmff, cleanPdf } from './metadata.js';
+import { cleanIsoBmff, cleanPdf, PdfCleanError } from './metadata.js';
 import { detectType, attachmentName, ATTACHMENT_TYPES, CONVERT_TO_JPEG, ISO_BMFF_TYPES } from './filetypes.js';
 
 const subtle = globalThis.crypto.subtle;
@@ -165,8 +165,9 @@ export async function prepareAttachment(file) {
     } else if (detected === 'application/pdf') {
         try {
             blob = new Blob([await cleanPdf(bytes, await loadPdfLib())], { type: detected });
-        } catch {
-            throw new Error('не удалось удалить метаданные из PDF (возможно, он защищён паролем)');
+        } catch (error) {
+            // «Защищён паролем» и «повреждён» — разные советы, их и показываем.
+            throw error instanceof PdfCleanError ? error : new Error('не удалось удалить метаданные из PDF');
         }
     }
 

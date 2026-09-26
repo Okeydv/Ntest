@@ -1,4 +1,5 @@
-// Очистка метаданных вложений: MP4/MOV и PDF.
+// Очистка метаданных вложений: MP4/MOV и PDF вместе с картинками JPEG и
+// JPEG 2000 внутри него.
 //
 // Модуль общий для браузера и сервера. В зашифрованном чате сервер файл не
 // видит, и чистить его может только отправитель — до шифрования. В открытом
@@ -146,7 +147,13 @@ export function cleanJpeg(input) {
             // 0xFF00 и не RSTn: они часть данных).
             let scan = end;
             while (scan + 1 < b.length && !(b[scan] === 0xff && b[scan + 1] !== 0 && (b[scan + 1] < 0xd0 || b[scan + 1] > 0xd7))) scan++;
-            if (scan + 1 >= b.length) throw new Error('JPEG: нет EOI');
+            if (scan + 1 >= b.length) {
+                // Данные обрываются без EOI: файл обрезан, но просмотрщики
+                // такие показывают. Сегментов в сжатых данных нет — хватит
+                // дописать EOI.
+                parts.push(b.subarray(pos), new Uint8Array([0xff, 0xd9]));
+                return concatBytes(parts);
+            }
             parts.push(b.subarray(pos, scan));
             pos = scan;
             continue;
@@ -172,6 +179,50 @@ function concatBytes(parts) {
 }
 
 /* ========================================================================
+   JPEG 2000
+   ===================================================================== */
+
+// JP2 устроен блоками, как MP4. Для отрисовки нужны сигнатура, ftyp,
+// заголовки и кодовый поток; XMP, EXIF и координаты (GeoJP2, GMLJP2) лежат
+// в блоках uuid, xml и asoc. Всё, чего нет в списке, становится free того
+// же размера: смещения, на которые ссылаются таблицы фрагментов JPX, не
+// сдвигаются.
+const JP2_SIGNATURE = [0x00, 0x00, 0x00, 0x0c, 0x6a, 0x50, 0x20, 0x20, 0x0d, 0x0a, 0x87, 0x0a];
+const JP2_KEEP = new Set(['jP  ', 'ftyp', 'rreq', 'jp2h', 'jpch', 'jplh', 'cgrp', 'jp2c', 'ftbl', 'mdat', 'free']);
+
+/** Очистить JPEG 2000. Возвращает новый массив того же размера. */
+export function cleanJp2(input) {
+    const buf = new Uint8Array(input);
+    // Голый кодовый поток, без обёртки JP2: метаданных в нём нет, только
+    // комментарий с именем кодировщика.
+    if (buf[0] === 0xff && buf[1] === 0x4f) return buf;
+    if (buf.length < JP2_SIGNATURE.length || JP2_SIGNATURE.some((v, i) => buf[i] !== v)) {
+        throw new Error('JPEG 2000: нет сигнатуры');
+    }
+    const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    let pos = 0;
+    while (pos < buf.length) {
+        if (buf.length - pos < 8) throw new Error('JPEG 2000: обрезанный заголовок блока');
+        let size = view.getUint32(pos);
+        const type = boxType(buf, pos + 4);
+        let headerLen = 8;
+        if (size === 1) {
+            if (buf.length - pos < 16) throw new Error('JPEG 2000: обрезанный заголовок блока');
+            const big = view.getBigUint64(pos + 8);
+            if (big > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('JPEG 2000: блок слишком велик');
+            size = Number(big);
+            headerLen = 16;
+        } else if (size === 0) {
+            size = buf.length - pos;
+        }
+        if (size < headerLen || pos + size > buf.length) throw new Error(`JPEG 2000: блок ${type} выходит за границы`);
+        if (!JP2_KEEP.has(type)) wipeBox(buf, pos, size, headerLen);
+        pos += size;
+    }
+    return buf;
+}
+
+/* ========================================================================
    PDF
    ===================================================================== */
 
@@ -185,18 +236,18 @@ export class PdfCleanError extends Error {
         super(kind === 'encrypted'
             ? 'PDF защищён паролем, метаданные из него не снять. Снимите защиту: откройте файл и выберите «Печать → Сохранить как PDF»'
             : 'PDF повреждён — его не удалось разобрать');
+        this.name = 'PdfCleanError';
         this.kind = kind;
         this.cause = cause;
     }
 }
 
-// Ключи, в которых PDF хранит сведения о создании документа, а не сам
-// документ: XMP, приватные данные программ (Illustrator и Photoshop кладут в
-// PieceInfo хоть весь исходный файл), дату изменения, прикреплённые файлы.
-const METADATA_KEYS = ['Metadata', 'PieceInfo', 'LastModified', 'AF'];
-// У комментариев: автор, даты изменения и создания. У полей формы (Widget)
-// /T — это имя поля, его трогать нельзя.
-const ANNOT_PRIVATE_KEYS = ['T', 'M', 'CreationDate'];
+// Ключи, в которых PDF хранит не сам документ, а сведения о нём: XMP,
+// приватные данные программ (Illustrator и Photoshop кладут в PieceInfo хоть
+// весь исходный файл), дату изменения, прикреплённые файлы, адреса
+// сохранённых веб-страниц. И миниатюры страниц: их рисуют один раз, и после
+// правок в миниатюре остаётся страница такой, какой она была до них.
+const METADATA_KEYS = ['Metadata', 'PieceInfo', 'LastModified', 'AF', 'SpiderInfo', 'Thumb'];
 
 async function inflate(bytes) {
     const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate'));
@@ -236,7 +287,7 @@ function ascii85Decode(bytes) {
     return new Uint8Array(out);
 }
 
-const PRE_DCT_DECODERS = {
+const PRE_IMAGE_DECODERS = {
     FlateDecode: inflate,
     Fl: inflate,
     ASCIIHexDecode: asciiHexDecode,
@@ -245,35 +296,43 @@ const PRE_DCT_DECODERS = {
     A85: ascii85Decode,
 };
 
+// Картинки, которые PDF хранит в формате файла, а не пикселями: такие
+// сканер или программа вставляют байт в байт, со всем EXIF, XMP и GPS.
+const IMAGE_CLEANERS = {
+    DCTDecode: cleanJpeg,
+    DCT: cleanJpeg,
+    JPXDecode: cleanJp2,
+};
+
 /**
- * Встроенный JPEG: снять с него фильтры до DCTDecode, очистить сегменты и
- * записать обратно как чистый DCTDecode. Картинки в PDF лежат байт в байт
- * как в исходном файле — со всем EXIF и GPS, если так их вставил сканер
- * или программа.
+ * Встроенная картинка JPEG или JPEG 2000: снять с неё предшествующие
+ * фильтры (Flate и подобные), очистить и записать обратно с одним
+ * фильтром — её собственным.
  */
-async function cleanEmbeddedJpeg(stream, lib) {
+async function cleanEmbeddedImage(stream, lib) {
     const { PDFName, PDFArray } = lib;
-    const filter = stream.dict.get(PDFName.of('Filter'));
+    const nameOf = f => f instanceof PDFName ? f.decodeText() : '';
+    const filter = stream.dict.lookup(PDFName.of('Filter'));
     const names = filter instanceof PDFArray
-        ? filter.asArray().map(f => f.decodeText ? f.decodeText() : String(f).replace(/^\//, ''))
-        : filter ? [String(filter).replace(/^\//, '')] : [];
-    const dctAt = names.findIndex(n => n === 'DCTDecode' || n === 'DCT');
-    if (dctAt === -1) return;
-    if (dctAt !== names.length - 1) throw new Error('PDF: фильтр после DCTDecode не поддерживается');
+        ? filter.asArray().map((_, i) => nameOf(filter.lookup(i)))
+        : filter ? [nameOf(filter)] : [];
+    const at = names.findIndex(n => Object.hasOwn(IMAGE_CLEANERS, n));
+    if (at === -1) return;
+    if (at !== names.length - 1) throw new Error(`PDF: фильтр после ${names[at]} не поддерживается`);
 
     let bytes = stream.contents;
-    for (const name of names.slice(0, dctAt)) {
-        const decode = PRE_DCT_DECODERS[name];
-        if (!decode) throw new Error(`PDF: фильтр ${name} перед DCTDecode не поддерживается`);
+    for (const name of names.slice(0, at)) {
+        const decode = PRE_IMAGE_DECODERS[name];
+        if (!decode) throw new Error(`PDF: фильтр ${name} перед ${names[at]} не поддерживается`);
         bytes = await decode(bytes);
     }
-    stream.contents = cleanJpeg(bytes);
-    stream.dict.set(PDFName.of('Filter'), PDFName.of('DCTDecode'));
-    // Параметры декодирования шли парой к фильтрам; у DCTDecode свои —
+    stream.contents = IMAGE_CLEANERS[names[at]](bytes);
+    stream.dict.set(PDFName.of('Filter'), PDFName.of(names[at]));
+    // Параметры декодирования шли парой к фильтрам; у последнего свои —
     // оставляем только их.
-    const parms = stream.dict.get(PDFName.of('DecodeParms'));
+    const parms = stream.dict.lookup(PDFName.of('DecodeParms'));
     if (parms instanceof PDFArray) {
-        const own = parms.get(dctAt);
+        const own = parms.get(at);
         if (own) stream.dict.set(PDFName.of('DecodeParms'), own);
         else stream.dict.delete(PDFName.of('DecodeParms'));
     }
@@ -308,9 +367,9 @@ function reachableRefs(context, lib) {
 
 /**
  * Очистить PDF: словарь Info (автор, программа, даты), /ID, XMP-потоки,
- * PieceInfo, прикреплённые файлы, автора и даты у комментариев, EXIF во
- * встроенных JPEG. Файл пересохраняется только из объектов, достижимых от
- * каталога.
+ * PieceInfo, миниатюры, прикреплённые файлы, автора и даты у комментариев,
+ * EXIF и XMP во встроенных JPEG и JPEG 2000. Файл пересохраняется только из
+ * объектов, достижимых от каталога.
  *
  * Последнее — главное. После инкрементального обновления (так сохраняют
  * Acrobat и многие редакторы) в файле лежат ВСЕ прежние версии объектов, в
@@ -318,11 +377,13 @@ function reachableRefs(context, lib) {
  * видно, но из файла они никуда не деваются, и pdf-lib выписывает их
  * обратно, если не выбросить недостижимое.
  *
+ * Не удалось — PdfCleanError: «защищён паролем» или «повреждён».
+ *
  * pdfLib — модуль pdf-lib: на сервере его отдаёт require, в браузере —
  * import('/vendor/pdf-lib.esm.min.js').
  */
 export async function cleanPdf(bytes, pdfLib) {
-    const { PDFDocument, PDFName, PDFDict, PDFArray, PDFRef, PDFRawStream } = pdfLib;
+    const { PDFDocument, PDFName, PDFDict, PDFArray, PDFRawStream } = pdfLib;
     let doc;
     try {
         // updateMetadata: false — иначе pdf-lib сам допишет Producer и даты.
@@ -334,6 +395,7 @@ export async function cleanPdf(bytes, pdfLib) {
     }
     const context = doc.context;
     const name = n => PDFName.of(n);
+    const dictOf = obj => obj instanceof PDFDict ? obj : (obj && obj.dict instanceof PDFDict ? obj.dict : null);
 
     context.trailerInfo.Info = undefined;
     context.trailerInfo.ID = undefined;
@@ -341,9 +403,18 @@ export async function cleanPdf(bytes, pdfLib) {
     const catalog = doc.catalog;
     const names = catalog.lookup(name('Names'));
     if (names instanceof PDFDict) names.delete(name('EmbeddedFiles'));
+    // У «статей» (связанных блоков текста) свой словарь сведений, такой же,
+    // как Info: автор, название, даты.
+    const threads = catalog.lookup(name('Threads'));
+    if (threads instanceof PDFArray) {
+        for (let i = 0; i < threads.size(); i++) {
+            const thread = threads.lookup(i);
+            if (thread instanceof PDFDict) thread.delete(name('I'));
+        }
+    }
 
     for (const [ref, obj] of context.enumerateIndirectObjects()) {
-        const dict = obj instanceof PDFDict ? obj : (obj && obj.dict instanceof PDFDict ? obj.dict : null);
+        const dict = dictOf(obj);
         if (!dict) continue;
         if (dict.get(name('Type')) === name('Metadata')) {
             context.delete(ref);
@@ -351,7 +422,6 @@ export async function cleanPdf(bytes, pdfLib) {
         }
         for (const key of METADATA_KEYS) dict.delete(name(key));
 
-        const subtype = dict.get(name('Subtype'));
         const annots = dict.lookup(name('Annots'));
         if (annots instanceof PDFArray) {
             // Прикреплённые к странице файлы — вон вместе с аннотацией.
@@ -360,19 +430,36 @@ export async function cleanPdf(bytes, pdfLib) {
                 if (annot instanceof PDFDict && annot.get(name('Subtype')) === name('FileAttachment')) annots.remove(i);
             }
         }
-        if (dict.get(name('Rect')) && subtype && subtype !== name('Widget')
-            && (dict.get(name('Type')) === name('Annot') || dict.has(name('Contents')) || dict.has(name('T')))) {
-            for (const key of ANNOT_PRIVATE_KEYS) dict.delete(name(key));
-        }
-        if (obj instanceof PDFRawStream && subtype === name('Image')) {
-            await cleanEmbeddedJpeg(obj, pdfLib);
+        const subtype = dict.get(name('Subtype'));
+        if (dict.has(name('Rect')) && subtype instanceof PDFName) {
+            // Аннотация. Даты создания и правки бывают у любой, автор (/T) —
+            // у комментариев. У полей формы (Widget) /T — имя поля, без него
+            // форма сломается.
+            dict.delete(name('M'));
+            dict.delete(name('CreationDate'));
+            if (subtype !== name('Widget')) dict.delete(name('T'));
         }
     }
 
+    // Недостижимое — вон. Картинки чистятся уже после: в мусоре могут
+    // лежать и такие, которые не разобрать, а отказывать из-за них незачем.
     const reachable = reachableRefs(context, pdfLib);
+    let largest = 0;
     for (const [ref] of context.enumerateIndirectObjects()) {
         if (!reachable.has(ref.toString())) context.delete(ref);
+        else largest = Math.max(largest, ref.objectNumber);
+    }
+    // /Size в трейлере pdf-lib считает от наибольшего номера объекта.
+    context.largestObjectNumber = largest;
+
+    for (const [, obj] of context.enumerateIndirectObjects()) {
+        if (!(obj instanceof PDFRawStream) || obj.dict.lookup(name('Subtype')) !== name('Image')) continue;
+        try {
+            await cleanEmbeddedImage(obj, pdfLib);
+        } catch (error) {
+            throw new PdfCleanError('broken', error);
+        }
     }
 
-    return doc.save({ useObjectStreams: false });
+    return doc.save({ useObjectStreams: false, addDefaultPage: false, updateFieldAppearances: false });
 }
