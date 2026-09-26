@@ -51,6 +51,10 @@ const elements = {
     chatMenuBtn: document.getElementById('chat-menu-btn'),
     profileBtn: document.getElementById('profile-btn'),
     changePasswordBtn: document.getElementById('change-password-btn'),
+    errorReportBtn: document.getElementById('error-report-btn'),
+    errorReportModal: document.getElementById('error-report-modal'),
+    errorReportText: document.getElementById('error-report-text'),
+    copyErrorReportBtn: document.getElementById('copy-error-report-btn'),
     savePasswordBtn: document.getElementById('save-password-btn'),
     inviteCodeDisplay: document.getElementById('invite-code-display'),
     inviteText: document.getElementById('invite-text'),
@@ -937,8 +941,60 @@ async function api(url, options = {}) {
         'X-CSRF-Token': method === 'GET' ? getCsrfToken() : await csrfToken(),
         ...options.headers,
     };
-    const res = await fetch(url, { ...options, headers });
-    return res.json();
+    let res;
+    try {
+        res = await fetch(url, { ...options, headers });
+    } catch (e) {
+        logApiFailure(method, url, 'нет связи', null);
+        throw e;
+    }
+    let data;
+    try {
+        data = await res.json();
+    } catch (e) {
+        // Не JSON: ответил не наш сервер, а прокси перед ним (502, 504).
+        data = { success: false, message: `Сервер не ответил (${res.status})` };
+    }
+    if (!res.ok) logApiFailure(method, url, res.status, res.headers.get('X-Request-Id'));
+    // Код ошибки — номер запроса в журнале сервера. Человеку он ничего не
+    // говорит, но по нему находится, что именно сломалось.
+    if (data && data.errorId && typeof data.message === 'string') {
+        data.message = `${data.message} (код ${data.errorId})`;
+    }
+    return data;
+}
+
+// В журнал ошибок страницы — маршрут без id: /api/messages/:id.
+function logApiFailure(method, url, status, requestId) {
+    if (!window.nyxoErrorLog) return;
+    const route = new URL(url, location.href).pathname.replace(/\/\d+(?=\/|$)/g, '/:id').replace(/\/[A-Za-z0-9_-]{16,}(?=\/|$)/g, '/:id');
+    window.nyxoErrorLog.add('api', `${method} ${route} → ${status}`, { requestId });
+}
+
+/* --- Отчёт об ошибке ------------------------------------------------------
+   Собирается из журнала ошибок страницы (error-log.js) и никуда сам не
+   уходит: человек видит его целиком, копирует и сам решает, кому отправить.
+   Переписки, ключей, почты в нём нет. */
+
+function buildErrorReport() {
+    const entries = window.nyxoErrorLog ? window.nyxoErrorLog.entries() : [];
+    const lines = [
+        'Отчёт об ошибке Nyxo',
+        `Время: ${new Date().toISOString()}`,
+        `Браузер: ${deviceLabel()}`,
+        `Экран: ${window.innerWidth}×${window.innerHeight}, тема: ${document.documentElement.dataset.theme}`,
+        `Шифрование: ${e2ee && e2ee.isReady() ? 'работает' : 'не поднялось'}`,
+        `Сокет: ${socket && socket.connected ? 'подключён' : 'не подключён'}`,
+        '',
+        entries.length ? `Последние ошибки (${entries.length}):` : 'Ошибок на странице не было.',
+    ];
+    for (const e of entries) {
+        lines.push(`[${e.at}] ${e.kind}: ${e.message}`);
+        if (e.requestId) lines.push(`    код: ${e.requestId}`);
+        if (e.where) lines.push(`    где: ${e.where}`);
+        if (e.stack) lines.push(...e.stack.split('\n').slice(0, 6).map(l => `    ${l.trim()}`));
+    }
+    return lines.join('\n');
 }
 
 function setupEventListeners() {
@@ -1062,6 +1118,23 @@ function setupEventListeners() {
         closeModal(elements.logoutModal);
         await finishLogout({ keepDevice: true });
     }));
+
+    elements.errorReportBtn.addEventListener('click', () => {
+        elements.errorReportText.value = buildErrorReport();
+        closeModal(elements.profileModal);
+        openModal(elements.errorReportModal);
+    });
+    elements.copyErrorReportBtn.addEventListener('click', async () => {
+        try {
+            await navigator.clipboard.writeText(elements.errorReportText.value);
+            showToast('Отчёт скопирован', 'success');
+        } catch (e) {
+            // Буфер обмена недоступен (не HTTPS, запрет браузера): выделяем
+            // текст, чтобы его можно было скопировать вручную.
+            elements.errorReportText.select();
+            showToast('Скопируйте выделенный текст', 'info');
+        }
+    });
 
     elements.newChatBtn.addEventListener('click', () => openModal(elements.newChatModal));
     if (elements.emptyNewChatBtn) {

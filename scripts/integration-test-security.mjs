@@ -12,6 +12,10 @@
 //     node_modules, скрипты, обход пути — везде одинаковый 404; нет
 //     X-Powered-By и страницы Express, по которым видно фреймворк
 //   - чужое вложение в /uploads/ неотличимо от несуществующего
+//   - отладка: у каждого ответа X-Request-Id, ошибка сервера отдаёт его же
+//     кодом ошибки, в журнале (JSON, SERVER_LOG) по этому коду находится
+//     запись; почты, паролей и текстов в журнале нет; /healthz отвечает;
+//     кривой id в адресе — 404, а не 500 из базы
 //   - через .onion кука ставится: без флага Secure, потому что соединение
 //     до сервера — HTTP (транспорт шифрует Tor), а в остальных случаях в
 //     production — с Secure. Это проверяется на настоящем express-session с
@@ -28,6 +32,8 @@ import session from 'express-session';
 import { createRequire } from 'node:module';
 import http from 'node:http';
 import net from 'node:net';
+import fs from 'node:fs';
+import pg from 'pg';
 
 const require = createRequire(import.meta.url);
 const { sessionCookieSecurity } = require('../lib/cookie-security.js');
@@ -111,6 +117,44 @@ const missing = await fetch(BASE + '/uploads/1700000000000-deadbeef.txt', { head
 check('чужой файл неотличим от несуществующего', foreign.status === 404 && missing.status === 404
     && await foreign.text() === await missing.text(), `${foreign.status} / ${missing.status}`);
 check('а владелец свой файл получает', (await fetch(BASE + fileUrl, { headers: { Cookie: j.header() } })).status === 200);
+
+/* ------------------------- отладка ------------------------- */
+
+const health = await fetch(BASE + '/healthz');
+check('/healthz: база и сервер ключей отвечают', health.status === 200
+    && JSON.stringify(await health.json()) === '{"ok":true,"db":true,"keyServer":true}');
+const requestId = home.headers.get('x-request-id');
+check('у ответа есть X-Request-Id', /^[0-9a-f]{12}$/.test(requestId || ''), requestId);
+
+// Ошибка сервера по-настоящему: таблица на миг пропадает.
+const db = new pg.Client({ connectionString: process.env.TEST_DATABASE_URL });
+await db.connect();
+await db.query('ALTER TABLE chats RENAME TO chats_hidden');
+const broken = await fetch(BASE + '/api/chats', { headers: { Cookie: j.header() } });
+await db.query('ALTER TABLE chats_hidden RENAME TO chats');
+await db.end();
+const brokenBody = await broken.json();
+check('ошибка сервера — 500 с кодом, и код равен X-Request-Id', broken.status === 500
+    && brokenBody.errorId && brokenBody.errorId === broken.headers.get('x-request-id'), JSON.stringify(brokenBody));
+
+const badIds = ['/api/messages/99999999999', '/api/messages/abc', '/api/chats/0/settings'];
+const badStatuses = await Promise.all(badIds.map(async p => (await fetch(BASE + p, { headers: { Cookie: j.header() } })).status));
+check('кривой id в адресе — 404, а не ошибка базы', badStatuses.every(s => s === 404), badStatuses.join(', '));
+
+if (process.env.SERVER_LOG) {
+    await new Promise(r => setTimeout(r, 300));
+    const lines = fs.readFileSync(process.env.SERVER_LOG, 'utf8').split('\n').filter(Boolean);
+    const parsed = lines.map(l => { try { return JSON.parse(l); } catch { return null; } });
+    check('журнал сервера — JSON, строка на запись', parsed.every(Boolean),
+        lines.filter((l, i) => !parsed[i]).slice(0, 2).join(' | '));
+    const entry = parsed.find(e => e && e.reqId === brokenBody.errorId && e.level === 'error');
+    check('по коду ошибки в журнале находится запись с причиной', entry && /chats/.test(entry.err?.message || ''),
+        JSON.stringify(entry));
+    const raw = lines.join('\n');
+    check('в журнале нет почты, паролей и текстов', !/alice@example\.com|mallory@|password123|секретная заметка/.test(raw));
+} else {
+    console.log('skip  журнал сервера: SERVER_LOG не задан');
+}
 
 /* ------------------------- сокет и Origin ------------------------- */
 

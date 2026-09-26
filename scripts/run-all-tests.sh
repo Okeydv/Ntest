@@ -89,10 +89,14 @@ failed=()
 run() {
     local name=$1
     printf '%-32s' "$name"
-    if timeout 900 node "scripts/$name.mjs" > "$LOGS/$name.log" 2>&1; then
+    # SERVER_LOG — журнал сервера для проверок, что в него пишется;
+    # TEST_ARTIFACTS — трассы и скриншоты браузерных тестов, если набор упал.
+    if SERVER_LOG="$LOGS/server.log" TEST_ARTIFACTS="$LOGS/$name" \
+        timeout 900 node "scripts/$name.mjs" > "$LOGS/$name.log" 2>&1; then
         echo ok
     else
         echo "FAIL — $LOGS/$name.log"
+        [ -d "$LOGS/$name" ] && echo "    трассы Playwright: $LOGS/$name (npx playwright show-trace <файл>)"
         failed+=("$name")
     fi
 }

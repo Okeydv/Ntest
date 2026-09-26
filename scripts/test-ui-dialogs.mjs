@@ -15,11 +15,13 @@
 //   - удаление с «Вернуть»: отмена возвращает сообщение и не трогает сервер;
 //     без отмены через 5 секунд сообщение удаляется; при закрытии страницы
 //     удаление не теряется
+//   - ошибка сервера показывается с кодом; «Отчёт об ошибке» в профиле
+//     собирает код и ошибки страницы без почты и адресов с параметрами
 //
 // Требует поднятых Postgres, key-server и server.js на 3006 и ЧИСТОЙ базы.
 // Запуск: TEST_DATABASE_URL=... node scripts/test-ui-dialogs.mjs
 
-import { chromium } from 'playwright';
+import { launch, finish } from './lib/browser.mjs';
 import pg from 'pg';
 
 const BASE = 'http://127.0.0.1:3006';
@@ -29,7 +31,7 @@ let fails = 0;
 const check = (l, c, d = '') => { console.log(`${c ? 'ok  ' : 'FAIL'}  ${l}${d ? '  — ' + d : ''}`); if (!c) fails++; };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH });
+const browser = await launch();
 const errors = [];
 let nextIp = 50;
 async function openApp(label) {
@@ -426,8 +428,33 @@ const botMenu = await page.evaluate(() =>
 check('у ответа бота нет «Редактировать» и «Удалить»', JSON.stringify(botMenu) === '["reply-message-btn"]', JSON.stringify(botMenu));
 await page.keyboard.press('Escape');
 
+/* ------------------------- отчёт об ошибке ------------------------- */
+
+// Ошибка сервера: таблица на миг пропадает. Человек видит код ошибки.
+await db.query('ALTER TABLE chats RENAME TO chats_hidden');
+const failed = await page.evaluate(() => api('/api/chats'));
+await db.query('ALTER TABLE chats_hidden RENAME TO chats');
+const errorCode = (failed.message.match(/\(код ([0-9a-f]{12})\)$/) || [])[1];
+check('ошибка сервера показывается с кодом', Boolean(errorCode) && failed.errorId === errorCode, failed.message);
+
+await page.evaluate(() => console.error(`сломалось при проверке: ${location.origin}/api/chats?secret=1 и https://tracker.example/p?id=7`));
+await page.click('#profile-btn');
+await page.click('#error-report-btn');
+await page.waitForFunction(() => document.getElementById('error-report-modal').open);
+const report = await page.inputValue('#error-report-text');
+check('«Отчёт об ошибке» в профиле: код ошибки сервера и ошибка страницы',
+    report.includes(`код: ${errorCode}`) && report.includes('GET /api/chats → 500') && report.includes('сломалось при проверке'),
+    report);
+check('в отчёте нет почты, адресов с параметрами и чужих сайтов',
+    !report.includes('alice@example.com') && !report.includes('secret=1') && !report.includes('tracker.example')
+    && report.includes('/api/chats и [адрес]'), report);
+await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+await page.click('#copy-error-report-btn');
+check('«Скопировать» кладёт отчёт в буфер обмена', await page.evaluate(() => navigator.clipboard.readText()) === report);
+await page.keyboard.press('Escape');
+
 check('ошибок на страницах нет', errors.length === 0, errors.join('; '));
-await browser.close();
+await finish(browser, fails);
 await db.end();
 console.log(fails ? `\n${fails} проверок провалено` : '\nвсе проверки пройдены');
 process.exit(fails ? 1 : 0);

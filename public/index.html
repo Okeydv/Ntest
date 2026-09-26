@@ -383,6 +383,7 @@
                     <svg class="icon" aria-hidden="true"><use href="#i-lock"/></svg>
                     Сменить пароль
                 </button>
+                <button id="error-report-btn" class="btn btn-ghost btn-block" type="button">Отчёт об ошибке</button>
             </div>
         </div>
     </dialog>
@@ -462,6 +463,27 @@
         </div>
     </dialog>
 
+    <!-- Отчёт собирается только здесь, на экране, и никуда сам не уходит. -->
+    <dialog id="error-report-modal" class="modal" aria-labelledby="error-report-title">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="error-report-title">Отчёт об ошибке</h3>
+                <button class="icon-btn icon-btn-sm icon-btn-quiet close-modal" aria-label="Закрыть" type="button">
+                    <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <p class="logout-text">
+                    Здесь последние ошибки этой вкладки: без переписки, ключей и
+                    почты. Отчёт никуда не отправляется сам — скопируйте его и
+                    перешлите тому, кто поможет разобраться.
+                </p>
+                <textarea id="error-report-text" class="error-report-text" readonly rows="12" spellcheck="false" aria-label="Текст отчёта"></textarea>
+                <button id="copy-error-report-btn" class="btn btn-primary btn-block" type="button">Скопировать</button>
+            </div>
+        </div>
+    </dialog>
+
     <!-- Выход: по умолчанию устройство стирается и отзывается, но на своём
          компьютере это лишнее — собеседникам потом заново сверять ключи. -->
     <dialog id="logout-modal" class="modal" aria-labelledby="logout-modal-title" aria-describedby="logout-modal-text">
@@ -510,6 +532,7 @@
     <!-- Тост — popover="manual": так он в верхнем слое и виден поверх открытого окна. -->
     <div id="toast" class="toast" role="status" aria-live="polite" popover="manual"></div>
 
+    <script src="error-log.js"></script>
     <script src="/socket.io/socket.io.js"></script>
     <script src="script.js"></script>
     <!-- Модульные скрипты всегда deferred, поэтому крипта поднимается

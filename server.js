@@ -25,6 +25,7 @@ const { shared } = require('./lib/shared');
 const { secureCookieFor, sessionCookieSecurity } = require('./lib/cookie-security');
 const { sweepOrphanUploads } = require('./lib/upload-sweeper');
 const DisappearingMessagesManager = require('./lib/disappearing-messages');
+const { log, requestContext } = require('./lib/log');
 const { normalizeExpiry } = DisappearingMessagesManager;
 const {
     addRandomDelay,
@@ -130,7 +131,7 @@ const cloudflareBlockList = new net.BlockList();
         const [addr, prefixStr] = cidr.split('/');
         const type = net.isIP(addr);
         if (!type || !prefixStr) {
-            console.warn('[CF] Пропущен некорректный диапазон:', cidr);
+            log.warn({ cidr }, '[CF] Пропущен некорректный диапазон');
             continue;
         }
         cloudflareBlockList.addSubnet(addr, Number(prefixStr), type === 6 ? 'ipv6' : 'ipv4');
@@ -162,7 +163,7 @@ function resolveRealIp(headers, connectingIp) {
 // Забытый .catch где угодно не должен ронять весь сервер: такой отказ
 // пишется в журнал, и работа продолжается.
 process.on('unhandledRejection', reason => {
-    console.error('[unhandledRejection]', reason instanceof Error ? reason.stack : reason);
+    log.error({ err: reason }, 'unhandledRejection');
 });
 
 const app = express();
@@ -170,6 +171,58 @@ const app = express();
 // пробовать.
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
+
+// Номер запроса. Уходит клиенту в X-Request-Id, а в ответах 5xx — ещё и
+// полем errorId: клиент показывает его человеку как код ошибки. Этот же
+// номер сам попадает в каждую запись журнала, сделанную по ходу запроса
+// (lib/log.js), так что по коду из жалобы находится нужная строка.
+// Свой номер от клиента не принимаем: он бы выбирал, что писать в журнал.
+app.use((req, res, next) => {
+    req.id = crypto.randomBytes(6).toString('hex');
+    res.set('X-Request-Id', req.id);
+    const json = res.json.bind(res);
+    res.json = body => {
+        if (res.statusCode >= 500 && body && body.success === false && !body.errorId) {
+            body = { ...body, errorId: req.id };
+        }
+        return json(body);
+    };
+    const started = process.hrtime.bigint();
+    res.on('finish', () => {
+        // Маршрут шаблоном (/api/messages/:chatId), а не адресом: в адресе
+        // id чатов и пользователей.
+        const entry = {
+            reqId: req.id,
+            method: req.method,
+            route: req.route ? req.baseUrl + req.route.path : undefined,
+            status: res.statusCode,
+            ms: Number((process.hrtime.bigint() - started) / 1000000n),
+        };
+        if (res.statusCode >= 500) log.warn(entry, 'ответ с ошибкой сервера');
+        else log.debug(entry, 'запрос');
+    });
+    requestContext.run({ reqId: req.id }, next);
+});
+
+// id чата и сообщения — положительные int4. Всё остальное (буквы, 0,
+// числа за 2^31) раньше доходило до базы и падало там ошибкой 500.
+const isDbId = value => /^[1-9]\d{0,9}$/.test(value) && Number(value) <= 2147483647;
+for (const name of ['chatId', 'messageId']) {
+    app.param(name, (req, res, next, value) => (isDbId(value)
+        ? next()
+        : res.status(404).json({ success: false, message: 'Не найдено' })));
+}
+
+// Для балансировщика и мониторинга: отвечает ли база и сервер ключей.
+// Стоит до сессий, чтобы проверка не создавала их в базе.
+app.get('/healthz', async (req, res) => {
+    const db = await Promise.race([
+        pool.query('SELECT 1').then(() => true, () => false),
+        new Promise(resolve => setTimeout(resolve, 2000, false).unref()),
+    ]);
+    const keyServer = await e2eeProxy.keyServerHealthy();
+    res.status(db && keyServer ? 200 : 503).json({ ok: db && keyServer, db, keyServer });
+});
 
 app.use((req, res, next) => {
     // req.ip уже учитывает 1 доверенный хоп (trust proxy = 1), то есть это IP,
@@ -256,7 +309,7 @@ if (process.env.NODE_ENV === 'production') {
     if (sslOptions.key && sslOptions.cert) {
         server = https.createServer(sslOptions, app);
     } else {
-        console.warn('SSL сертификаты не найдены. Запуск HTTP сервера.');
+        log.warn('SSL сертификаты не найдены. Запуск HTTP сервера.');
         server = http.createServer(app);
     }
 }
@@ -339,7 +392,7 @@ async function maybeDumpCa() {
     const tls = require('tls');
     const net = require('net');
     const dbUrl = process.env.DATABASE_URL;
-    if (!dbUrl) { console.error('DATABASE_URL не задан'); process.exit(1); }
+    if (!dbUrl) { log.error('DATABASE_URL не задан'); process.exit(1); }
     const parsed = new URL(dbUrl);
     const host = parsed.hostname;
     const port = parseInt(parsed.port) || 5432;
@@ -392,14 +445,14 @@ async function maybeDumpCa() {
 const sslConfig = (() => {
     if (process.env.NODE_ENV !== 'production') return false;
     if (process.env.DB_CA_CERT) {
-        console.log('[SSL] production: сертификат базы проверяется (DB_CA_CERT)');
+        log.info('[SSL] production: сертификат базы проверяется (DB_CA_CERT)');
         return { ca: process.env.DB_CA_CERT, rejectUnauthorized: true };
     }
     if (process.env.DB_SSL === 'disable') {
-        console.log('[SSL] production: соединение с базой без TLS (DB_SSL=disable)');
+        log.info('[SSL] production: соединение с базой без TLS (DB_SSL=disable)');
         return false;
     }
-    console.error('[SSL] production: задайте DB_CA_CERT (сертификат базы; цепочку покажет запуск с '
+    log.fatal('[SSL] production: задайте DB_CA_CERT (сертификат базы; цепочку покажет запуск с '
         + 'DUMP_CA=true) или DB_SSL=disable, если база в той же внутренней сети.');
     process.exit(1);
 })();
@@ -427,7 +480,7 @@ async function dbRun(query, params = []) {
 let disappearingMessagesManager;
 
 async function initDatabase() {
-    await maybeDumpCa().catch(err => { console.error('[DUMP_CA] Ошибка:', err.message); process.exit(1); });
+    await maybeDumpCa().catch(err => { log.error({ err: err }, '[DUMP_CA] Ошибка'); process.exit(1); });
 
     await pool.query(`
         CREATE TABLE IF NOT EXISTS users (
@@ -653,7 +706,7 @@ async function initDatabase() {
              UPDATE messages SET created_at = NULL
              WHERE created_at = (SELECT t FROM first)
                AND (SELECT count(*) FROM messages WHERE created_at = (SELECT t FROM first)) > 1`);
-        if (undone.rowCount) console.log(`[migrate] created_at: снято время миграции у ${undone.rowCount} старых сообщений`);
+        if (undone.rowCount) log.info({ count: undone.rowCount }, '[migrate] created_at: снято время миграции у старых сообщений');
     }
 
     // Миграция: если таблицы chats/messages были созданы ДО появления комнат,
@@ -736,11 +789,11 @@ async function initDatabase() {
     });
     await disappearingMessagesManager.initialize();
 
-    console.log('База данных инициализирована');
+    log.info('База данных инициализирована');
 }
 
 initDatabase().catch(err => {
-    console.error('Ошибка инициализации БД:', err);
+    log.error({ err: err }, 'Ошибка инициализации БД');
     process.exit(1);
 });
 function getSocketRoomKey(chatId, roomId) {
@@ -905,7 +958,7 @@ io.on('connection', (socket) => {
             }
             socket.join(roomKey);
         } catch (err) {
-            console.error('joinChat error:', err);
+            log.error({ err: err }, 'joinChat error');
         }
     });
 
@@ -1037,7 +1090,7 @@ app.get('/uploads/:filename', async (req, res) => {
         // видно, что файл с таким именем есть.
         if (!allowed) return res.status(404).json({ success: false, message: 'Файл не найден' });
     } catch (err) {
-        console.error('Uploads access check error:', err);
+        log.error({ err: err }, 'Uploads access check error');
         return res.status(500).json({ success: false, message: 'Ошибка проверки доступа' });
     }
     res.sendFile(filePath);
@@ -1165,8 +1218,8 @@ app.post('/api/register', registerLimiter, async (req, res) => {
 
         res.json({ success: true, message: 'Регистрация успешна!', user: { id: userId, username, uniqueCode, avatar: '#667EEA' } });
     } catch (error) {
-        console.error('Register error:', error);
-        res.json({ success: false, message: 'Ошибка сервера' });
+        log.error({ err: error }, 'Register error');
+        res.status(500).json({ success: false, message: 'Ошибка сервера' });
     }
 });
 
@@ -1229,8 +1282,8 @@ app.post('/api/register/anonymous', registerLimiter, async (req, res) => {
             }
         });
     } catch (error) {
-        console.error('Anonymous register error:', error);
-        res.json({ success: false, message: 'Ошибка сервера' });
+        log.error({ err: error }, 'Anonymous register error');
+        res.status(500).json({ success: false, message: 'Ошибка сервера' });
     }
 });
 
@@ -1265,13 +1318,14 @@ app.post('/api/login', loginLimiter, loginEmailLimiter, async (req, res) => {
             await startSession(req, {
                 userId: user.id, username: user.username, uniqueCode: user.unique_code, avatar: user.avatar || '',
             });
-        } catch {
-            return res.json({ success: false, message: 'Ошибка инициализации сессии' });
+        } catch (error) {
+            log.error({ err: error }, 'Session start error');
+            return res.status(500).json({ success: false, message: 'Ошибка инициализации сессии' });
         }
         res.json({ success: true, message: 'Вход выполнен!', user: { id: user.id, username: user.username, uniqueCode: user.unique_code, avatar: user.avatar || '' } });
     } catch (error) {
-        console.error('Login error:', error);
-        res.json({ success: false, message: 'Ошибка базы данных' });
+        log.error({ err: error }, 'Login error');
+        res.status(500).json({ success: false, message: 'Ошибка базы данных' });
     }
 });
 
@@ -1323,11 +1377,11 @@ async function sweepAnonymousAccounts() {
             await deleteAnonymousAccount(id);
             disconnectSockets(`user:${id}`);
         }
-        if (stale.length) console.log(`[Anon] Удалено брошенных анонимных аккаунтов: ${stale.length}`);
+        if (stale.length) log.info({ count: stale.length }, '[Anon] Удалены брошенные анонимные аккаунты');
     } catch (error) {
         // Таблицу сессий создаёт connect-pg-simple при первом входе — до
         // него убирать и некого.
-        if (error.code !== '42P01') console.error('[Anon] Sweep error:', error.message);
+        if (error.code !== '42P01') log.error({ err: error }, '[Anon] Sweep error');
     }
 }
 setInterval(sweepAnonymousAccounts, ANON_SWEEP_INTERVAL_MS).unref();
@@ -1340,7 +1394,7 @@ app.post('/api/logout', async (req, res) => {
         try {
             await deleteAnonymousAccount(userId);
         } catch (error) {
-            console.error('[Anon] Cleanup error:', error);
+            log.error({ err: error }, '[Anon] Cleanup error');
         }
     }
 
@@ -1350,7 +1404,7 @@ app.post('/api/logout', async (req, res) => {
     req.session.destroy((err) => {
         res.clearCookie('connect.sid');
         res.clearCookie('csrf_token');
-        if (err) console.error('Logout session destroy error:', err);
+        if (err) log.error({ err: err }, 'Logout session destroy error');
         res.json({ success: true, message: isAnonymous ? 'Данные удалены' : 'Выход выполнен' });
     });
 });
@@ -1421,7 +1475,8 @@ app.post('/api/user/avatar-color', async (req, res) => {
         req.session.avatar = avatarColor;
         res.json({ success: true, avatar: avatarColor });
     } catch (error) {
-        res.json({ success: false, message: 'Ошибка обновления цвета аватара' });
+        log.error({ err: error }, 'Avatar update error');
+        res.status(500).json({ success: false, message: 'Ошибка обновления цвета аватара' });
     }
 });
 app.get('/api/chats', async (req, res) => {
@@ -1439,8 +1494,8 @@ app.get('/api/chats', async (req, res) => {
         `, [req.session.userId]);
         res.json({ success: true, chats: chats.map(c => ({ ...c, unread: Number(c.unread) })) });
     } catch (error) {
-        console.error('Get chats error:', error);
-        res.json({ success: false, message: 'Ошибка загрузки чатов' });
+        log.error({ err: error }, 'Get chats error');
+        res.status(500).json({ success: false, message: 'Ошибка загрузки чатов' });
     }
 });
 
@@ -1510,7 +1565,7 @@ app.get('/api/chats/:chatId/devices', async (req, res) => {
             users: users.map(u => ({ user_id: u.id, username: u.username })),
         });
     } catch (error) {
-        console.error('Chat devices error:', error);
+        log.error({ err: error }, 'Chat devices error');
         res.status(500).json({ success: false, message: 'Не удалось получить устройства чата' });
     }
 });
@@ -1613,7 +1668,7 @@ app.post('/api/blobs',
             );
             res.json({ success: true, blobId: id });
         } catch (error) {
-            console.error('Blob upload error:', error);
+            log.error({ err: error }, 'Blob upload error');
             res.status(500).json({ success: false, message: 'Не удалось сохранить вложение' });
         }
     }
@@ -1654,7 +1709,7 @@ app.get('/api/blobs/:id', async (req, res) => {
             if (err && !res.headersSent) notFound();
         });
     } catch (error) {
-        console.error('Blob download error:', error);
+        log.error({ err: error }, 'Blob download error');
         res.status(500).json({ success: false, message: 'Ошибка загрузки вложения' });
     }
 });
@@ -1690,7 +1745,7 @@ async function sweepOrphanBlobs() {
             }
         }
     } catch (error) {
-        console.error('Blob sweep error:', error.message);
+        log.error({ err: error }, 'Blob sweep error');
     }
 }
 setInterval(sweepOrphanBlobs, ORPHAN_BLOB_TTL_MS).unref();
@@ -2029,7 +2084,7 @@ app.post('/api/messages/encrypted', async (req, res) => {
         if (error.status === 409) {
             return res.status(409).json({ success: false, message: 'Вложение уже отправлено' });
         }
-        console.error('Encrypted message error:', error);
+        log.error({ err: error }, 'Encrypted message error');
         res.status(500).json({ success: false, message: 'Не удалось отправить сообщение' });
     }
 });
@@ -2052,7 +2107,7 @@ app.post('/api/sender-keys/ack', async (req, res) => {
         );
         res.json({ success: true, deleted: result.rowCount });
     } catch (error) {
-        console.error('Sender key ack error:', error);
+        log.error({ err: error }, 'Sender key ack error');
         res.status(500).json({ success: false, message: 'Не удалось подтвердить получение ключей' });
     }
 });
@@ -2181,8 +2236,8 @@ app.get('/api/messages/:chatId', async (req, res) => {
 
         res.json({ success: true, messages, chat, keyEnvelopes });
     } catch (error) {
-        console.error('Get messages error:', error);
-        res.json({ success: false, message: 'Ошибка загрузки сообщений' });
+        log.error({ err: error }, 'Get messages error');
+        res.status(500).json({ success: false, message: 'Ошибка загрузки сообщений' });
     }
 });
 
@@ -2259,12 +2314,12 @@ app.post('/api/messages', async (req, res) => {
                     if (botMessage) {
                         io.to(socketRoomKey).emit('newMessage', { ...botMessage, sender_username: botMessage.username, sender_avatar: botMessage.user_avatar });
                     }
-                } catch (e) { console.error('Bot error:', e); }
+                } catch (e) { log.error({ err: e }, 'Bot error'); }
             }, 1500);
         }
     } catch (error) {
-        console.error('Send message error:', error);
-        res.json({ success: false, message: 'Ошибка отправки' });
+        log.error({ err: error }, 'Send message error');
+        res.status(500).json({ success: false, message: 'Ошибка отправки' });
     }
 });
 
@@ -2298,8 +2353,8 @@ app.post('/api/chats', async (req, res) => {
         }
         res.json({ success: true, chat: { id: chatId, name, avatar, online: 0, is_bot: 0, room_id: roomId, invite_code: roomCode } });
     } catch (error) {
-        console.error('Create chat error:', error);
-        res.json({ success: false, message: 'Ошибка создания чата' });
+        log.error({ err: error }, 'Create chat error');
+        res.status(500).json({ success: false, message: 'Ошибка создания чата' });
     }
 });
 
@@ -2334,7 +2389,8 @@ app.get('/api/chats/invite/:chatId', async (req, res) => {
         // code: null — приглашение отключено.
         res.json({ success: true, code: room.code });
     } catch (error) {
-        res.json({ success: false, message: 'Ошибка получения кода' });
+        log.error({ err: error }, 'Get invite error');
+        res.status(500).json({ success: false, message: 'Ошибка получения кода' });
     }
 });
 
@@ -2361,8 +2417,8 @@ app.post('/api/chats/:chatId/invite', async (req, res) => {
         });
         res.json({ success: true, code });
     } catch (error) {
-        console.error('Invite update error:', error);
-        res.json({ success: false, message: 'Не удалось изменить приглашение' });
+        log.error({ err: error }, 'Invite update error');
+        res.status(500).json({ success: false, message: 'Не удалось изменить приглашение' });
     }
 });
 
@@ -2402,8 +2458,8 @@ app.post('/api/chats/join', joinLimiter, async (req, res) => {
         });
         res.json({ success: true, chat: { id: chatResult.rows[0].id, name: chatName, avatar, online: 0, is_bot: 0, room_id: room.id, invite_code: room.code } });
     } catch (error) {
-        console.error('Join chat error:', error);
-        res.json({ success: false, message: 'Ошибка входа в чат' });
+        log.error({ err: error }, 'Join chat error');
+        res.status(500).json({ success: false, message: 'Ошибка входа в чат' });
     }
 });
 
@@ -2452,8 +2508,8 @@ app.delete('/api/chats/:chatId', async (req, res) => {
             chat.room_id ? [`room:${chat.room_id}`, `chat:${chat.id}`] : [`chat:${chat.id}`]);
         res.json({ success: true });
     } catch (error) {
-        console.error('Delete chat error:', error);
-        res.json({ success: false, message: 'Ошибка удаления чата' });
+        log.error({ err: error }, 'Delete chat error');
+        res.status(500).json({ success: false, message: 'Ошибка удаления чата' });
     }
 });
 
@@ -2490,7 +2546,8 @@ app.put('/api/messages/:messageId', async (req, res) => {
 
         res.json({ success: true, edited_at: editedAt });
     } catch (error) {
-        res.json({ success: false, message: 'Ошибка редактирования' });
+        log.error({ err: error }, 'Edit message error');
+        res.status(500).json({ success: false, message: 'Ошибка редактирования' });
     }
 });
 
@@ -2513,7 +2570,8 @@ app.delete('/api/messages/:messageId', async (req, res) => {
 
         res.json({ success: true });
     } catch (error) {
-        res.json({ success: false, message: 'Ошибка удаления' });
+        log.error({ err: error }, 'Delete message error');
+        res.status(500).json({ success: false, message: 'Ошибка удаления' });
     }
 });
 /**
@@ -2574,7 +2632,7 @@ app.post('/api/messages/file', upload.single('file'), async (req, res) => {
             try {
                 await stripMetadataFromFile(uploadedFilePath, file.mimetype);
             } catch (stripErr) {
-                console.error('Metadata strip error:', stripErr.message);
+                log.error({ err: stripErr }, 'Metadata strip error');
                 try { if (fs.existsSync(uploadedFilePath)) fs.unlinkSync(uploadedFilePath); } catch (_) { /* ignore */ }
                 // У PDF причина бывает двух видов — защищён паролем или
                 // повреждён, — и советы для них разные.
@@ -2587,7 +2645,7 @@ app.post('/api/messages/file', upload.single('file'), async (req, res) => {
         // Раньше при исключении здесь проверка молча пропускалась и файл
         // проходил дальше — теоретическая лазейка мимо проверки типа файла.
         // Теперь любая ошибка проверки = отказ (fail closed), а не fail open.
-        console.error('Magic bytes check error:', magicErr);
+        log.error({ err: magicErr }, 'Magic bytes check error');
         try { if (fs.existsSync(uploadedFilePath)) fs.unlinkSync(uploadedFilePath); } catch (_) { /* ignore */ }
         return res.status(400).json({ success: false, message: 'Не удалось проверить содержимое файла' });
     }
@@ -2626,7 +2684,7 @@ app.post('/api/messages/file', upload.single('file'), async (req, res) => {
         // Без .catch сбой базы здесь был бы необработанным отказом промиса —
         // а он роняет Node целиком.
         const markStatus = status => dbRun('UPDATE messages SET status = $1 WHERE id = $2', [status, messageId])
-            .catch(err => console.error('File message status error:', err.message));
+            .catch(err => log.error({ err: err }, 'File message status error'));
         setTimeout(() => markStatus('delivered'), 1000);
         setTimeout(() => markStatus('read'), 2000);
 
@@ -2641,7 +2699,7 @@ app.post('/api/messages/file', upload.single('file'), async (req, res) => {
         io.to(socketRoomKey).emit('newMessage', fileMessage);
         res.json({ success: true, message: fileMessage });
     } catch (error) {
-        console.error('Upload file error:', error);
+        log.error({ err: error }, 'Upload file error');
         res.status(500).json({ success: false, message: 'Ошибка отправки файла' });
     }
 });
@@ -2714,8 +2772,8 @@ app.post('/api/reactions', async (req, res) => {
         await pool.query('INSERT INTO reactions (message_id, user_id, emoji) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING', [messageId, req.session.userId, emoji]);
         res.json({ success: true });
     } catch (error) {
-        console.error('Add reaction error:', error);
-        res.json({ success: false, message: 'Ошибка добавления реакции' });
+        log.error({ err: error }, 'Add reaction error');
+        res.status(500).json({ success: false, message: 'Ошибка добавления реакции' });
     }
 });
 
@@ -2737,8 +2795,8 @@ app.delete('/api/reactions/:messageId/:emoji', async (req, res) => {
         );
         res.json({ success: true });
     } catch (error) {
-        console.error('Remove reaction error:', error);
-        res.json({ success: false, message: 'Ошибка удаления реакции' });
+        log.error({ err: error }, 'Remove reaction error');
+        res.status(500).json({ success: false, message: 'Ошибка удаления реакции' });
     }
 });
 
@@ -2773,7 +2831,8 @@ app.get('/api/search', async (req, res) => {
         const chats = await dbAll('SELECT id, name, avatar FROM chats WHERE user_id = $1 AND name ILIKE $2 LIMIT 10', [req.session.userId, searchTerm]);
         res.json({ success: true, results: { chats } });
     } catch (error) {
-        res.json({ success: false, message: 'Ошибка поиска' });
+        log.error({ err: error }, 'Search error');
+        res.status(500).json({ success: false, message: 'Ошибка поиска' });
     }
 });
 
@@ -2804,8 +2863,8 @@ app.post('/api/messages/:messageId/set-expiry', async (req, res) => {
 
         res.json({ success: true, message: 'Таймер самоуничтожения установлен' });
     } catch (error) {
-        console.error('Set expiry error:', error);
-        res.json({ success: false, message: 'Ошибка установки таймера' });
+        log.error({ err: error }, 'Set expiry error');
+        res.status(500).json({ success: false, message: 'Ошибка установки таймера' });
     }
 });
 
@@ -2829,8 +2888,8 @@ app.post('/api/chats/:chatId/set-default-expiry', async (req, res) => {
 
         res.json({ success: true, message: 'Автоудаление сообщений настроено для чата' });
     } catch (error) {
-        console.error('Set chat default expiry error:', error);
-        res.json({ success: false, message: 'Ошибка настройки автоудаления' });
+        log.error({ err: error }, 'Set chat default expiry error');
+        res.status(500).json({ success: false, message: 'Ошибка настройки автоудаления' });
     }
 });
 
@@ -2847,8 +2906,8 @@ app.get('/api/chats/:chatId/settings', async (req, res) => {
         const settings = await disappearingMessagesManager.getChatSettings(chatId);
         res.json({ success: true, settings: settings || {} });
     } catch (error) {
-        console.error('Get chat settings error:', error);
-        res.json({ success: false, message: 'Ошибка получения настроек' });
+        log.error({ err: error }, 'Get chat settings error');
+        res.status(500).json({ success: false, message: 'Ошибка получения настроек' });
     }
 });
 
@@ -2879,12 +2938,12 @@ app.post('/api/change-password', passwordLimiter, async (req, res) => {
 
         req.session.destroy((err) => {
             res.clearCookie('connect.sid');
-            if (err) console.error('Session destroy error on password change:', err);
+            if (err) log.error({ err: err }, 'Session destroy error on password change');
             res.json({ success: true, message: 'Пароль успешно изменён. Войдите заново.' });
         });
     } catch (error) {
-        console.error('Change password error:', error);
-        res.json({ success: false, message: 'Ошибка изменения пароля' });
+        log.error({ err: error }, 'Change password error');
+        res.status(500).json({ success: false, message: 'Ошибка изменения пароля' });
     }
 });
 
@@ -2914,52 +2973,26 @@ app.use((err, req, res, next) => {
     if (err.message === 'Неподдерживаемый тип файла') {
         return res.status(400).json({ success: false, message: 'Этот тип файла не поддерживается: можно фото, видео, PDF и текст' });
     }
-    console.error('Unhandled error:', err);
+    log.error({ err }, 'Unhandled error');
     res.status(500).json({ success: false, message: 'Внутренняя ошибка сервера' });
 });
 
 server.listen(PORT, HOST, async () => {
-    const addresses = getLocalAddresses();
-    console.log(`\n${'='.repeat(60)}`);
-    console.log(`Nyxo Messenger запущен на порту ${PORT}`);
-    console.log(`${'='.repeat(60)}\n`);
+    log.info({ port: PORT, addresses: getLocalAddresses().map(addr => `http://${addr}:${PORT}`) }, 'Nyxo запущен');
 
-    if (addresses.length > 0) {
-        console.log('Доступен по адресам:');
-        addresses.forEach(addr => console.log(`  → http://${addr}:${PORT}`));
-        console.log('');
-    }
-
-    // Проверка Tor подключения
     if (ENABLE_TOR_ROUTING) {
-        console.log('Проверка Tor подключения...');
         const torStatus = await checkTorConnection();
         if (torStatus.available && torStatus.isTor) {
-            console.log('✓ Tor успешно подключен');
-            console.log(`  IP через Tor: ${torStatus.ip}`);
-
-            const hiddenServiceConfig = getTorHiddenServiceConfig();
-            console.log('\nДля настройки Hidden Service добавьте в torrc:');
-            console.log(hiddenServiceConfig.hiddenServiceConfig);
+            log.info('Tor подключён');
+            // Подсказка для torrc — человеку, а не в журнал.
+            process.stderr.write(`\nДля скрытого сервиса добавьте в torrc:\n${getTorHiddenServiceConfig().hiddenServiceConfig}\n\n`);
         } else {
-            console.warn('⚠ Tor не доступен:', torStatus.message);
-            console.warn('  Сервер работает без Tor routing');
+            log.warn({ reason: torStatus.message }, 'Tor недоступен, сервер работает без него');
         }
-        console.log('');
     }
 
     // Фоновая уборка файлов, на которые не ссылается ни одно сообщение.
     const sweepUploads = () => sweepOrphanUploads(UPLOADS_DIR, { dbAll, ttlMs: ORPHAN_UPLOAD_TTL_MS })
-        .catch(error => console.error('Uploads sweep error:', error.message));
+        .catch(error => log.error({ err: error }, 'Uploads sweep error'));
     setInterval(sweepUploads, ORPHAN_UPLOAD_TTL_MS).unref();
-
-    console.log('Функции безопасности:');
-    console.log('  ✓ CSRF Protection');
-    console.log('  ✓ Rate Limiting');
-    console.log('  ✓ Metadata Stripping');
-    console.log('  ✓ Disappearing Messages');
-    console.log('  ✓ Enhanced Privacy Headers');
-    console.log('  ✓ Timing Attack Protection');
-    if (ENABLE_TOR_ROUTING) console.log('  ✓ Tor Hidden Service Support');
-    console.log(`\n${'='.repeat(60)}\n`);
 });

@@ -11,7 +11,7 @@
 // Требует поднятых Postgres, key-server и server.js на 3006, ЧИСТОЙ базы и
 // ffmpeg в PATH. Запуск: node scripts/test-e2ee-qr.mjs
 
-import { chromium } from 'playwright';
+import { launch, finish, launchPersistentContext } from './lib/browser.mjs';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
@@ -28,7 +28,7 @@ let fails = 0;
 const check = (l, c, d = '') => { console.log(`${c ? 'ok  ' : 'FAIL'}  ${l}${d ? '  — ' + d : ''}`); if (!c) fails++; };
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'nyxo-qr-'));
 
-const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH });
+const browser = await launch();
 const errors = [];
 let nextIp = 10;
 async function openApp(label) {
@@ -128,8 +128,7 @@ check('код с фото совпал — собеседник сверен', a
 // Эрин в отдельном профиле браузера: он переживает перезапуск, а вместе с
 // ним и ключи устройства — иначе после перезапуска код был бы другим.
 const erinDir = path.join(tmp, 'erin-profile');
-const launchErin = args => chromium.launchPersistentContext(erinDir, {
-    executablePath: process.env.CHROMIUM_PATH,
+const launchErin = args => launchPersistentContext(erinDir, {
     extraHTTPHeaders: { 'X-Forwarded-For': '10.0.9.200' },
     args,
 });
@@ -186,7 +185,7 @@ check('закрыли окно посреди сканирования — ка�
 await erinContext.close();
 
 check('ошибок на страницах нет', errors.length === 0, errors.join('; '));
-await browser.close();
+await finish(browser, fails);
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(fails ? `\n${fails} проверок провалено` : '\nвсе проверки пройдены');
 process.exit(fails ? 1 : 0);

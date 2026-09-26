@@ -14,7 +14,7 @@
 // Требует поднятых Postgres, key-server и server.js на 3006 и ЧИСТОЙ базы.
 // Запуск: TEST_DATABASE_URL=... node scripts/test-e2ee-sessions.mjs
 
-import { chromium } from 'playwright';
+import { launch, finish } from './lib/browser.mjs';
 import pg from 'pg';
 
 const BASE = 'http://127.0.0.1:3006';
@@ -23,7 +23,7 @@ const db = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
 let fails = 0;
 const check = (l, c, d = '') => { console.log(`${c ? 'ok  ' : 'FAIL'}  ${l}${d ? '  — ' + d : ''}`); if (!c) fails++; };
 
-const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH });
+const browser = await launch();
 const errors = [];
 const warnings = [];
 let nextIp = 10;
@@ -234,7 +234,7 @@ check('через 30 дней прежний ключ удалён', JSON.string
     JSON.stringify(await idbKeys(frank.page, 'signedPrekeys')));
 
 check('ошибок на страницах нет', errors.length === 0, errors.join('; '));
-await browser.close();
+await finish(browser, fails);
 await db.end();
 console.log(fails ? `\n${fails} проверок провалено` : '\nвсе проверки пройдены');
 process.exit(fails ? 1 : 0);

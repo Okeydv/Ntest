@@ -1777,6 +1777,28 @@ dialog.modal::backdrop {
     color: var(--text-2);
 }
 
+.error-report-text {
+    display: block;
+    width: 100%;
+    margin-bottom: 1rem;
+    padding: 0.75rem;
+    border: 1px solid var(--border-2);
+    border-radius: var(--r-md);
+    background: var(--field);
+    color: var(--text);
+    font-family: var(--f-mono);
+    font-size: max(0.75rem, 12px);
+    line-height: 1.5;
+    resize: vertical;
+    white-space: pre;
+    overflow: auto;
+}
+
+@media (pointer: coarse), (max-width: 640px) {
+    /* Readonly, но фокус в него попадает — без 16px Safari увеличит страницу. */
+    .error-report-text { font-size: 16px; }
+}
+
 .logout-actions {
     display: grid;
     gap: 0.5rem;

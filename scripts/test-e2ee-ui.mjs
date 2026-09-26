@@ -15,7 +15,7 @@
 //
 // Запуск: node scripts/test-e2ee-ui.mjs
 
-import { chromium } from 'playwright';
+import { launch, finish } from './lib/browser.mjs';
 
 const BASE = 'http://127.0.0.1:3006';
 let fails = 0;
@@ -24,7 +24,7 @@ const check = (l, c, d = '') => {
     if (!c) fails++;
 };
 
-const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH });
+const browser = await launch();
 
 /** Отдельный контекст = отдельный браузер = отдельное устройство. */
 async function openApp(label) {
@@ -180,6 +180,6 @@ const allErrors = [...alice.errors, ...bob.errors, ...alicePhone.errors]
     .filter(e => !/favicon|Failed to load resource/i.test(e));
 check('ошибок в консоли браузера нет', allErrors.length === 0, allErrors.slice(0, 3).join(' | '));
 
-await browser.close();
+await finish(browser, fails);
 console.log(fails ? `\n${fails} проверок провалено` : '\nвсе проверки пройдены');
 process.exit(fails ? 1 : 0);
