@@ -104,6 +104,12 @@ const b = jar();
 await req(b, 'GET', '/api/auth');
 await req(b, 'POST', '/api/register',
   { username:'bob', email:'bob@example.com', password:'password123', confirmPassword:'password123' });
+const beforeChat = await req(b, 'GET', `/api/keys/bundle/${userA}`);
+check('без общего чата bundle не отдаётся', beforeChat.status === 404, 'status ' + beforeChat.status);
+// Ключи — только собеседникам: заводим общий чат.
+const shared = await req(a1, 'POST', '/api/chats', { name: 'Общий' });
+const code = (await req(a1, 'GET', `/api/chats/invite/${shared.json.chat.id}`)).json.code;
+await req(b, 'POST', '/api/chats/join', { code });
 const bundle = await req(b, 'GET', `/api/keys/bundle/${userA}`);
 const got = (bundle.json?.bundles ?? []).map(x => x.device_id).sort((x,y)=>x-y);
 check('bundle отдаёт оба устройства получателя',

@@ -25,6 +25,7 @@ const { shared } = require('./lib/shared');
 const { secureCookieFor, sessionCookieSecurity } = require('./lib/cookie-security');
 const { sweepOrphanUploads } = require('./lib/upload-sweeper');
 const DisappearingMessagesManager = require('./lib/disappearing-messages');
+const { normalizeExpiry } = DisappearingMessagesManager;
 const {
     addRandomDelay,
     padMessage,
@@ -786,6 +787,11 @@ io.on('connection', (socket) => {
     // устройства клиент обязан переподключить сокет.
     const socketDeviceId = socket.request.session?.deviceId;
     if (socketDeviceId) socket.join(`device:${socketDeviceId}`);
+    // По этим комнатам сокеты находятся, когда доступ отзывается: выход из
+    // чата, выход из аккаунта, смена пароля. Сессия с сервера удаляется, но
+    // уже открытый сокет о ней не знает и продолжал бы получать сообщения.
+    socket.join(`user:${userId}`);
+    socket.join(`session:${socket.request.sessionID}`);
 
     console.log('Пользователь подключился через WebSocket, userId:', userId, 'deviceId:', socketDeviceId || '—');
 
@@ -884,7 +890,15 @@ app.use((req, res, next) => {
     // явно (п.8 аудита): без base-uri инъекция тега <base> (если когда-либо
     // станет достижима) не блокируется текущей политикой; object-src явно
     // запрещён, хотя и так по умолчанию блокируется отсутствием в списке.
-    res.set('Content-Security-Policy', `default-src 'self'; script-src 'self' 'nonce-${nonce}'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' ws: wss:; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; object-src 'none'`);
+    //
+    // connect-src — только свой origin: 'self' покрывает и ws/wss того же
+    // хоста. Было 'self' ws: wss: — то есть сокет на любой адрес, и
+    // внедрённый скрипт мог бы вынести переписку через WebSocket.
+    res.set('Content-Security-Policy', `default-src 'self'; script-src 'self' 'nonce-${nonce}'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'`);
+    // HSTS — только по HTTPS (по HTTP браузер заголовок игнорирует). Без
+    // includeSubDomains: на соседних поддоменах может жить то, что по HTTPS
+    // не открывается. У .onion HTTPS нет, и там запрос сюда не попадёт.
+    if (req.secure) res.set('Strict-Transport-Security', 'max-age=31536000');
     res.set('X-Frame-Options', 'DENY');
     res.set('X-Content-Type-Options', 'nosniff');
     // Referrer-Policy здесь не ставится: её задаёт getPrivacyHeaders()
@@ -957,7 +971,34 @@ app.use(createDevicesRouter({
     dbRun,
     revokeDeviceKeys: e2eeProxy.revokeDeviceKeys,
 }));
+// Ключи собеседника — только при общем чате (см. requirePeer в e2ee-proxy).
+e2eeProxy.setPeerCheck(async (userId, otherUserId) => Boolean(await dbGet(
+    `SELECT 1 FROM room_participants mine
+     JOIN room_participants theirs ON theirs.room_id = mine.room_id
+     WHERE mine.user_id = $1 AND theirs.user_id = $2 LIMIT 1`,
+    [userId, otherUserId])));
 app.use(e2eeProxy.router);
+
+/**
+ * Начать сессию с новым id — при регистрации так же, как при входе. Иначе
+ * id сессии, известный до входа (подброшенный в куку или подсмотренный),
+ * после входа давал бы доступ к аккаунту.
+ */
+function startSession(req, values) {
+    return new Promise((resolve, reject) => req.session.regenerate(err => {
+        if (err) return reject(err);
+        // regenerate создаёт куку заново, с настройками по умолчанию, — а
+        // Secure зависит от адреса (у .onion его нет).
+        req.session.cookie.secure = secureCookieFor(req);
+        Object.assign(req.session, values);
+        resolve();
+    }));
+}
+
+/** Отключить открытые сокеты: сессия уже удалена, а они об этом не знают. */
+function disconnectSockets(room) {
+    io.in(room).disconnectSockets(true);
+}
 
 app.post('/api/register', registerLimiter, async (req, res) => {
     const { username, email, password, confirmPassword } = req.body;
@@ -1010,10 +1051,7 @@ app.post('/api/register', registerLimiter, async (req, res) => {
             client.release();
         }
 
-        req.session.userId = userId;
-        req.session.username = username;
-        req.session.uniqueCode = uniqueCode;
-        req.session.avatar = '#667EEA';
+        await startSession(req, { userId, username, uniqueCode, avatar: '#667EEA' });
 
         res.json({ success: true, message: 'Регистрация успешна!', user: { id: userId, username, uniqueCode, avatar: '#667EEA' } });
     } catch (error) {
@@ -1071,13 +1109,10 @@ app.post('/api/register/anonymous', registerLimiter, async (req, res) => {
             client.release();
         }
 
-        req.session.userId = userId;
-        req.session.username = username;
-        req.session.uniqueCode = uniqueCode;
-        req.session.avatar = '#667EEA';
-        req.session.isAnonymous = true;
-        req.session.sessionFingerprint = sessionFingerprint;
-        req.session.createdAt = Date.now();
+        await startSession(req, {
+            userId, username, uniqueCode, avatar: '#667EEA',
+            isAnonymous: true, sessionFingerprint, createdAt: Date.now(),
+        });
 
         // Устанавливаем короткий срок жизни сессии для анонимных пользователей
         req.session.cookie.maxAge = 4 * 60 * 60 * 1000; // 4 часа
@@ -1125,51 +1160,79 @@ app.post('/api/login', loginLimiter, async (req, res) => {
             return res.json({ success: false, message: 'Неверный email или пароль' });
         }
 
-        req.session.regenerate((err) => {
-            if (err) return res.json({ success: false, message: 'Ошибка инициализации сессии' });
-            req.session.userId = user.id;
-            req.session.username = user.username;
-            req.session.uniqueCode = user.unique_code;
-            req.session.avatar = user.avatar || '';
-            res.json({ success: true, message: 'Вход выполнен!', user: { id: user.id, username: user.username, uniqueCode: user.unique_code, avatar: user.avatar || '' } });
-        });
+        try {
+            await startSession(req, {
+                userId: user.id, username: user.username, uniqueCode: user.unique_code, avatar: user.avatar || '',
+            });
+        } catch {
+            return res.json({ success: false, message: 'Ошибка инициализации сессии' });
+        }
+        res.json({ success: true, message: 'Вход выполнен!', user: { id: user.id, username: user.username, uniqueCode: user.unique_code, avatar: user.avatar || '' } });
     } catch (error) {
         console.error('Login error:', error);
         res.json({ success: false, message: 'Ошибка базы данных' });
     }
 });
 
+/**
+ * Удалить анонимный аккаунт со всем содержимым. Ключи — первыми: после
+ * удаления пользователя строки devices уйдут по ON DELETE CASCADE, и
+ * отзывать станет нечего, а ключи останутся висеть в схеме key-server,
+ * у которой нет внешнего ключа на users.
+ */
+async function deleteAnonymousAccount(userId) {
+    await e2eeProxy.revokeAllKeys(userId);
+    await dbRun('DELETE FROM devices WHERE user_id = $1', [userId]);
+    await dbRun('DELETE FROM messages WHERE user_id = $1', [userId]);
+    await dbRun('DELETE FROM chats WHERE user_id = $1', [userId]);
+    await dbRun('DELETE FROM room_participants WHERE user_id = $1', [userId]);
+    await dbRun('DELETE FROM reactions WHERE user_id = $1', [userId]);
+    await dbRun('DELETE FROM users WHERE id = $1', [userId]);
+}
+
+// Анонимный аккаунт живёт, пока жива его сессия (4 часа). Кнопкой «Выйти»
+// он удаляется сразу; раньше только ею — и если вкладку просто закрывали,
+// аккаунт с перепиской оставался на сервере навсегда. Теперь его находит
+// уборка: пароля и почты нет, живой сессии тоже. Десять минут форы — чтобы
+// не удалить аккаунт, сессия которого ещё не успела записаться.
+// Переменная окружения — для тестов: ждать десять минут там незачем.
+const ANON_SWEEP_INTERVAL_MS = Number(process.env.ANON_SWEEP_INTERVAL_MS) || 10 * 60 * 1000;
+async function sweepAnonymousAccounts() {
+    try {
+        const stale = await dbAll(
+            `SELECT u.id FROM users u
+             WHERE u.email IS NULL AND u.password IS NULL
+               AND u.created_at < NOW() - INTERVAL '10 minutes'
+               AND NOT EXISTS (SELECT 1 FROM "session" s
+                               WHERE s.sess->>'userId' = u.id::text AND s.expire > NOW())`
+        );
+        for (const { id } of stale) {
+            await deleteAnonymousAccount(id);
+            disconnectSockets(`user:${id}`);
+        }
+        if (stale.length) console.log(`[Anon] Удалено брошенных анонимных аккаунтов: ${stale.length}`);
+    } catch (error) {
+        console.error('[Anon] Sweep error:', error.message);
+    }
+}
+setInterval(sweepAnonymousAccounts, ANON_SWEEP_INTERVAL_MS).unref();
+
 app.post('/api/logout', async (req, res) => {
     const isAnonymous = req.session?.isAnonymous;
     const userId = req.session?.userId;
 
-    // Для анонимных пользователей удаляем все данные
     if (isAnonymous && userId) {
         try {
-            console.log(`[Anon] Cleaning up data for anonymous user ${userId}`);
-
-            // Ключевой материал всех устройств — до удаления самих устройств
-            // и пользователя: после DELETE FROM users строки devices уйдут по
-            // ON DELETE CASCADE, и отзывать станет нечего, а ключи останутся
-            // висеть в схеме key-server, которая FK на users не имеет.
-            await e2eeProxy.revokeAllKeys(userId);
-            await dbRun('DELETE FROM devices WHERE user_id = $1', [userId]);
-
-            // Удаляем все чаты пользователя
-            await dbRun('DELETE FROM messages WHERE user_id = $1', [userId]);
-            await dbRun('DELETE FROM chats WHERE user_id = $1', [userId]);
-            await dbRun('DELETE FROM room_participants WHERE user_id = $1', [userId]);
-            await dbRun('DELETE FROM reactions WHERE user_id = $1', [userId]);
-
-            // Удаляем самого пользователя
-            await dbRun('DELETE FROM users WHERE id = $1', [userId]);
-
+            await deleteAnonymousAccount(userId);
             console.log(`[Anon] Successfully cleaned up anonymous user ${userId}`);
         } catch (error) {
             console.error('[Anon] Cleanup error:', error);
         }
     }
 
+    // Анонимный аккаунт удалён целиком — отключаем все его сокеты, обычный —
+    // только сокеты этой сессии: на других устройствах вход остаётся.
+    disconnectSockets(isAnonymous && userId ? `user:${userId}` : `session:${req.sessionID}`);
     req.session.destroy((err) => {
         res.clearCookie('connect.sid');
         res.clearCookie('csrf_token');
@@ -1605,6 +1668,27 @@ const b64 = buf => buf.toString('base64');
  * Открытый путь POST /api/messages оставлен рядом для чата с ботом и чатов,
  * где пока не для кого шифровать.
  */
+/** Срок жизни из запроса: null — не задан, false — недопустим. */
+function expiryFrom(value) {
+    if (value === undefined || value === null || value === '' || Number(value) === 0) return null;
+    return normalizeExpiry(value) ?? false;
+}
+
+/**
+ * Проверить, на что отвечает сообщение. Ответить можно только на живое
+ * сообщение этой же переписки: история отдаёт вместе с ответом текст
+ * цитаты, и чужой id открывал бы текст из чужого чата.
+ */
+async function replyTargetFor(chat, replyToId) {
+    if (replyToId === undefined || replyToId === null || replyToId === '') return { id: null };
+    const id = Number(replyToId);
+    if (!Number.isSafeInteger(id) || id <= 0) return { error: 'Некорректный ответ' };
+    const target = chat.room_id
+        ? await dbGet('SELECT id FROM messages WHERE id = $1 AND room_id = $2 AND deleted = 0', [id, chat.room_id])
+        : await dbGet('SELECT id FROM messages WHERE id = $1 AND chat_id = $2 AND room_id IS NULL AND deleted = 0', [id, chat.id]);
+    return target ? { id } : { error: 'Сообщение, на которое вы отвечаете, не найдено' };
+}
+
 app.post('/api/messages/encrypted', async (req, res) => {
     if (!req.session.userId) return res.status(401).json({ success: false, message: 'Не авторизован' });
     if (!req.session.deviceId) {
@@ -1614,7 +1698,6 @@ app.post('/api/messages/encrypted', async (req, res) => {
     const {
         chatId, replyToId, expirySeconds, envelopes = [], keyEnvelopes = [], group = null, blobIds = [],
     } = req.body || {};
-    const replyTo = Number(replyToId) || null;
 
     if (!Array.isArray(blobIds) || blobIds.length > MAX_BLOBS_PER_MESSAGE
         || !blobIds.every(id => typeof id === 'string' && BLOB_ID_RE.test(id))) {
@@ -1649,6 +1732,11 @@ app.post('/api/messages/encrypted', async (req, res) => {
         if (groupPayload && !chat.room_id) {
             return res.status(400).json({ success: false, message: 'Групповое шифрование — только для комнат' });
         }
+        const reply = await replyTargetFor(chat, replyToId);
+        if (reply.error) return res.status(400).json({ success: false, message: reply.error });
+        const replyTo = reply.id;
+        const expiry = expiryFrom(expirySeconds);
+        if (expiry === false) return res.status(400).json({ success: false, message: 'Недопустимый срок жизни сообщения' });
 
         const senderDeviceId = req.session.deviceId;
         const allowed = await resolveEnvelopeRecipients(chat);
@@ -1737,8 +1825,8 @@ app.post('/api/messages/encrypted', async (req, res) => {
             client.release();
         }
 
-        if (expirySeconds && Number(expirySeconds) > 0) {
-            await disappearingMessagesManager.setMessageExpiry(messageId, Number(expirySeconds), false);
+        if (expiry) {
+            await disappearingMessagesManager.setMessageExpiry(messageId, expiry, false);
         } else {
             const chatSettings = await disappearingMessagesManager.getChatSettings(chatId);
             if (chatSettings && chatSettings.default_message_expiry) {
@@ -1862,7 +1950,7 @@ app.get('/api/messages/:chatId', async (req, res) => {
                       rt.id as reply_to_id, rt.text as reply_to_text, rt.deleted as reply_to_deleted, ru.username as reply_to_sender_username, ru.avatar as reply_to_sender_avatar
                FROM messages m
                JOIN users u ON m.user_id = u.id
-               LEFT JOIN messages rt ON m.reply_to_id = rt.id
+               LEFT JOIN messages rt ON m.reply_to_id = rt.id AND rt.room_id = m.room_id
                LEFT JOIN users ru ON rt.user_id = ru.id
                WHERE m.room_id = $1 AND m.deleted = 0
                ORDER BY m.id ASC`
@@ -1870,7 +1958,7 @@ app.get('/api/messages/:chatId', async (req, res) => {
                       rt.id as reply_to_id, rt.text as reply_to_text, rt.deleted as reply_to_deleted, ru.username as reply_to_sender_username, ru.avatar as reply_to_sender_avatar
                FROM messages m
                JOIN users u ON m.user_id = u.id
-               LEFT JOIN messages rt ON m.reply_to_id = rt.id
+               LEFT JOIN messages rt ON m.reply_to_id = rt.id AND rt.chat_id = m.chat_id AND rt.room_id IS NULL
                LEFT JOIN users ru ON rt.user_id = ru.id
                WHERE m.chat_id = $1 AND m.deleted = 0
                ORDER BY m.id ASC`;
@@ -1980,13 +2068,17 @@ app.get('/api/messages/:chatId', async (req, res) => {
 app.post('/api/messages', async (req, res) => {
     if (!req.session.userId) return res.json({ success: false, message: 'Не авторизован' });
     const { chatId, text, replyToId, expirySeconds } = req.body;
-    const replyTo = Number(replyToId) || null;
     if (!text || text.trim() === '' || !chatId) return res.json({ success: false, message: 'Введите текст сообщения' });
     if (text.length > 4000) return res.json({ success: false, message: 'Сообщение не может быть длиннее 4000 символов' });
 
     try {
         const chat = await dbGet('SELECT * FROM chats WHERE id = $1 AND user_id = $2', [chatId, req.session.userId]);
         if (!chat) return res.json({ success: false, message: 'Чат не найден' });
+        const reply = await replyTargetFor(chat, replyToId);
+        if (reply.error) return res.json({ success: false, message: reply.error });
+        const replyTo = reply.id;
+        const expiry = expiryFrom(expirySeconds);
+        if (expiry === false) return res.json({ success: false, message: 'Недопустимый срок жизни сообщения' });
 
         const time = getCurrentTime();
         const roomId = chat.room_id || null;
@@ -2002,8 +2094,8 @@ app.post('/api/messages', async (req, res) => {
         const messageId = result.rows[0].id;
 
         // Установка времени жизни сообщения если указано
-        if (expirySeconds && Number(expirySeconds) > 0) {
-            await disappearingMessagesManager.setMessageExpiry(messageId, Number(expirySeconds), false);
+        if (expiry) {
+            await disappearingMessagesManager.setMessageExpiry(messageId, expiry, false);
         } else {
             // Проверка настроек чата на автоудаление
             const chatSettings = await disappearingMessagesManager.getChatSettings(chatId);
@@ -2172,6 +2264,9 @@ app.delete('/api/chats/:chatId', async (req, res) => {
             await dbRun('DELETE FROM unread WHERE chat_id = $1', [chatId]);
             await dbRun('DELETE FROM chats WHERE id = $1 AND user_id = $2', [chatId, req.session.userId]);
         }
+        // Сокеты этого пользователя больше не должны получать сообщения чата.
+        io.in(`user:${req.session.userId}`).socketsLeave(
+            chat.room_id ? [`room:${chat.room_id}`, `chat:${chat.id}`] : [`chat:${chat.id}`]);
         res.json({ success: true });
     } catch (error) {
         console.error('Delete chat error:', error);
@@ -2492,7 +2587,7 @@ app.post('/api/messages/:messageId/set-expiry', async (req, res) => {
     const messageId = Number(req.params.messageId);
     const { expirySeconds, autoDeleteOnRead } = req.body;
 
-    if (!Number.isFinite(messageId) || !Number.isFinite(expirySeconds)) {
+    if (!Number.isFinite(messageId) || normalizeExpiry(expirySeconds) === null) {
         return res.json({ success: false, message: 'Неверные параметры' });
     }
 
@@ -2521,7 +2616,7 @@ app.post('/api/chats/:chatId/set-default-expiry', async (req, res) => {
     const chatId = Number(req.params.chatId);
     const { expirySeconds } = req.body;
 
-    if (!Number.isFinite(chatId) || !Number.isFinite(expirySeconds)) {
+    if (!Number.isFinite(chatId) || (Number(expirySeconds) !== 0 && normalizeExpiry(expirySeconds) === null)) {
         return res.json({ success: false, message: 'Неверные параметры' });
     }
 
@@ -2565,6 +2660,9 @@ app.post('/api/change-password', passwordLimiter, async (req, res) => {
     if (!currentPassword || !newPassword || !confirmPassword) return res.json({ success: false, message: 'Заполните все поля' });
     if (newPassword !== confirmPassword) return res.json({ success: false, message: 'Новые пароли не совпадают' });
     if (newPassword.length < 8) return res.json({ success: false, message: 'Пароль должен быть не менее 8 символов' });
+    if (newPassword.length > 128 || currentPassword.length > 128) {
+        return res.json({ success: false, message: 'Пароль не может быть длиннее 128 символов' });
+    }
 
     try {
         const user = await dbGet('SELECT password FROM users WHERE id = $1', [req.session.userId]);
@@ -2576,6 +2674,10 @@ app.post('/api/change-password', passwordLimiter, async (req, res) => {
         const userId = req.session.userId;
 
         await dbRun('UPDATE users SET password = $1 WHERE id = $2', [hashedPassword, userId]);
+        // Пароль меняют чаще всего, когда он утёк. Значит, выйти надо везде:
+        // сессия, открытая по старому паролю, иначе живёт до истечения срока.
+        await dbRun(`DELETE FROM "session" WHERE sess->>'userId' = $1`, [String(userId)]);
+        disconnectSockets(`user:${userId}`);
 
         req.session.destroy((err) => {
             res.clearCookie('connect.sid');
