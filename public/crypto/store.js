@@ -106,6 +106,7 @@ export const identity = {
 export const signedPrekeys = {
     load: keyId => get(STORE_SIGNED_PREKEYS, keyId),
     save: entry => put(STORE_SIGNED_PREKEYS, entry.keyId, entry),
+    drop: keyId => del(STORE_SIGNED_PREKEYS, keyId),
 };
 
 export const oneTimePrekeys = {
@@ -133,6 +134,27 @@ export const sessions = {
 };
 
 /**
+ * Прежние состояния сессии с устройством — последние несколько. Новая
+ * сессия (собеседник начал заново) не стирает прежнюю: по ней ещё могут
+ * идти сообщения, отправленные раньше, а при встречном начале переписки
+ * обе стороны какое-то время пишут каждая по своей.
+ */
+export const previousSessions = {
+    load: async (userId, deviceId) => (await get(STORE_META, `prev:${sessionKey(userId, deviceId)}`)) || [],
+    save: (userId, deviceId, list) => put(STORE_META, `prev:${sessionKey(userId, deviceId)}`, list),
+};
+
+/**
+ * Базовые (эфемерные) ключи prekey-сообщений, по которым уже строилась
+ * сессия. Повтор такого сообщения — это старое сообщение, а не новое
+ * начало переписки, и сессию он строить заново не должен.
+ */
+export const baseKeys = {
+    load: async (userId, deviceId) => (await get(STORE_META, `base:${sessionKey(userId, deviceId)}`)) || [],
+    save: (userId, deviceId, list) => put(STORE_META, `base:${sessionKey(userId, deviceId)}`, list),
+};
+
+/**
  * Расшифрованный текст сообщений — и своих, и чужих.
  *
  * Кэш здесь обязателен, а не оптимизация. Ключ сообщения в Double Ratchet
@@ -151,17 +173,32 @@ export const sessions = {
 export const plaintext = {
     load: messageId => get(STORE_PLAINTEXT, String(messageId)),
     save: (messageId, text) => put(STORE_PLAINTEXT, String(messageId), text),
+    drop: messageId => del(STORE_PLAINTEXT, String(messageId)),
 };
 
 /**
- * Превью последнего сообщения для списка чатов.
+ * Какие сообщения переписки лежат здесь расшифрованными. По этому списку
+ * расшифрованное стирается, когда сообщение удалили или оно исчезло по
+ * сроку, и целиком — когда из чата вышли. Без него текст удалённого
+ * сообщения оставался бы в браузере навсегда.
+ */
+export const conversations = {
+    load: async key => (await get(STORE_META, `conv:${key}`)) || [],
+    save: (key, ids) => put(STORE_META, `conv:${key}`, ids),
+    drop: key => del(STORE_META, `conv:${key}`),
+};
+
+/**
+ * Превью последнего сообщения для списка чатов — по переписке, с id
+ * сообщения: удалили его — пропадает и превью.
  *
  * Сервер его больше не знает: у зашифрованного сообщения в базе нет текста.
  * Поэтому превью запоминает клиент — по мере того, как расшифровывает.
  */
 export const previews = {
-    load: chatId => get(STORE_META, `preview:${chatId}`),
-    save: (chatId, text) => put(STORE_META, `preview:${chatId}`, text),
+    load: key => get(STORE_META, `preview:${key}`),
+    save: (key, entry) => put(STORE_META, `preview:${key}`, entry),
+    drop: key => del(STORE_META, `preview:${key}`),
 };
 
 /**
@@ -196,6 +233,7 @@ export const verified = {
 export const senderKeys = {
     load: roomId => get(STORE_SENDER_KEYS, String(roomId)),
     save: (roomId, entry) => put(STORE_SENDER_KEYS, String(roomId), entry),
+    drop: roomId => del(STORE_SENDER_KEYS, String(roomId)),
 };
 
 /**
@@ -210,6 +248,15 @@ export const groupSessions = {
         get(STORE_GROUP_SESSIONS, groupSessionKey(roomId, senderDeviceId, distribution)),
     save: (roomId, senderDeviceId, distribution, entry) =>
         put(STORE_GROUP_SESSIONS, groupSessionKey(roomId, senderDeviceId, distribution), entry),
+    /** Все ключи отправителей в комнате — когда из неё вышли. */
+    dropRoom: async roomId => {
+        const db = await openDb();
+        const keys = await tx(db, STORE_GROUP_SESSIONS, 'readonly', store => store.getAllKeys());
+        const prefix = `${roomId}:`;
+        for (const key of keys) {
+            if (String(key).startsWith(prefix)) await del(STORE_GROUP_SESSIONS, key);
+        }
+    },
 };
 
 /** Полная очистка — при смене устройства или несовпадении с сервером. */

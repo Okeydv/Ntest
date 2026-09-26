@@ -2,7 +2,7 @@
 <html lang="ru" data-theme="dark">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="color-scheme" content="dark light">
     <meta name="theme-color" content="#08080e" media="(prefers-color-scheme: dark)">
     <meta name="theme-color" content="#f4f4f7" media="(prefers-color-scheme: light)">
@@ -88,6 +88,7 @@
             <path d="M17.8 3.2a2 2 0 0 1 2.9 2.9L12 14.8l-3.8.9.9-3.8 8.7-8.7Z"/>
         </symbol>
         <symbol id="i-close" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></symbol>
+        <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 5.5L8.5 12l6.5 6.5"/></symbol>
         <symbol id="i-lock" viewBox="0 0 24 24">
             <rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>
         </symbol>
@@ -217,6 +218,10 @@
 
         <div class="main-content">
             <div id="chat-header" class="chat-header hidden">
+                <!-- На телефоне список чатов и переписка — два экрана, это путь назад. -->
+                <button id="chat-back-btn" class="icon-btn chat-back" aria-label="К списку чатов" type="button">
+                    <svg class="icon" aria-hidden="true"><use href="#i-back"/></svg>
+                </button>
                 <div class="chat-identity">
                     <div id="chat-avatar" class="chat-avatar"></div>
                     <div class="chat-details">
@@ -368,6 +373,12 @@
                         <button class="color-option" data-color="#F5A524" style="background:#F5A524" aria-label="Янтарный" type="button"></button>
                     </div>
                 </div>
+                <!-- Все устройства, на которых открыт аккаунт. Незнакомое — повод сменить
+                     пароль и отозвать его: у него есть ключи и к новым сообщениям. -->
+                <section id="devices-section" class="devices-section" aria-labelledby="devices-title">
+                    <h4 id="devices-title" class="field-label">Устройства</h4>
+                    <ul id="devices-list" class="devices-list"></ul>
+                </section>
                 <button id="change-password-btn" class="btn btn-secondary btn-block" type="button">
                     <svg class="icon" aria-hidden="true"><use href="#i-lock"/></svg>
                     Сменить пароль
@@ -414,12 +425,18 @@
                 </button>
             </div>
             <div class="modal-body">
-                <p class="invite-text">Поделитесь этим кодом с друзьями:</p>
-                <div class="invite-code-container">
+                <p id="invite-text" class="invite-text">Поделитесь этим кодом с друзьями:</p>
+                <div id="invite-code-box" class="invite-code-container">
                     <code id="invite-code-display"></code>
                     <button id="copy-invite-btn" class="icon-btn icon-btn-sm" title="Скопировать" aria-label="Скопировать код" type="button">
                         <svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg>
                     </button>
+                </div>
+                <!-- Утёкший код иначе действовал бы вечно. Кто вошёл по коду и кто
+                     его сменил, видно в переписке. -->
+                <div class="invite-actions">
+                    <button id="reset-invite-btn" class="btn btn-secondary" type="button">Сменить код</button>
+                    <button id="disable-invite-btn" class="btn btn-ghost" type="button">Отключить приглашение</button>
                 </div>
             </div>
         </div>

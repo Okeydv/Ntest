@@ -9,7 +9,7 @@
 // он отдельно от e2ee.js — ядро крипты остаётся чистым и тестируемым в Node.
 
 import { toB64, fromB64 } from './e2ee.js';
-import { cleanIsoBmff, cleanPdf } from './metadata.js';
+import { cleanIsoBmff, cleanImage, cleanPdf, cleanWebm, PdfCleanError } from './metadata.js';
 import { detectType, attachmentName, ATTACHMENT_TYPES, CONVERT_TO_JPEG, ISO_BMFF_TYPES } from './filetypes.js';
 
 const subtle = globalThis.crypto.subtle;
@@ -62,7 +62,10 @@ export function decodePayload(str) {
         try { parsed = JSON.parse(str); } catch { /* не JSON — обычный текст */ }
         if (parsed && parsed.v === PAYLOAD_VERSION) {
             if (parsed.t === 'text' && typeof parsed.body === 'string') return parsed;
-            if (parsed.t === 'file') return validFile(parsed) ? parsed : { t: 'invalid' };
+            // Имя назначил отправитель — и его клиент мог быть каким угодно.
+            // Расширение по типу и без символов направления текста: иначе
+            // «photo‮gpj.exe» скачалось бы с тем, что в нём написано.
+            if (parsed.t === 'file') return validFile(parsed) ? { ...parsed, name: attachmentName(parsed.mime, parsed.name) } : { t: 'invalid' };
             return { t: 'invalid' };
         }
     }
@@ -90,13 +93,14 @@ export function payloadPreview(p) {
 // чате (бот, собеседника пока нет) тот же путь проходится перед загрузкой,
 // а сервер чистит ещё раз: ему клиент не указ.
 
-// JPEG, PNG и WebP перерисовываются через canvas: createImageBitmap
-// применяет EXIF-ориентацию к пикселям, а canvas при экспорте не пишет ни
-// EXIF, ни XMP, ни IPTC.
-const REENCODE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
-// GIF не перерисовывается: canvas сохранил бы только первый кадр.
+// Картинки чистятся без перекодирования (cleanImage): выбрасываются блоки
+// с метаданными, а пиксели и анимация остаются как были. Раньше они
+// перерисовывались через canvas — JPEG терял качество, а анимированные
+// PNG и WebP становились одним кадром. Перерисовка осталась для поворота:
+// если в EXIF записано «повернуть», без EXIF картинка ляжет набок, а
+// createImageBitmap применяет поворот к пикселям.
 export const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
-export const VIDEO_TYPES = new Set(['video/mp4', 'video/webm', 'video/quicktime']);
+export const VIDEO_TYPES = new Set(['video/mp4', 'video/webm', 'video/quicktime', 'video/3gpp']);
 
 const JPEG_QUALITY = 0.92;
 
@@ -128,8 +132,9 @@ async function redraw(blob, targetType) {
  *   умеет открыть;
  * - HEIC и AVIF перерисовываются в JPEG, если браузер умеет их декодировать —
  *   это проверяется пробной расшифровкой, а не по названию браузера;
- * - фото перерисовываются, из MP4/MOV/3GP убираются координаты и даты, PDF
- *   пересохраняется без автора и XMP;
+ * - из фото, GIF и WebM метаданные вырезаются без перекодирования (фото с
+ *   поворотом в EXIF перерисовываются), из MP4/MOV/3GP убираются
+ *   координаты и даты, PDF пересохраняется без автора и XMP;
  * - имя фото и видео заменяется нейтральным, с расширением по итоговому типу.
  *
  * Не удалось — исключение, а не исходный файл: молча отправить фото с
@@ -150,11 +155,30 @@ export async function prepareAttachment(file) {
             const format = detected === 'image/heic' ? 'HEIC' : 'AVIF';
             throw new Error(`этот браузер не умеет открывать ${format} — сохраните фото как JPEG`);
         }
-    } else if (REENCODE_TYPES.has(detected)) {
+    } else if (IMAGE_TYPES.has(detected)) {
+        let cleaned;
         try {
-            blob = await redraw(blob, detected);
+            cleaned = cleanImage(bytes, detected);
         } catch {
-            throw new Error('не удалось прочитать изображение для очистки метаданных');
+            throw new Error('не удалось удалить метаданные из изображения');
+        }
+        if (cleaned.orientation === 1) {
+            blob = new Blob([cleaned.bytes], { type: detected });
+        } else if (cleaned.animated) {
+            throw new Error('анимация с поворотом в EXIF не поддерживается — сохраните её заново');
+        } else {
+            try {
+                // GIF canvas не кодирует — такой уходит PNG.
+                blob = await redraw(blob, detected === 'image/gif' ? 'image/png' : detected);
+            } catch {
+                throw new Error('не удалось прочитать изображение для очистки метаданных');
+            }
+        }
+    } else if (detected === 'video/webm') {
+        try {
+            blob = new Blob([cleanWebm(bytes)], { type: detected });
+        } catch {
+            throw new Error('не удалось удалить метаданные из видео');
         }
     } else if (ISO_BMFF_TYPES.has(detected)) {
         try {
@@ -165,8 +189,9 @@ export async function prepareAttachment(file) {
     } else if (detected === 'application/pdf') {
         try {
             blob = new Blob([await cleanPdf(bytes, await loadPdfLib())], { type: detected });
-        } catch {
-            throw new Error('не удалось удалить метаданные из PDF (возможно, он защищён паролем)');
+        } catch (error) {
+            // «Защищён паролем» и «повреждён» — разные советы, их и показываем.
+            throw error instanceof PdfCleanError ? error : new Error('не удалось удалить метаданные из PDF');
         }
     }
 

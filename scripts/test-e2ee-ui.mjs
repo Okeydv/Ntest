@@ -15,7 +15,7 @@
 //
 // Запуск: node scripts/test-e2ee-ui.mjs
 
-import { chromium } from '/opt/node22/lib/node_modules/playwright/index.mjs';
+import { chromium } from 'playwright';
 
 const BASE = 'http://127.0.0.1:3006';
 let fails = 0;
@@ -24,7 +24,7 @@ const check = (l, c, d = '') => {
     if (!c) fails++;
 };
 
-const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' });
+const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH });
 
 /** Отдельный контекст = отдельный браузер = отдельное устройство. */
 async function openApp(label) {

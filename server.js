@@ -25,6 +25,7 @@ const { shared } = require('./lib/shared');
 const { secureCookieFor, sessionCookieSecurity } = require('./lib/cookie-security');
 const { sweepOrphanUploads } = require('./lib/upload-sweeper');
 const DisappearingMessagesManager = require('./lib/disappearing-messages');
+const { normalizeExpiry } = DisappearingMessagesManager;
 const {
     addRandomDelay,
     padMessage,
@@ -215,6 +216,20 @@ const passwordLimiter = rateLimit({
     legacyHeaders: false,
     keyGenerator: rateLimitKeyGenerator,
     message: { success: false, message: 'Слишком много попыток смены пароля. Попробуйте позже.' }
+});
+
+// Код приглашения — 6 знаков из 32: перебором его не подобрать, только если
+// попыток мало. Считаются только неудачные: вошедший по верному коду в
+// лимит не упирается.
+const joinLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: req => `${req.session?.userId || 'guest'}:${rateLimitKeyGenerator(req)}`,
+    skipSuccessfulRequests: true,
+    requestWasSuccessful: (req, res) => res.locals.joined === true,
+    message: { success: false, message: 'Слишком много попыток ввести код. Попробуйте позже.' }
 });
 
 const apiLimiter = rateLimit({
@@ -594,7 +609,38 @@ async function initDatabase() {
     // Момент отправки с часовым поясом. Колонка time — строка «ЧЧ:ММ» в поясе
     // СЕРВЕРА: у собеседника в другом поясе время было неверным, а дня не
     // было вовсе. Форматирует теперь клиент, в своём поясе.
-    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();`);
+    //
+    // Колонка добавляется БЕЗ значения по умолчанию, и только потом ей
+    // ставится DEFAULT now(): ADD COLUMN ... DEFAULT now() записал бы всем
+    // старым сообщениям время самой миграции — вся прежняя история
+    // оказалась бы отправленной «сегодня в 14:03». Настоящей даты у старых
+    // сообщений нет (была только строка «ЧЧ:ММ»), поэтому у них NULL, и
+    // клиент показывает прежнюю строку без дня.
+    // Приглашение можно отключить — тогда кода нет вовсе (UNIQUE допускает
+    // сколько угодно NULL).
+    await pool.query(`ALTER TABLE rooms ALTER COLUMN code DROP NOT NULL;`);
+    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ;`);
+    await pool.query(`ALTER TABLE messages ALTER COLUMN created_at DROP NOT NULL;`);
+    await pool.query(`ALTER TABLE messages ALTER COLUMN created_at SET DEFAULT now();`);
+    // Базам, где прежняя миграция уже прошла, возвращаем NULL тем, кому она
+    // проставила своё время. Их легко узнать: now() в одной команде одно на
+    // все строки, так что у них одинаковое и самое раннее значение, а
+    // обычные сообщения вставляются по одному и так не совпадают. Один раз.
+    await pool.query(`CREATE TABLE IF NOT EXISTS schema_flags (
+        name TEXT PRIMARY KEY,
+        done_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );`);
+    const repair = await pool.query(
+        `INSERT INTO schema_flags (name) VALUES ('messages_created_at_backfill_undone')
+         ON CONFLICT DO NOTHING RETURNING name`);
+    if (repair.rowCount) {
+        const undone = await pool.query(
+            `WITH first AS (SELECT min(created_at) AS t FROM messages)
+             UPDATE messages SET created_at = NULL
+             WHERE created_at = (SELECT t FROM first)
+               AND (SELECT count(*) FROM messages WHERE created_at = (SELECT t FROM first)) > 1`);
+        if (undone.rowCount) console.log(`[migrate] created_at: снято время миграции у ${undone.rowCount} старых сообщений`);
+    }
 
     // Миграция: если таблицы chats/messages были созданы ДО появления комнат,
     // CREATE TABLE IF NOT EXISTS их не тронет и колонки room_id не будет.
@@ -662,7 +708,17 @@ async function initDatabase() {
     // вообще. Незаметным это было потому, что на уже существующей базе всё
     // работает: ошибка возникает только при первом запуске с нуля.
     disappearingMessagesManager = new DisappearingMessagesManager(pool, {
-        onDelete: purgeMessageContent,
+        // Исчезнувшее по сроку — как удалённое: содержимое стирается, а
+        // клиенты узнают об этом сразу и чистят свою расшифрованную копию.
+        onDelete: async messageId => {
+            await purgeMessageContent(messageId);
+            const message = await dbGet('SELECT chat_id, room_id FROM messages WHERE id = $1', [messageId]);
+            if (message) {
+                io.to(getSocketRoomKey(message.chat_id, message.room_id)).emit('messageDeleted', {
+                    id: Number(messageId), chat_id: message.chat_id, room_id: message.room_id,
+                });
+            }
+        },
     });
     await disappearingMessagesManager.initialize();
 
@@ -786,6 +842,11 @@ io.on('connection', (socket) => {
     // устройства клиент обязан переподключить сокет.
     const socketDeviceId = socket.request.session?.deviceId;
     if (socketDeviceId) socket.join(`device:${socketDeviceId}`);
+    // По этим комнатам сокеты находятся, когда доступ отзывается: выход из
+    // чата, выход из аккаунта, смена пароля. Сессия с сервера удаляется, но
+    // уже открытый сокет о ней не знает и продолжал бы получать сообщения.
+    socket.join(`user:${userId}`);
+    socket.join(`session:${socket.request.sessionID}`);
 
     console.log('Пользователь подключился через WebSocket, userId:', userId, 'deviceId:', socketDeviceId || '—');
 
@@ -884,7 +945,15 @@ app.use((req, res, next) => {
     // явно (п.8 аудита): без base-uri инъекция тега <base> (если когда-либо
     // станет достижима) не блокируется текущей политикой; object-src явно
     // запрещён, хотя и так по умолчанию блокируется отсутствием в списке.
-    res.set('Content-Security-Policy', `default-src 'self'; script-src 'self' 'nonce-${nonce}'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' ws: wss:; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; object-src 'none'`);
+    //
+    // connect-src — только свой origin: 'self' покрывает и ws/wss того же
+    // хоста. Было 'self' ws: wss: — то есть сокет на любой адрес, и
+    // внедрённый скрипт мог бы вынести переписку через WebSocket.
+    res.set('Content-Security-Policy', `default-src 'self'; script-src 'self' 'nonce-${nonce}'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'`);
+    // HSTS — только по HTTPS (по HTTP браузер заголовок игнорирует). Без
+    // includeSubDomains: на соседних поддоменах может жить то, что по HTTPS
+    // не открывается. У .onion HTTPS нет, и там запрос сюда не попадёт.
+    if (req.secure) res.set('Strict-Transport-Security', 'max-age=31536000');
     res.set('X-Frame-Options', 'DENY');
     res.set('X-Content-Type-Options', 'nosniff');
     // Referrer-Policy здесь не ставится: её задаёт getPrivacyHeaders()
@@ -907,6 +976,20 @@ app.get('/vendor/pdf-lib.esm.min.js', (req, res) => {
     res.set('Cache-Control', 'public, max-age=86400');
     res.type('application/javascript').sendFile(PDF_LIB_BROWSER);
 });
+
+// QR-код для сверки ключей: рисует qrcode-generator, распознаёт jsQR (там,
+// где у браузера нет своего BarcodeDetector). Тоже со своего origin и
+// только когда открывают сверку.
+const QR_VENDOR = {
+    '/vendor/qrcode.js': path.join(__dirname, 'node_modules', 'qrcode-generator', 'qrcode.js'),
+    '/vendor/jsqr.js': path.join(__dirname, 'node_modules', 'jsqr', 'dist', 'jsQR.js'),
+};
+for (const [route, file] of Object.entries(QR_VENDOR)) {
+    app.get(route, (req, res) => {
+        res.set('Cache-Control', 'public, max-age=86400');
+        res.type('application/javascript').sendFile(file);
+    });
+}
 
 app.get('/uploads/:filename', async (req, res) => {
     if (!req.session.userId) return res.status(401).json({ success: false, message: 'Не авторизован' });
@@ -956,8 +1039,39 @@ app.use(createDevicesRouter({
     dbAll,
     dbRun,
     revokeDeviceKeys: e2eeProxy.revokeDeviceKeys,
+    // Всем открытым сокетам аккаунта — и тем, что на других устройствах.
+    onDeviceAdded: (userId, device) => io.to(`user:${userId}`).emit('deviceAdded', {
+        id: device.id, name: device.name, created_at: device.created_at,
+    }),
 }));
+// Ключи собеседника — только при общем чате (см. requirePeer в e2ee-proxy).
+e2eeProxy.setPeerCheck(async (userId, otherUserId) => Boolean(await dbGet(
+    `SELECT 1 FROM room_participants mine
+     JOIN room_participants theirs ON theirs.room_id = mine.room_id
+     WHERE mine.user_id = $1 AND theirs.user_id = $2 LIMIT 1`,
+    [userId, otherUserId])));
 app.use(e2eeProxy.router);
+
+/**
+ * Начать сессию с новым id — при регистрации так же, как при входе. Иначе
+ * id сессии, известный до входа (подброшенный в куку или подсмотренный),
+ * после входа давал бы доступ к аккаунту.
+ */
+function startSession(req, values) {
+    return new Promise((resolve, reject) => req.session.regenerate(err => {
+        if (err) return reject(err);
+        // regenerate создаёт куку заново, с настройками по умолчанию, — а
+        // Secure зависит от адреса (у .onion его нет).
+        req.session.cookie.secure = secureCookieFor(req);
+        Object.assign(req.session, values);
+        resolve();
+    }));
+}
+
+/** Отключить открытые сокеты: сессия уже удалена, а они об этом не знают. */
+function disconnectSockets(room) {
+    io.in(room).disconnectSockets(true);
+}
 
 app.post('/api/register', registerLimiter, async (req, res) => {
     const { username, email, password, confirmPassword } = req.body;
@@ -1010,10 +1124,7 @@ app.post('/api/register', registerLimiter, async (req, res) => {
             client.release();
         }
 
-        req.session.userId = userId;
-        req.session.username = username;
-        req.session.uniqueCode = uniqueCode;
-        req.session.avatar = '#667EEA';
+        await startSession(req, { userId, username, uniqueCode, avatar: '#667EEA' });
 
         res.json({ success: true, message: 'Регистрация успешна!', user: { id: userId, username, uniqueCode, avatar: '#667EEA' } });
     } catch (error) {
@@ -1071,13 +1182,10 @@ app.post('/api/register/anonymous', registerLimiter, async (req, res) => {
             client.release();
         }
 
-        req.session.userId = userId;
-        req.session.username = username;
-        req.session.uniqueCode = uniqueCode;
-        req.session.avatar = '#667EEA';
-        req.session.isAnonymous = true;
-        req.session.sessionFingerprint = sessionFingerprint;
-        req.session.createdAt = Date.now();
+        await startSession(req, {
+            userId, username, uniqueCode, avatar: '#667EEA',
+            isAnonymous: true, sessionFingerprint, createdAt: Date.now(),
+        });
 
         // Устанавливаем короткий срок жизни сессии для анонимных пользователей
         req.session.cookie.maxAge = 4 * 60 * 60 * 1000; // 4 часа
@@ -1125,51 +1233,79 @@ app.post('/api/login', loginLimiter, async (req, res) => {
             return res.json({ success: false, message: 'Неверный email или пароль' });
         }
 
-        req.session.regenerate((err) => {
-            if (err) return res.json({ success: false, message: 'Ошибка инициализации сессии' });
-            req.session.userId = user.id;
-            req.session.username = user.username;
-            req.session.uniqueCode = user.unique_code;
-            req.session.avatar = user.avatar || '';
-            res.json({ success: true, message: 'Вход выполнен!', user: { id: user.id, username: user.username, uniqueCode: user.unique_code, avatar: user.avatar || '' } });
-        });
+        try {
+            await startSession(req, {
+                userId: user.id, username: user.username, uniqueCode: user.unique_code, avatar: user.avatar || '',
+            });
+        } catch {
+            return res.json({ success: false, message: 'Ошибка инициализации сессии' });
+        }
+        res.json({ success: true, message: 'Вход выполнен!', user: { id: user.id, username: user.username, uniqueCode: user.unique_code, avatar: user.avatar || '' } });
     } catch (error) {
         console.error('Login error:', error);
         res.json({ success: false, message: 'Ошибка базы данных' });
     }
 });
 
+/**
+ * Удалить анонимный аккаунт со всем содержимым. Ключи — первыми: после
+ * удаления пользователя строки devices уйдут по ON DELETE CASCADE, и
+ * отзывать станет нечего, а ключи останутся висеть в схеме key-server,
+ * у которой нет внешнего ключа на users.
+ */
+async function deleteAnonymousAccount(userId) {
+    await e2eeProxy.revokeAllKeys(userId);
+    await dbRun('DELETE FROM devices WHERE user_id = $1', [userId]);
+    await dbRun('DELETE FROM messages WHERE user_id = $1', [userId]);
+    await dbRun('DELETE FROM chats WHERE user_id = $1', [userId]);
+    await dbRun('DELETE FROM room_participants WHERE user_id = $1', [userId]);
+    await dbRun('DELETE FROM reactions WHERE user_id = $1', [userId]);
+    await dbRun('DELETE FROM users WHERE id = $1', [userId]);
+}
+
+// Анонимный аккаунт живёт, пока жива его сессия (4 часа). Кнопкой «Выйти»
+// он удаляется сразу; раньше только ею — и если вкладку просто закрывали,
+// аккаунт с перепиской оставался на сервере навсегда. Теперь его находит
+// уборка: пароля и почты нет, живой сессии тоже. Десять минут форы — чтобы
+// не удалить аккаунт, сессия которого ещё не успела записаться.
+// Переменная окружения — для тестов: ждать десять минут там незачем.
+const ANON_SWEEP_INTERVAL_MS = Number(process.env.ANON_SWEEP_INTERVAL_MS) || 10 * 60 * 1000;
+async function sweepAnonymousAccounts() {
+    try {
+        const stale = await dbAll(
+            `SELECT u.id FROM users u
+             WHERE u.email IS NULL AND u.password IS NULL
+               AND u.created_at < NOW() - INTERVAL '10 minutes'
+               AND NOT EXISTS (SELECT 1 FROM "session" s
+                               WHERE s.sess->>'userId' = u.id::text AND s.expire > NOW())`
+        );
+        for (const { id } of stale) {
+            await deleteAnonymousAccount(id);
+            disconnectSockets(`user:${id}`);
+        }
+        if (stale.length) console.log(`[Anon] Удалено брошенных анонимных аккаунтов: ${stale.length}`);
+    } catch (error) {
+        console.error('[Anon] Sweep error:', error.message);
+    }
+}
+setInterval(sweepAnonymousAccounts, ANON_SWEEP_INTERVAL_MS).unref();
+
 app.post('/api/logout', async (req, res) => {
     const isAnonymous = req.session?.isAnonymous;
     const userId = req.session?.userId;
 
-    // Для анонимных пользователей удаляем все данные
     if (isAnonymous && userId) {
         try {
-            console.log(`[Anon] Cleaning up data for anonymous user ${userId}`);
-
-            // Ключевой материал всех устройств — до удаления самих устройств
-            // и пользователя: после DELETE FROM users строки devices уйдут по
-            // ON DELETE CASCADE, и отзывать станет нечего, а ключи останутся
-            // висеть в схеме key-server, которая FK на users не имеет.
-            await e2eeProxy.revokeAllKeys(userId);
-            await dbRun('DELETE FROM devices WHERE user_id = $1', [userId]);
-
-            // Удаляем все чаты пользователя
-            await dbRun('DELETE FROM messages WHERE user_id = $1', [userId]);
-            await dbRun('DELETE FROM chats WHERE user_id = $1', [userId]);
-            await dbRun('DELETE FROM room_participants WHERE user_id = $1', [userId]);
-            await dbRun('DELETE FROM reactions WHERE user_id = $1', [userId]);
-
-            // Удаляем самого пользователя
-            await dbRun('DELETE FROM users WHERE id = $1', [userId]);
-
+            await deleteAnonymousAccount(userId);
             console.log(`[Anon] Successfully cleaned up anonymous user ${userId}`);
         } catch (error) {
             console.error('[Anon] Cleanup error:', error);
         }
     }
 
+    // Анонимный аккаунт удалён целиком — отключаем все его сокеты, обычный —
+    // только сокеты этой сессии: на других устройствах вход остаётся.
+    disconnectSockets(isAnonymous && userId ? `user:${userId}` : `session:${req.sessionID}`);
     req.session.destroy((err) => {
         res.clearCookie('connect.sid');
         res.clearCookie('csrf_token');
@@ -1605,6 +1741,27 @@ const b64 = buf => buf.toString('base64');
  * Открытый путь POST /api/messages оставлен рядом для чата с ботом и чатов,
  * где пока не для кого шифровать.
  */
+/** Срок жизни из запроса: null — не задан, false — недопустим. */
+function expiryFrom(value) {
+    if (value === undefined || value === null || value === '' || Number(value) === 0) return null;
+    return normalizeExpiry(value) ?? false;
+}
+
+/**
+ * Проверить, на что отвечает сообщение. Ответить можно только на живое
+ * сообщение этой же переписки: история отдаёт вместе с ответом текст
+ * цитаты, и чужой id открывал бы текст из чужого чата.
+ */
+async function replyTargetFor(chat, replyToId) {
+    if (replyToId === undefined || replyToId === null || replyToId === '') return { id: null };
+    const id = Number(replyToId);
+    if (!Number.isSafeInteger(id) || id <= 0) return { error: 'Некорректный ответ' };
+    const target = chat.room_id
+        ? await dbGet('SELECT id FROM messages WHERE id = $1 AND room_id = $2 AND deleted = 0', [id, chat.room_id])
+        : await dbGet('SELECT id FROM messages WHERE id = $1 AND chat_id = $2 AND room_id IS NULL AND deleted = 0', [id, chat.id]);
+    return target ? { id } : { error: 'Сообщение, на которое вы отвечаете, не найдено' };
+}
+
 app.post('/api/messages/encrypted', async (req, res) => {
     if (!req.session.userId) return res.status(401).json({ success: false, message: 'Не авторизован' });
     if (!req.session.deviceId) {
@@ -1614,7 +1771,6 @@ app.post('/api/messages/encrypted', async (req, res) => {
     const {
         chatId, replyToId, expirySeconds, envelopes = [], keyEnvelopes = [], group = null, blobIds = [],
     } = req.body || {};
-    const replyTo = Number(replyToId) || null;
 
     if (!Array.isArray(blobIds) || blobIds.length > MAX_BLOBS_PER_MESSAGE
         || !blobIds.every(id => typeof id === 'string' && BLOB_ID_RE.test(id))) {
@@ -1649,6 +1805,11 @@ app.post('/api/messages/encrypted', async (req, res) => {
         if (groupPayload && !chat.room_id) {
             return res.status(400).json({ success: false, message: 'Групповое шифрование — только для комнат' });
         }
+        const reply = await replyTargetFor(chat, replyToId);
+        if (reply.error) return res.status(400).json({ success: false, message: reply.error });
+        const replyTo = reply.id;
+        const expiry = expiryFrom(expirySeconds);
+        if (expiry === false) return res.status(400).json({ success: false, message: 'Недопустимый срок жизни сообщения' });
 
         const senderDeviceId = req.session.deviceId;
         const allowed = await resolveEnvelopeRecipients(chat);
@@ -1737,8 +1898,8 @@ app.post('/api/messages/encrypted', async (req, res) => {
             client.release();
         }
 
-        if (expirySeconds && Number(expirySeconds) > 0) {
-            await disappearingMessagesManager.setMessageExpiry(messageId, Number(expirySeconds), false);
+        if (expiry) {
+            await disappearingMessagesManager.setMessageExpiry(messageId, expiry, false);
         } else {
             const chatSettings = await disappearingMessagesManager.getChatSettings(chatId);
             if (chatSettings && chatSettings.default_message_expiry) {
@@ -1776,6 +1937,7 @@ app.post('/api/messages/encrypted', async (req, res) => {
             };
             const keyByDevice = new Map(keys.parsed.map(e => [e.deviceId, {
                 id: e.id,
+                room_id: roomId,
                 sender_device_id: senderDeviceId,
                 envelope_type: e.type,
                 header: b64(e.header),
@@ -1862,7 +2024,7 @@ app.get('/api/messages/:chatId', async (req, res) => {
                       rt.id as reply_to_id, rt.text as reply_to_text, rt.deleted as reply_to_deleted, ru.username as reply_to_sender_username, ru.avatar as reply_to_sender_avatar
                FROM messages m
                JOIN users u ON m.user_id = u.id
-               LEFT JOIN messages rt ON m.reply_to_id = rt.id
+               LEFT JOIN messages rt ON m.reply_to_id = rt.id AND rt.room_id = m.room_id
                LEFT JOIN users ru ON rt.user_id = ru.id
                WHERE m.room_id = $1 AND m.deleted = 0
                ORDER BY m.id ASC`
@@ -1870,7 +2032,7 @@ app.get('/api/messages/:chatId', async (req, res) => {
                       rt.id as reply_to_id, rt.text as reply_to_text, rt.deleted as reply_to_deleted, ru.username as reply_to_sender_username, ru.avatar as reply_to_sender_avatar
                FROM messages m
                JOIN users u ON m.user_id = u.id
-               LEFT JOIN messages rt ON m.reply_to_id = rt.id
+               LEFT JOIN messages rt ON m.reply_to_id = rt.id AND rt.chat_id = m.chat_id AND rt.room_id IS NULL
                LEFT JOIN users ru ON rt.user_id = ru.id
                WHERE m.chat_id = $1 AND m.deleted = 0
                ORDER BY m.id ASC`;
@@ -1945,6 +2107,7 @@ app.get('/api/messages/:chatId', async (req, res) => {
                 [req.session.deviceId, chat.room_id]
             )).map(e => ({
                 id: Number(e.id),
+                room_id: chat.room_id,
                 sender_user_id: e.sender_user_id,
                 sender_device_id: e.sender_device_id,
                 envelope_type: e.envelope_type,
@@ -1980,13 +2143,17 @@ app.get('/api/messages/:chatId', async (req, res) => {
 app.post('/api/messages', async (req, res) => {
     if (!req.session.userId) return res.json({ success: false, message: 'Не авторизован' });
     const { chatId, text, replyToId, expirySeconds } = req.body;
-    const replyTo = Number(replyToId) || null;
     if (!text || text.trim() === '' || !chatId) return res.json({ success: false, message: 'Введите текст сообщения' });
     if (text.length > 4000) return res.json({ success: false, message: 'Сообщение не может быть длиннее 4000 символов' });
 
     try {
         const chat = await dbGet('SELECT * FROM chats WHERE id = $1 AND user_id = $2', [chatId, req.session.userId]);
         if (!chat) return res.json({ success: false, message: 'Чат не найден' });
+        const reply = await replyTargetFor(chat, replyToId);
+        if (reply.error) return res.json({ success: false, message: reply.error });
+        const replyTo = reply.id;
+        const expiry = expiryFrom(expirySeconds);
+        if (expiry === false) return res.json({ success: false, message: 'Недопустимый срок жизни сообщения' });
 
         const time = getCurrentTime();
         const roomId = chat.room_id || null;
@@ -2002,8 +2169,8 @@ app.post('/api/messages', async (req, res) => {
         const messageId = result.rows[0].id;
 
         // Установка времени жизни сообщения если указано
-        if (expirySeconds && Number(expirySeconds) > 0) {
-            await disappearingMessagesManager.setMessageExpiry(messageId, Number(expirySeconds), false);
+        if (expiry) {
+            await disappearingMessagesManager.setMessageExpiry(messageId, expiry, false);
         } else {
             // Проверка настроек чата на автоудаление
             const chatSettings = await disappearingMessagesManager.getChatSettings(chatId);
@@ -2090,6 +2257,26 @@ app.post('/api/chats', async (req, res) => {
     }
 });
 
+/**
+ * Системное сообщение в комнате: кто вошёл, кто вышел, кто сменил код.
+ * Раньше человек с кодом входил молча, и участники не знали, что их
+ * читает ещё кто-то: его устройства получали ключи автоматически.
+ * Шифровать тут нечего — сервер эти события и так знает.
+ */
+async function postSystemMessage({ roomId, chatId, userId, text }) {
+    const inserted = await pool.query(
+        `INSERT INTO messages (chat_id, room_id, user_id, text, message_type, sent, time, status)
+         VALUES ($1, $2, $3, $4, 'system', 0, $5, 'read') RETURNING id`,
+        [chatId, roomId, userId, text, getCurrentTime()]
+    );
+    const message = await dbGet(
+        `SELECT m.*, u.username AS sender_username, u.avatar AS sender_avatar
+         FROM messages m JOIN users u ON u.id = m.user_id WHERE m.id = $1`,
+        [inserted.rows[0].id]
+    );
+    io.to(`room:${roomId}`).emit('newMessage', message);
+}
+
 app.get('/api/chats/invite/:chatId', async (req, res) => {
     if (!req.session.userId) return res.json({ success: false, message: 'Не авторизован' });
     const chatId = req.params.chatId;
@@ -2099,13 +2286,42 @@ app.get('/api/chats/invite/:chatId', async (req, res) => {
         if (!chat.room_id) return res.json({ success: false, message: 'У этого чата нет кода приглашения' });
         const room = await dbGet('SELECT code FROM rooms WHERE id = $1', [chat.room_id]);
         if (!room) return res.json({ success: false, message: 'Код не найден' });
+        // code: null — приглашение отключено.
         res.json({ success: true, code: room.code });
     } catch (error) {
         res.json({ success: false, message: 'Ошибка получения кода' });
     }
 });
 
-app.post('/api/chats/join', async (req, res) => {
+/**
+ * Сменить код приглашения ({ action: 'reset' }) или отключить приглашение
+ * ({ action: 'disable' }). Утёкший код иначе действовал бы вечно. Может
+ * любой участник — ролей в комнате нет, — и все видят, кто это сделал.
+ */
+app.post('/api/chats/:chatId/invite', async (req, res) => {
+    if (!req.session.userId) return res.json({ success: false, message: 'Не авторизован' });
+    const action = req.body && req.body.action;
+    if (action !== 'reset' && action !== 'disable') {
+        return res.status(400).json({ success: false, message: 'Неизвестное действие' });
+    }
+    try {
+        const chat = await dbGet('SELECT id, room_id FROM chats WHERE id = $1 AND user_id = $2', [req.params.chatId, req.session.userId]);
+        if (!chat || !chat.room_id) return res.json({ success: false, message: 'Чат не найден' });
+        const code = action === 'reset' ? await generateInviteCodeAsync() : null;
+        await dbRun('UPDATE rooms SET code = $1 WHERE id = $2', [code, chat.room_id]);
+        const user = await dbGet('SELECT username FROM users WHERE id = $1', [req.session.userId]);
+        await postSystemMessage({
+            roomId: chat.room_id, chatId: chat.id, userId: req.session.userId,
+            text: `${user.username} ${code ? 'сменил(а) код приглашения' : 'отключил(а) приглашение'}`,
+        });
+        res.json({ success: true, code });
+    } catch (error) {
+        console.error('Invite update error:', error);
+        res.json({ success: false, message: 'Не удалось изменить приглашение' });
+    }
+});
+
+app.post('/api/chats/join', joinLimiter, async (req, res) => {
     if (!req.session.userId) return res.json({ success: false, message: 'Не авторизован' });
     // Код вводят руками и копируют из переписки: регистр, пробелы и дефисы
     // («k7q2 mx», «K7Q-2MX») не должны мешать.
@@ -2118,6 +2334,7 @@ app.post('/api/chats/join', async (req, res) => {
 
         const participant = await dbGet('SELECT id FROM room_participants WHERE room_id = $1 AND user_id = $2', [room.id, req.session.userId]);
         if (participant) {
+            res.locals.joined = true;
             const chat = await dbGet('SELECT id FROM chats WHERE room_id = $1 AND user_id = $2', [room.id, req.session.userId]);
             if (!chat) return res.json({ success: false, message: 'Чат уже добавлен' });
             return res.json({ success: true, chat: { id: chat.id } });
@@ -2132,6 +2349,12 @@ app.post('/api/chats/join', async (req, res) => {
             'INSERT INTO chats (user_id, room_id, name, avatar, online, is_bot) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
             [req.session.userId, room.id, chatName, avatar, 0, 0]
         );
+        res.locals.joined = true;
+        const me = await dbGet('SELECT username FROM users WHERE id = $1', [req.session.userId]);
+        await postSystemMessage({
+            roomId: room.id, chatId: chatResult.rows[0].id, userId: req.session.userId,
+            text: `${me.username} вошёл(ла) в чат по коду приглашения`,
+        });
         res.json({ success: true, chat: { id: chatResult.rows[0].id, name: chatName, avatar, online: 0, is_bot: 0, room_id: room.id, invite_code: room.code } });
     } catch (error) {
         console.error('Join chat error:', error);
@@ -2157,6 +2380,13 @@ app.delete('/api/chats/:chatId', async (req, res) => {
                 [chat.room_id, req.session.userId]
             );
             const remaining = await dbGet('SELECT COUNT(*) as cnt FROM room_participants WHERE room_id = $1', [chat.room_id]);
+            if (remaining && Number(remaining.cnt) > 0) {
+                const me = await dbGet('SELECT username FROM users WHERE id = $1', [req.session.userId]);
+                await postSystemMessage({
+                    roomId: chat.room_id, chatId: null, userId: req.session.userId,
+                    text: `${me.username} вышел(ла) из чата`,
+                });
+            }
             await dbRun('DELETE FROM unread WHERE chat_id = $1', [chatId]);
             await dbRun('DELETE FROM chats WHERE id = $1 AND user_id = $2', [chatId, req.session.userId]);
             if (!remaining || Number(remaining.cnt) === 0) {
@@ -2172,6 +2402,9 @@ app.delete('/api/chats/:chatId', async (req, res) => {
             await dbRun('DELETE FROM unread WHERE chat_id = $1', [chatId]);
             await dbRun('DELETE FROM chats WHERE id = $1 AND user_id = $2', [chatId, req.session.userId]);
         }
+        // Сокеты этого пользователя больше не должны получать сообщения чата.
+        io.in(`user:${req.session.userId}`).socketsLeave(
+            chat.room_id ? [`room:${chat.room_id}`, `chat:${chat.id}`] : [`chat:${chat.id}`]);
         res.json({ success: true });
     } catch (error) {
         console.error('Delete chat error:', error);
@@ -2187,7 +2420,10 @@ app.put('/api/messages/:messageId', async (req, res) => {
     if (text.length > 4000) return res.json({ success: false, message: 'Сообщение не может быть длиннее 4000 символов' });
 
     try {
-        const message = await dbGet('SELECT * FROM messages WHERE id = $1 AND user_id = $2', [messageId, req.session.userId]);
+        // sent = 0 — не реплика пользователя: ответ бота или системное «вошёл в
+        // чат», где автором записан вошедший. Иначе он мог бы стереть или
+        // переписать строку о своём входе.
+        const message = await dbGet('SELECT * FROM messages WHERE id = $1 AND user_id = $2 AND sent <> 0', [messageId, req.session.userId]);
         if (!message) return res.json({ success: false, message: 'Сообщение не найдено' });
         // Правка шла бы открытым текстом: этот эндпоинт кладёт новый текст в
         // messages.text и рассылает его всем. Для зашифрованного сообщения
@@ -2217,7 +2453,10 @@ app.delete('/api/messages/:messageId', async (req, res) => {
     if (!req.session.userId) return res.json({ success: false, message: 'Не авторизован' });
     const { messageId } = req.params;
     try {
-        const message = await dbGet('SELECT * FROM messages WHERE id = $1 AND user_id = $2', [messageId, req.session.userId]);
+        // sent = 0 — не реплика пользователя: ответ бота или системное «вошёл в
+        // чат», где автором записан вошедший. Иначе он мог бы стереть или
+        // переписать строку о своём входе.
+        const message = await dbGet('SELECT * FROM messages WHERE id = $1 AND user_id = $2 AND sent <> 0', [messageId, req.session.userId]);
         if (!message) return res.json({ success: false, message: 'Сообщение не найдено' });
         await dbRun('UPDATE messages SET deleted = 1 WHERE id = $1', [messageId]);
         await purgeMessageContent(message.id);
@@ -2286,14 +2525,16 @@ app.post('/api/messages/file', upload.single('file'), async (req, res) => {
         // файл не отправляется: молча раздать фото с координатами хуже,
         // чем не отправить его вовсе.
         if (file.mimetype.startsWith('image/') || file.mimetype === 'application/pdf'
-            || fileTypes.ISO_BMFF_TYPES.has(file.mimetype)) {
+            || file.mimetype === 'video/webm' || fileTypes.ISO_BMFF_TYPES.has(file.mimetype)) {
             try {
                 await stripMetadataFromFile(uploadedFilePath, file.mimetype);
             } catch (stripErr) {
                 console.error('Metadata strip error:', stripErr.message);
                 try { if (fs.existsSync(uploadedFilePath)) fs.unlinkSync(uploadedFilePath); } catch (_) { /* ignore */ }
-                return res.status(400).json({ success: false, message: file.mimetype === 'application/pdf'
-                    ? 'Не удалось удалить метаданные из PDF (возможно, он защищён паролем) — файл не отправлен'
+                // У PDF причина бывает двух видов — защищён паролем или
+                // повреждён, — и советы для них разные.
+                return res.status(400).json({ success: false, message: stripErr.name === 'PdfCleanError'
+                    ? `Файл не отправлен: ${stripErr.message}`
                     : 'Не удалось удалить метаданные из файла — он не отправлен' });
             }
         }
@@ -2327,10 +2568,11 @@ app.post('/api/messages/file', upload.single('file'), async (req, res) => {
         const messageText = text ? String(text).trim() : sanitizedFileName;
 
         const result = await pool.query(
-            'INSERT INTO messages (chat_id, room_id, user_id, text, file_url, file_name, file_type, message_type, sent, time, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id',
+            'INSERT INTO messages (chat_id, room_id, user_id, text, file_url, file_name, file_type, message_type, sent, time, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id, created_at',
             [chatId, roomId, req.session.userId, messageText, fileUrl, sanitizedFileName, fileType, messageType, 1, time, 'sent']
         );
         const messageId = result.rows[0].id;
+        const createdAt = result.rows[0].created_at;
 
         const senderUser = await dbGet('SELECT username, avatar FROM users WHERE id = $1', [req.session.userId]);
         const senderUsername = senderUser ? senderUser.username : '';
@@ -2343,7 +2585,9 @@ app.post('/api/messages/file', upload.single('file'), async (req, res) => {
             id: messageId, chat_id: Number(chatId), room_id: roomId, user_id: req.session.userId,
             sender_username: senderUsername, sender_avatar: senderAvatar,
             text: messageText, file_url: fileUrl, file_name: sanitizedFileName,
-            file_type: fileType, message_type: messageType, sent: true, time, status: 'sent'
+            file_type: fileType, message_type: messageType, sent: true, time, status: 'sent',
+            // Без него получатель не знал дня и показывал время сервера.
+            created_at: createdAt,
         };
         io.to(socketRoomKey).emit('newMessage', fileMessage);
         res.json({ success: true, message: fileMessage });
@@ -2490,14 +2734,16 @@ app.post('/api/messages/:messageId/set-expiry', async (req, res) => {
     const messageId = Number(req.params.messageId);
     const { expirySeconds, autoDeleteOnRead } = req.body;
 
-    if (!Number.isFinite(messageId) || !Number.isFinite(expirySeconds)) {
+    if (!Number.isFinite(messageId) || normalizeExpiry(expirySeconds) === null) {
         return res.json({ success: false, message: 'Неверные параметры' });
     }
 
     try {
         // Проверка доступа к сообщению
-        const message = await dbGet('SELECT user_id FROM messages WHERE id = $1', [messageId]);
-        if (!message || message.user_id !== req.session.userId) {
+        const message = await dbGet('SELECT user_id, sent FROM messages WHERE id = $1', [messageId]);
+        // Системному «вошёл в чат» срок не поставить: исчезнув, оно скрыло
+        // бы вход (см. PUT и DELETE сообщения).
+        if (!message || message.user_id !== req.session.userId || Number(message.sent) === 0) {
             return res.json({ success: false, message: 'Сообщение не найдено или нет доступа' });
         }
 
@@ -2519,7 +2765,7 @@ app.post('/api/chats/:chatId/set-default-expiry', async (req, res) => {
     const chatId = Number(req.params.chatId);
     const { expirySeconds } = req.body;
 
-    if (!Number.isFinite(chatId) || !Number.isFinite(expirySeconds)) {
+    if (!Number.isFinite(chatId) || (Number(expirySeconds) !== 0 && normalizeExpiry(expirySeconds) === null)) {
         return res.json({ success: false, message: 'Неверные параметры' });
     }
 
@@ -2563,6 +2809,9 @@ app.post('/api/change-password', passwordLimiter, async (req, res) => {
     if (!currentPassword || !newPassword || !confirmPassword) return res.json({ success: false, message: 'Заполните все поля' });
     if (newPassword !== confirmPassword) return res.json({ success: false, message: 'Новые пароли не совпадают' });
     if (newPassword.length < 8) return res.json({ success: false, message: 'Пароль должен быть не менее 8 символов' });
+    if (newPassword.length > 128 || currentPassword.length > 128) {
+        return res.json({ success: false, message: 'Пароль не может быть длиннее 128 символов' });
+    }
 
     try {
         const user = await dbGet('SELECT password FROM users WHERE id = $1', [req.session.userId]);
@@ -2574,6 +2823,10 @@ app.post('/api/change-password', passwordLimiter, async (req, res) => {
         const userId = req.session.userId;
 
         await dbRun('UPDATE users SET password = $1 WHERE id = $2', [hashedPassword, userId]);
+        // Пароль меняют чаще всего, когда он утёк. Значит, выйти надо везде:
+        // сессия, открытая по старому паролю, иначе живёт до истечения срока.
+        await dbRun(`DELETE FROM "session" WHERE sess->>'userId' = $1`, [String(userId)]);
+        disconnectSockets(`user:${userId}`);
 
         req.session.destroy((err) => {
             res.clearCookie('connect.sid');

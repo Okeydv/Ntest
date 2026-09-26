@@ -75,6 +75,60 @@ export async function replenishOneTimePrekeys() {
     }
 }
 
+/* ------------------------------------------------------------------
+   Ротация signed prekey
+   ------------------------------------------------------------------ */
+
+// Signed prekey меняется раз в неделю, как в Signal. Его приватная часть
+// участвует в каждом первом контакте с устройством, а без одноразового
+// prekey — только она и ключ личности. Утечка вечного SPK открыла бы все
+// такие первые сообщения за всё время; меняющегося — только за неделю.
+//
+// Прежний хранится ещё 30 дней: сообщение, зашифрованное по старому
+// bundle, может прийти с опозданием (собеседник был не в сети), и без
+// этого ключа оно бы не открылось. Потом удаляется.
+const SIGNED_PREKEY_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const SIGNED_PREKEY_GRACE_MS = 30 * 24 * 60 * 60 * 1000;
+
+async function pruneRetiredSignedPrekeys(now) {
+    const retired = (await store.meta.get('retiredSignedPrekeys')) || [];
+    const keep = [];
+    for (const r of retired) {
+        if (now - r.retiredAt > SIGNED_PREKEY_GRACE_MS) await store.signedPrekeys.drop(r.keyId);
+        else keep.push(r);
+    }
+    if (keep.length !== retired.length) await store.meta.set('retiredSignedPrekeys', keep);
+}
+
+/**
+ * Сменить signed prekey, если текущему больше недели. Новый сначала
+ * публикуется и только потом становится текущим: не удалась публикация —
+ * остаётся прежний, и собеседники продолжают получать рабочий bundle.
+ */
+export async function rotateSignedPrekeyIfDue(now = Date.now()) {
+    if (!state.ready) return false;
+    await pruneRetiredSignedPrekeys(now);
+    // У устройств, заведённых до ротации, даты нет — их ключ меняем сразу.
+    const createdAt = (await store.meta.get('signedPrekeyCreatedAt')) || 0;
+    if (now - createdAt < SIGNED_PREKEY_MAX_AGE_MS) return false;
+
+    const previous = state.signedPrekey;
+    const fresh = await generateSignedPrekey(state.identity, previous.keyId + 1);
+    await store.signedPrekeys.save(fresh);
+    const published = await state.api('/api/keys/signed-prekey', { method: 'PUT', body: JSON.stringify(fresh.upload) });
+    if (!published || published.success !== true) {
+        await store.signedPrekeys.drop(fresh.keyId);
+        throw new Error((published && published.message) || 'новый signed prekey не принят');
+    }
+    await store.meta.set('signedPrekeyId', fresh.keyId);
+    await store.meta.set('signedPrekeyCreatedAt', now);
+    const retired = (await store.meta.get('retiredSignedPrekeys')) || [];
+    retired.push({ keyId: previous.keyId, retiredAt: now });
+    await store.meta.set('retiredSignedPrekeys', retired);
+    state.signedPrekey = fresh;
+    return true;
+}
+
 async function registerFreshDevice(deviceName) {
     const created = await state.api('/api/devices', {
         method: 'POST',
@@ -95,6 +149,7 @@ async function registerFreshDevice(deviceName) {
     await store.signedPrekeys.save(state.signedPrekey);
     await store.meta.set('deviceId', state.deviceId);
     await store.meta.set('signedPrekeyId', state.signedPrekey.keyId);
+    await store.meta.set('signedPrekeyCreatedAt', Date.now());
 
     await publishKeys();
     await createOneTimePrekeys(OPK_POOL_SIZE);
@@ -128,6 +183,7 @@ export async function bootstrap({ api, userId, deviceName = 'Браузер' }) 
                 state.signedPrekey = storedSpk;
                 state.ready = true;
                 replenishOneTimePrekeys();
+                rotateSignedPrekeyIfDue().catch(e => console.warn('[E2EE] signed prekey не обновлён:', e.message));
                 return { deviceId: state.deviceId, fresh: false };
             }
             // Устройство отозвано или удалено на сервере. Держаться за
@@ -318,6 +374,10 @@ async function encryptPairwise(targets, plaintext) {
  * В кэш ничего не кладёт: что это — содержимое или раздача ключа, решает
  * вызывающий.
  */
+// Сколько прежних состояний сессии держать и сколько базовых ключей помнить.
+const MAX_PREVIOUS_SESSIONS = 5;
+const MAX_BASE_KEYS = 200;
+
 async function openEnvelope(senderUserId, senderDeviceId, envelope) {
     if (!senderDeviceId || !senderUserId) return null;
 
@@ -325,29 +385,57 @@ async function openEnvelope(senderUserId, senderDeviceId, envelope) {
     const ciphertext = fromB64(envelope.ciphertext);
     const isPrekey = Number(envelope.envelope_type) === ENVELOPE_PREKEY;
 
-    const session = await loadSession(senderUserId, senderDeviceId);
-    if (session) {
+    const saved = await store.sessions.load(senderUserId, senderDeviceId);
+    if (saved) {
+        const session = await importSession(saved);
         try {
             const text = await decryptToText(session, headerBytes, ciphertext);
             await saveSession(senderUserId, senderDeviceId, session);
             return text;
-        } catch (e) {
-            // Существующая сессия не подошла. Для prekey-сообщения это
-            // нормально: собеседник мог начать заново, потеряв своё
-            // состояние. Для обычного — сообщение потеряно.
-            if (!isPrekey) {
-                console.warn('[E2EE] сообщение не расшифровано:', e.message);
-                return null;
-            }
+        } catch {
+            // Не подошла — пробуем прежние состояния, потом (для prekey-
+            // сообщения) новую сессию.
         }
     }
 
-    if (!isPrekey) return null;
+    // Прежние состояния: сообщение могло уйти по сессии, которую у нас уже
+    // сменила другая. Раз собеседник пишет по ней, она и становится
+    // текущей — отвечать будем тоже по ней.
+    const previous = await store.previousSessions.load(senderUserId, senderDeviceId);
+    for (let i = 0; i < previous.length; i++) {
+        const candidate = await importSession(previous[i]);
+        try {
+            const text = await decryptToText(candidate, headerBytes, ciphertext);
+            const rest = previous.filter((_, j) => j !== i);
+            if (saved) rest.unshift(saved);
+            await store.previousSessions.save(senderUserId, senderDeviceId, rest.slice(0, MAX_PREVIOUS_SESSIONS));
+            await saveSession(senderUserId, senderDeviceId, candidate);
+            return text;
+        } catch {
+            // следующее
+        }
+    }
+
+    if (!isPrekey) {
+        console.warn('[E2EE] сообщение не расшифровано ни одной из сессий');
+        return null;
+    }
 
     try {
         const header = parseHeader(headerBytes);
         const signingKey = toB64(header.identitySigningKey);
         const dhKey = toB64(header.identityDhKey);
+        // Сессия по этому prekey-сообщению уже строилась. Раз ни одна из
+        // сохранённых его не открыла, это повтор старого сообщения (сервер
+        // может прислать его ещё раз). Построенная по нему заново сессия
+        // заменила бы рабочую — и переписка с собеседником сломалась бы:
+        // без одноразового prekey такое сообщение открывается снова и снова.
+        const baseKey = toB64(header.ephemeralKey);
+        const seenBaseKeys = await store.baseKeys.load(senderUserId, senderDeviceId);
+        if (seenBaseKeys.includes(baseKey)) {
+            console.warn(`[E2EE] повтор prekey-сообщения от устройства ${senderDeviceId} — отвергнут`);
+            return null;
+        }
         // Проверка до acceptSession: тот съел бы одноразовый prekey.
         if (await identityStatus(senderUserId, senderDeviceId, signingKey, dhKey) === 'changed') {
             console.error(`[E2EE] сообщение от устройства ${senderDeviceId} подписано чужим ключом — отвергнуто`);
@@ -361,6 +449,13 @@ async function openEnvelope(senderUserId, senderDeviceId, envelope) {
         });
         const text = await decryptToText(fresh, headerBytes, ciphertext);
         await rememberIdentity(senderUserId, senderDeviceId, signingKey, dhKey);
+        // Прежняя сессия уходит в архив, а не стирается.
+        if (saved) {
+            await store.previousSessions.save(senderUserId, senderDeviceId,
+                [saved, ...previous].slice(0, MAX_PREVIOUS_SESSIONS));
+        }
+        await store.baseKeys.save(senderUserId, senderDeviceId,
+            [baseKey, ...seenBaseKeys].slice(0, MAX_BASE_KEYS));
         await saveSession(senderUserId, senderDeviceId, fresh);
         // Входящий первый контакт съел одноразовый prekey — пул мог
         // просесть, проверяем не дожидаясь следующего запуска.
@@ -521,9 +616,17 @@ function parseDistribution(text) {
     }
 }
 
-async function importKeyDistribution(senderUserId, senderDeviceId, d) {
+/**
+ * Принять sender key. deliveredRoomId — комната, в которой пришёл конверт.
+ * Комната внутри раздачи зашифрована и подписана отправителем, комнату
+ * доставки называет сервер; они обязаны совпасть. Иначе участник одной
+ * комнаты мог бы раздать ключ «для» другой, где его нет, и сообщения от
+ * его устройства там расшифровывались бы как настоящие.
+ */
+async function importKeyDistribution(senderUserId, senderDeviceId, d, deliveredRoomId) {
     const roomId = Number(d.room);
     if (!Number.isInteger(roomId) || roomId <= 0) throw new Error('distribution: некорректная комната');
+    if (roomId !== Number(deliveredRoomId)) throw new Error('distribution: ключ для другой комнаты');
     const session = importDistribution(d);
     const key = distributionKey(session.distributionId);
     // Уже известный ключ не перезаписываем: у сохранённого могут быть
@@ -548,7 +651,7 @@ async function acceptKeyEnvelopes(list) {
         try {
             const text = await openEnvelope(e.sender_user_id, e.sender_device_id, e);
             const d = parseDistribution(text);
-            if (d) await importKeyDistribution(e.sender_user_id, e.sender_device_id, d);
+            if (d) await importKeyDistribution(e.sender_user_id, e.sender_device_id, d, e.room_id);
             else if (text !== null) console.warn('[E2EE] в конверте ключа не раздача ключа — пропущен');
         } catch (err) {
             console.warn('[E2EE] sender key не принят:', err.message);
@@ -615,12 +718,12 @@ async function decryptIncomingNow(message) {
     // По сокету конверт с ключом приходит вместе с сообщением. Он первым:
     // без ключа групповое сообщение не расшифровать.
     if (message.keyEnvelope) {
-        await acceptKeyEnvelopes([{ ...message.keyEnvelope, sender_user_id: senderUserId }]);
+        await acceptKeyEnvelopes([{ ...message.keyEnvelope, sender_user_id: senderUserId, room_id: message.room_id }]);
     }
 
     if (message.group) {
         const text = await openGroupMessage(message);
-        if (text !== null) await store.plaintext.save(message.id, text);
+        if (text !== null) await rememberPlaintext(message, text);
         return text;
     }
 
@@ -635,23 +738,119 @@ async function decryptIncomingNow(message) {
     const d = parseDistribution(text);
     if (d) {
         try {
-            await importKeyDistribution(senderUserId, senderDeviceId, d);
+            await importKeyDistribution(senderUserId, senderDeviceId, d, message.room_id);
         } catch (err) {
             console.warn('[E2EE] sender key не принят:', err.message);
         }
         return null;
     }
-    await store.plaintext.save(message.id, text);
+    await rememberPlaintext(message, text);
     return text;
 }
 
-/* Локальный кэш расшифрованного — см. комментарий у store.plaintext. */
-export const rememberSent = (messageId, text) => store.plaintext.save(messageId, text);
+/* ------------------------------------------------------------------
+   Локальный кэш расшифрованного — см. комментарий у store.plaintext.
+   ------------------------------------------------------------------ */
+
+// Переписка — комната, а чат без комнаты (бот) — сам по себе. У сообщения
+// в комнате chat_id — чат отправителя, а не читающего, поэтому ключ по
+// комнате: иначе превью полученных сообщений ложились не туда.
+const conversationKey = message => (message.room_id ? `room:${message.room_id}` : `chat:${message.chat_id}`);
+const conversationOfChat = chat => (chat.room_id ? `room:${chat.room_id}` : `chat:${chat.id}`);
+
+async function rememberPlaintext(message, text) {
+    await store.plaintext.save(message.id, text);
+    const key = conversationKey(message);
+    const ids = await store.conversations.load(key);
+    if (!ids.includes(message.id)) {
+        ids.push(message.id);
+        await store.conversations.save(key, ids);
+    }
+}
+
+async function forgetNow(message) {
+    await store.plaintext.drop(message.id);
+    const key = conversationKey(message);
+    const ids = await store.conversations.load(key);
+    if (ids.includes(message.id)) await store.conversations.save(key, ids.filter(id => id !== message.id));
+    const preview = await store.previews.load(key);
+    if (preview && preview.messageId === message.id) await store.previews.drop(key);
+}
+
+/** Своё отправленное: конверт себе не шлётся, текст кладём сами. */
+export const rememberSent = (message, text) => serialized(() => rememberPlaintext(message, text));
 export const recallPlaintext = messageId => store.plaintext.load(messageId);
 
+/**
+ * Сообщение удалено или исчезло по сроку — стереть его расшифрованный
+ * текст (а вместе с ним и ключ вложения, он лежит там же) и превью, если
+ * оно было про это сообщение.
+ */
+export const forgetMessage = message => serialized(() => forgetNow(message));
+
+/**
+ * Что из этой переписки у нас лежит расшифрованным. Берётся ДО запроса
+ * истории, чтобы forgetMissing не тронул сообщение, пришедшее, пока
+ * история загружалась.
+ */
+export const knownMessages = chat => store.conversations.load(conversationOfChat(chat));
+
+/**
+ * Стереть расшифрованное для сообщений, которых в истории больше нет:
+ * удалены или исчезли, пока это устройство было не в сети.
+ */
+export function forgetMissing(chat, known, liveIds) {
+    const live = new Set(liveIds.map(Number));
+    const gone = known.filter(id => !live.has(Number(id)));
+    if (gone.length === 0) return Promise.resolve();
+    return serialized(async () => {
+        for (const id of gone) await forgetNow({ id, room_id: chat.room_id, chat_id: chat.id });
+    });
+}
+
+/** Из чата вышли — стереть всё, что от него осталось на устройстве. */
+export function forgetConversation(chat) {
+    return serialized(async () => {
+        const key = conversationOfChat(chat);
+        for (const id of await store.conversations.load(key)) await store.plaintext.drop(id);
+        await store.conversations.drop(key);
+        await store.previews.drop(key);
+        if (chat.room_id) {
+            await store.senderKeys.drop(chat.room_id);
+            await store.groupSessions.dropRoom(chat.room_id);
+        }
+    });
+}
+
+/**
+ * Выход из аккаунта: стереть всё — ключи, сессии, расшифрованную
+ * переписку. Устройство при этом отзывается на сервере, иначе собеседники
+ * продолжали бы шифровать для него.
+ */
+export function wipeDevice() {
+    return serialized(async () => {
+        const deviceId = state.deviceId;
+        if (deviceId && state.api) {
+            try {
+                await state.api(`/api/devices/${deviceId}`, { method: 'DELETE' });
+            } catch (e) {
+                console.warn('[E2EE] устройство не отозвано:', e.message);
+            }
+        }
+        await store.wipe();
+        state.ready = false;
+        state.deviceId = null;
+        state.identity = null;
+    });
+}
+
 /* Превью последнего сообщения: сервер шифротекст прочитать не может. */
-export const rememberPreview = (chatId, text) => store.previews.save(chatId, text);
-export const recallPreview = chatId => store.previews.load(chatId);
+export const rememberPreview = (message, text) =>
+    store.previews.save(conversationKey(message), { text, messageId: message.id });
+export const recallPreview = async chat => {
+    const entry = await store.previews.load(conversationOfChat(chat));
+    return entry && typeof entry.text === 'string' ? entry.text : null;
+};
 
 /* ------------------------------------------------------------------
    Код безопасности
@@ -749,6 +948,28 @@ export const clearVerified = userId => store.verified.drop(userId);
  *
  * devices — ответ /api/chats/:id/devices. Возвращает Map userId → state.
  */
+/**
+ * Сверено ли устройство, с которого пришло сообщение. 'new' — собеседник
+ * сверен, а этого устройства при сверке не было: писать на него мы не
+ * дадим (assertVerifiedTargets), а читать его сообщения — читаем, но
+ * человек должен видеть, что они с непроверенного устройства. Так выглядела
+ * бы и подмена сервером. 'verified' — было при сверке; 'unverified' —
+ * собеседника не сверяли вовсе, отмечать нечего.
+ */
+export async function senderDeviceTrust(userId, deviceId) {
+    if (!userId || !deviceId || userId === state.userId) return 'unverified';
+    const record = await store.verified.load(userId);
+    if (!record) return 'unverified';
+    return record.devices.some(d => d.deviceId === Number(deviceId)) ? 'verified' : 'new';
+}
+
+/**
+ * Свои устройства, о которых это устройство уже знает. null — список ещё
+ * не запоминался (устройство новое): тогда о существующих не сообщаем.
+ */
+export const knownOwnDevices = async () => (await store.meta.get('knownOwnDevices')) || null;
+export const rememberOwnDevices = ids => store.meta.set('knownOwnDevices', [...new Set(ids.map(Number))]);
+
 export async function verificationStatus(devices) {
     const result = new Map();
     for (const [userId, deviceIds] of groupByUser(devices)) {

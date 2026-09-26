@@ -5,7 +5,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "NODE_ENV=development node server.js"
+    "dev": "NODE_ENV=development node server.js",
+    "test": "scripts/run-all-tests.sh"
   },
   "keywords": [
     "messenger",
@@ -31,14 +32,17 @@
     "express": "^4.18.2",
     "express-rate-limit": "^8.5.2",
     "express-session": "^1.17.3",
+    "jsqr": "^1.4.0",
     "multer": "^1.4.5-lts.1",
     "pdf-lib": "^1.17.1",
     "pg": "^8.21.0",
+    "qrcode-generator": "^1.5.2",
     "sharp": "^0.35.4",
     "socket.io": "^4.8.3",
     "socks-proxy-agent": "^10.1.0"
   },
   "devDependencies": {
+    "playwright": "^1.56.1",
     "socket.io-client": "^4.8.4"
   }
 }

@@ -104,6 +104,12 @@ const b = jar();
 await req(b, 'GET', '/api/auth');
 await req(b, 'POST', '/api/register',
   { username:'bob', email:'bob@example.com', password:'password123', confirmPassword:'password123' });
+const beforeChat = await req(b, 'GET', `/api/keys/bundle/${userA}`);
+check('без общего чата bundle не отдаётся', beforeChat.status === 404, 'status ' + beforeChat.status);
+// Ключи — только собеседникам: заводим общий чат.
+const shared = await req(a1, 'POST', '/api/chats', { name: 'Общий' });
+const code = (await req(a1, 'GET', `/api/chats/invite/${shared.json.chat.id}`)).json.code;
+await req(b, 'POST', '/api/chats/join', { code });
 const bundle = await req(b, 'GET', `/api/keys/bundle/${userA}`);
 const got = (bundle.json?.bundles ?? []).map(x => x.device_id).sort((x,y)=>x-y);
 check('bundle отдаёт оба устройства получателя',
@@ -149,6 +155,14 @@ check('отозванное устройство нельзя привязать
 const list = await req(a3, 'GET', '/api/devices');
 check('отозванное устройство остаётся в списке с меткой',
   list.json?.devices?.length === 2 && list.json.devices.some(x => x.revoked_at !== null));
+
+// Лимит устройств на аккаунт: у A сейчас одно активное (второе отозвано).
+let lastCreated;
+for (let i = 0; i < 10; i++) lastCreated = await req(a3, 'POST', '/api/devices', { name: `Устройство ${i}` });
+check('больше десяти активных устройств не завести', lastCreated.status === 403
+  && /10 устройств/.test(lastCreated.json?.message), `${lastCreated.status} ${lastCreated.json?.message}`);
+const activeCount = (await req(a3, 'GET', '/api/devices')).json.devices.filter(x => !x.revoked_at).length;
+check('активных ровно десять', activeCount === 10, String(activeCount));
 
 console.log(fails ? `\n${fails} проверок провалено` : '\nвсе проверки пройдены');
 process.exit(fails ? 1 : 0);

@@ -24,6 +24,9 @@ const elements = {
     fileInput: document.getElementById('file-input'),
     newChatBtn: document.getElementById('new-chat-btn'),
     chatHeader: document.getElementById('chat-header'),
+    sidebar: document.querySelector('.sidebar'),
+    mainContent: document.querySelector('.main-content'),
+    chatBackBtn: document.getElementById('chat-back-btn'),
     chatName: document.getElementById('chat-name'),
     chatStatus: document.getElementById('chat-status'),
     chatAvatar: document.getElementById('chat-avatar'),
@@ -47,6 +50,10 @@ const elements = {
     changePasswordBtn: document.getElementById('change-password-btn'),
     savePasswordBtn: document.getElementById('save-password-btn'),
     inviteCodeDisplay: document.getElementById('invite-code-display'),
+    inviteText: document.getElementById('invite-text'),
+    inviteCodeBox: document.getElementById('invite-code-box'),
+    resetInviteBtn: document.getElementById('reset-invite-btn'),
+    disableInviteBtn: document.getElementById('disable-invite-btn'),
     copyInviteBtn: document.getElementById('copy-invite-btn'),
     messageMenu: document.getElementById('message-menu'),
     replyMessageBtn: document.getElementById('reply-message-btn'),
@@ -61,6 +68,8 @@ const elements = {
     profileCode: document.getElementById('profile-code'),
     profileAvatar: document.getElementById('profile-avatar'),
     profileAnonBadge: document.getElementById('profile-anon-badge'),
+    devicesList: document.getElementById('devices-list'),
+    devicesSection: document.getElementById('devices-section'),
     emptyNewChatBtn: document.getElementById('empty-new-chat-btn'),
 };
 
@@ -84,6 +93,19 @@ function cryptoModule() {
 }
 
 /**
+ * Имя устройства для списка и уведомлений: «Chrome, Linux». Раньше уходил
+ * User-Agent целиком — нечитаемо, и серверу ни к чему лишняя примета
+ * браузера.
+ */
+function deviceLabel(ua = navigator.userAgent) {
+    const browser = /Edg\//.test(ua) ? 'Edge' : /OPR\//.test(ua) ? 'Opera' : /Firefox\//.test(ua) ? 'Firefox'
+        : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : 'Браузер';
+    const os = /Android/.test(ua) ? 'Android' : /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad'
+        : /Windows/.test(ua) ? 'Windows' : /Mac OS X/.test(ua) ? 'macOS' : /Linux/.test(ua) ? 'Linux' : '';
+    return os ? `${browser}, ${os}` : browser;
+}
+
+/**
  * Поднять шифрование для текущей сессии: зарегистрировать или привязать
  * устройство, опубликовать ключи, пополнить пул prekeys.
  *
@@ -100,7 +122,7 @@ async function setupE2EE() {
     const result = await e2ee.bootstrap({
         api,
         userId: currentUser.id,
-        deviceName: navigator.userAgent.slice(0, 64),
+        deviceName: deviceLabel(),
     });
     if (!result) {
         e2eeDeviceId = null;
@@ -120,6 +142,76 @@ async function setupE2EE() {
         // деградирует до обновления по перезагрузке, но работает.
         setTimeout(resolve, 3000);
     });
+    checkNewDevices();
+}
+
+/* --- Новые устройства аккаунта --------------------------------------------
+   Устройство, подключённое к аккаунту, получает ключи ко всем новым
+   сообщениям. Раньше оно появлялось молча: узнавший пароль мог читать
+   переписку, и никто бы не заметил. Теперь о нём говорят остальные
+   устройства — сразу, если они в сети, и при следующем запуске, если нет. */
+
+function notifyNewDevices(devices) {
+    if (devices.length === 0) return;
+    const names = devices.map(d => `«${d.name}»`).join(', ');
+    showToast(devices.length === 1
+        ? `К аккаунту подключено новое устройство ${names}. Если это не вы — смените пароль и отзовите его.`
+        : `К аккаунту подключены новые устройства: ${names}. Если это не вы — смените пароль и отзовите их.`,
+    'error', { action: { label: 'Устройства', onClick: () => elements.profileBtn.click() } });
+}
+
+async function checkNewDevices() {
+    if (!e2ee || !e2ee.isReady()) return;
+    const list = await api('/api/devices').catch(() => null);
+    if (!list || !list.success) return;
+    const active = list.devices.filter(d => !d.revoked_at);
+    const known = await e2ee.knownOwnDevices();
+    // Устройство только что появилось само — о тех, что были до него,
+    // сообщать нечего.
+    const fresh = known ? active.filter(d => d.id !== e2eeDeviceId && !known.includes(d.id)) : [];
+    await e2ee.rememberOwnDevices(active.map(d => d.id));
+    notifyNewDevices(fresh);
+}
+
+async function renderDevices() {
+    const list = await api('/api/devices').catch(() => null);
+    elements.devicesSection.hidden = !(list && list.success);
+    if (!list || !list.success) return;
+    elements.devicesList.replaceChildren();
+    for (const device of list.devices.filter(d => !d.revoked_at)) {
+        const item = document.createElement('li');
+        item.className = 'device-item';
+        const info = document.createElement('div');
+        info.className = 'device-info';
+        const name = document.createElement('div');
+        name.className = 'device-name';
+        name.textContent = device.name;
+        name.title = device.name;
+        const meta = document.createElement('div');
+        meta.className = 'device-meta';
+        const since = new Date(device.created_at);
+        meta.textContent = device.id === e2eeDeviceId
+            ? 'Это устройство'
+            : `Подключено ${Number.isNaN(since.getTime()) ? '' : fullFormat.format(since)}`;
+        info.append(name, meta);
+        item.appendChild(info);
+        if (device.id !== e2eeDeviceId) {
+            const revoke = document.createElement('button');
+            revoke.type = 'button';
+            revoke.className = 'btn btn-ghost';
+            revoke.textContent = 'Отозвать';
+            revoke.setAttribute('aria-label', `Отозвать устройство ${device.name}`);
+            revoke.addEventListener('click', () => withBusy(revoke, async () => {
+                if (!confirm(`Отозвать «${device.name}»? На нём больше не получится читать новые сообщения.`)) return;
+                const r = await api(`/api/devices/${device.id}`, { method: 'DELETE' });
+                if (!r.success) return showToast(r.message || 'Не удалось отозвать устройство', 'error');
+                showToast('Устройство отозвано', 'success');
+                renderDevices();
+            }));
+            item.appendChild(revoke);
+        }
+        elements.devicesList.appendChild(item);
+    }
 }
 
 /**
@@ -174,19 +266,44 @@ function applyDecryptedContent(message, content) {
     message.brokenAttachment = Boolean(content && content.t === 'invalid');
 }
 
-/** Расшифровать и дорисовать сообщение в открытый чат. */
-async function appendMessageDecrypted(message) {
+/**
+ * Расшифровать и дорисовать сообщение в открытый чат. fresh — сообщение
+ * пришло только что (анимируется), а не из истории.
+ */
+async function appendMessageDecrypted(message, { fresh = false } = {}) {
+    await resolveReplyQuote(message);
     if (message.encrypted) {
         const raw = await resolveMessageText(message);
         const content = raw === null ? null : e2ee.decodePayload(raw);
         applyDecryptedContent(message, content);
+        message.deviceTrust = await e2ee.senderDeviceTrust(message.user_id, message.sender_device_id);
         if (content) {
             const preview = e2ee.payloadPreview(content);
-            await e2ee.rememberPreview(message.chat_id, preview);
+            await e2ee.rememberPreview(message, preview);
             updateChatPreviewInList(message, preview);
         }
     }
-    appendMessage(message);
+    appendMessage(message, { fresh });
+}
+
+/**
+ * Цитата ответа. Текст цитаты сервер берёт из базы, а у зашифрованного
+ * сообщения его там нет — цитата была пустой. По сокету приходит только
+ * reply_to_id — и цитаты не было вовсе до перезагрузки. Текст берём из
+ * локального кэша расшифрованного или из пузыря на экране.
+ */
+async function resolveReplyQuote(message) {
+    if (!message.reply_to_id && !message.reply_to) return;
+    const quote = message.reply_to
+        || { id: message.reply_to_id, text: null, deleted: false, sender_username: null };
+    const bubble = elements.chatMessages.querySelector(`[data-message-id="${quote.id}"]`);
+    if (!quote.deleted && !quote.text) {
+        const cached = e2ee ? await e2ee.recallPlaintext(quote.id) : null;
+        if (cached) quote.text = e2ee.payloadPreview(e2ee.decodePayload(cached));
+        else if (bubble) quote.text = bubble.querySelector('.message-text')?.textContent || null;
+    }
+    if (!quote.sender_username && bubble) quote.sender_username = bubble.dataset.sender || null;
+    message.reply_to = quote;
 }
 
 /** Есть ли в чате устройства, кроме этого: то есть есть ли для кого шифровать. */
@@ -265,6 +382,195 @@ function safetyNote(text) {
     return p;
 }
 
+/* --- QR-код сверки ----------------------------------------------------------
+   Тот же код безопасности, что цифрами, но сверяется одним наведением
+   камеры. В QR два сегмента: префикс буквенно-цифровым режимом и 60 цифр —
+   цифровым; так код меньше и читается с экрана телефона издалека.
+   Библиотеки грузятся только когда открывают сверку. */
+
+const SAFETY_QR_PREFIX = 'NYXO1:';
+const vendorScripts = new Map();
+
+function loadVendor(src, globalName) {
+    if (!vendorScripts.has(src)) {
+        vendorScripts.set(src, new Promise((resolve, reject) => {
+            const script = document.createElement('script');
+            script.src = src;
+            script.onload = () => (window[globalName] ? resolve(window[globalName]) : reject(new Error(`${src} не загрузился`)));
+            script.onerror = () => { vendorScripts.delete(src); reject(new Error(`${src} не загрузился`)); };
+            document.head.appendChild(script);
+        }));
+    }
+    return vendorScripts.get(src);
+}
+
+async function drawSafetyQr(canvas, safetyNumber) {
+    const qrcode = await loadVendor('/vendor/qrcode.js', 'qrcode');
+    const qr = qrcode(0, 'M');
+    qr.addData(SAFETY_QR_PREFIX, 'Alphanumeric');
+    qr.addData(safetyNumber, 'Numeric');
+    qr.make();
+    const count = qr.getModuleCount();
+    const cell = 6;
+    const quiet = cell * 4;
+    canvas.width = canvas.height = count * cell + quiet * 2;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#000';
+    // Сами: renderTo2dContext библиотеки рисует код транспонированным.
+    for (let row = 0; row < count; row++) {
+        for (let col = 0; col < count; col++) {
+            if (qr.isDark(row, col)) ctx.fillRect(quiet + col * cell, quiet + row * cell, cell, cell);
+        }
+    }
+}
+
+/**
+ * Распознать QR на картинке или кадре. Кадр уменьшается до ~1000 px по
+ * длинной стороне: крупнее — распознавание тормозит, мельче — модули
+ * сливаются. Сначала BarcodeDetector браузера, если он есть, потом jsQR.
+ */
+async function decodeQr(source, width, height) {
+    const scale = Math.min(1, 1000 / Math.max(width, height));
+    const w = Math.max(1, Math.round(width * scale));
+    const h = Math.max(1, Math.round(height * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(source, 0, 0, w, h);
+    if ('BarcodeDetector' in window) {
+        try {
+            const codes = await new window.BarcodeDetector({ formats: ['qr_code'] }).detect(canvas);
+            if (codes.length > 0) return codes[0].rawValue;
+        } catch {
+            // формат не поддержан — ниже jsQR
+        }
+    }
+    const jsQR = await loadVendor('/vendor/jsqr.js', 'jsQR');
+    const code = jsQR(ctx.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: 'attemptBoth' });
+    return code ? code.data : null;
+}
+
+/** Камера до первого распознанного кода или до «Отмена». */
+async function scanWithCamera(container) {
+    const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+    });
+    const video = document.createElement('video');
+    video.className = 'safety-scan-video';
+    video.muted = true;
+    video.playsInline = true;
+    video.srcObject = stream;
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'btn btn-secondary btn-block';
+    cancel.textContent = 'Отмена';
+    container.replaceChildren(video, cancel);
+    container.hidden = false;
+    try {
+        await video.play();
+        return await new Promise(resolve => {
+            let done = false;
+            cancel.addEventListener('click', () => { done = true; resolve(null); });
+            const tick = async () => {
+                if (done) return;
+                if (video.readyState >= 2 && video.videoWidth > 0) {
+                    const value = await decodeQr(video, video.videoWidth, video.videoHeight).catch(() => null);
+                    if (value) { done = true; resolve(value); return; }
+                }
+                setTimeout(tick, 200);
+            };
+            tick();
+        });
+    } finally {
+        stream.getTracks().forEach(t => t.stop());
+        container.replaceChildren();
+        container.hidden = true;
+    }
+}
+
+async function decodeQrFromFile(file) {
+    const bitmap = await createImageBitmap(file);
+    try {
+        return await decodeQr(bitmap, bitmap.width, bitmap.height);
+    } finally {
+        bitmap.close();
+    }
+}
+
+/** Блок QR в сверке: показать свой код, отсканировать код собеседника. */
+function safetyQrBlock(info, onMatch) {
+    const block = document.createElement('div');
+    block.className = 'safety-qr';
+    const canvas = document.createElement('canvas');
+    canvas.className = 'safety-qr-code';
+    canvas.setAttribute('role', 'img');
+    canvas.setAttribute('aria-label', 'QR-код с кодом безопасности');
+    drawSafetyQr(canvas, info.safetyNumber).catch(() => { canvas.hidden = true; });
+    block.appendChild(canvas);
+
+    const warn = document.createElement('p');
+    warn.className = 'safety-muted';
+    warn.textContent = 'Не пересылайте снимок этого кода через Nyxo: если сервер подменяет ключи, '
+        + 'он подменит и снимок. Покажите код на экране при встрече или сверьте цифры по другому каналу.';
+    block.appendChild(warn);
+
+    const check = async value => {
+        if (value === null) return;
+        if (!value || !value.startsWith(SAFETY_QR_PREFIX)) {
+            showToast('Это не код сверки Nyxo', 'error');
+        } else if (value.slice(SAFETY_QR_PREFIX.length) !== info.safetyNumber) {
+            showToast('Код не совпал: ключи могли подменить. Не отмечайте собеседника сверенным — сверьте цифры при встрече.', 'error');
+        } else {
+            await onMatch();
+            showToast('Код совпал — собеседник сверен', 'success');
+        }
+    };
+
+    const actions = document.createElement('div');
+    actions.className = 'safety-qr-actions';
+    const scanArea = document.createElement('div');
+    scanArea.className = 'safety-scan';
+    scanArea.hidden = true;
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        const scan = document.createElement('button');
+        scan.type = 'button';
+        scan.className = 'btn btn-secondary';
+        scan.textContent = 'Сканировать камерой';
+        scan.addEventListener('click', async () => {
+            try {
+                await check(await scanWithCamera(scanArea));
+            } catch {
+                showToast('Камера недоступна — распознайте код с фото или сверьте цифры', 'error');
+            }
+        });
+        actions.appendChild(scan);
+    }
+    const photoInput = document.createElement('input');
+    photoInput.type = 'file';
+    photoInput.accept = 'image/*';
+    photoInput.hidden = true;
+    photoInput.className = 'safety-qr-photo';
+    photoInput.addEventListener('change', async () => {
+        const file = photoInput.files[0];
+        photoInput.value = '';
+        if (!file) return;
+        const value = await decodeQrFromFile(file).catch(() => '');
+        await check(value || '');
+    });
+    const photo = document.createElement('button');
+    photo.type = 'button';
+    photo.className = 'btn btn-ghost';
+    photo.textContent = 'Распознать с фото';
+    photo.addEventListener('click', () => photoInput.click());
+    actions.append(photo, photoInput);
+    block.append(actions, scanArea);
+    return block;
+}
+
 async function renderSafetyEntry(chatId, user) {
     const section = document.createElement('section');
     section.className = 'safety-entry';
@@ -328,6 +634,14 @@ async function renderSafetyEntry(chatId, user) {
     meta.className = 'safety-muted';
     meta.textContent = `Устройств собеседника: ${info.devices.length}`;
     section.appendChild(meta);
+
+    if (info.state !== 'verified') {
+        section.appendChild(safetyQrBlock(info, async () => {
+            await e2ee.markVerified(user.user_id, info.devices);
+            section.replaceWith(await renderSafetyEntry(chatId, user));
+            refreshEncryptionBadge(chatId, currentChatIsBot);
+        }));
+    }
 
     const action = document.createElement('button');
     action.type = 'button';
@@ -690,6 +1004,18 @@ function setupEventListeners() {
     }));
 
     elements.logoutBtn.addEventListener('click', async () => {
+        // Выход стирает с устройства ключи и расшифрованную переписку и
+        // отзывает устройство: иначе всё это оставалось бы в браузере для
+        // любого, кто сядет за него следом. Анонимный аккаунт удаляется
+        // целиком и так — спрашивать не о чем.
+        if (e2ee && e2ee.isReady()) {
+            if (!(currentUser && currentUser.isAnonymous)
+                && !confirm('Выйти? Переписка на этом устройстве будет стёрта, прочитать её здесь снова не получится.')) {
+                return;
+            }
+            await e2ee.wipeDevice();
+            e2eeDeviceId = null;
+        }
         await api('/api/logout', { method: 'POST' });
         currentUser = null;
         currentChatId = null;
@@ -716,12 +1042,21 @@ function setupEventListeners() {
         if (!currentChatId) return;
         const data = await api(`/api/chats/invite/${currentChatId}`);
         if (data.success) {
-            elements.inviteCodeDisplay.textContent = data.code;
+            showInviteCode(data.code);
             openModal(elements.inviteModal);
         } else {
             showToast(data.message, 'error');
         }
     });
+
+    const updateInvite = action => withBusy(action === 'reset' ? elements.resetInviteBtn : elements.disableInviteBtn, async () => {
+        const data = await api(`/api/chats/${currentChatId}/invite`, { method: 'POST', body: JSON.stringify({ action }) });
+        if (!data.success) return showToast(data.message, 'error');
+        showInviteCode(data.code);
+        showToast(data.code ? 'Код сменён, старый больше не действует' : 'Приглашение отключено', 'success');
+    });
+    elements.resetInviteBtn.addEventListener('click', () => updateInvite('reset'));
+    elements.disableInviteBtn.addEventListener('click', () => updateInvite('disable'));
 
     elements.copyInviteBtn.addEventListener('click', () => {
         navigator.clipboard.writeText(elements.inviteCodeDisplay.textContent);
@@ -747,6 +1082,7 @@ function setupEventListeners() {
                 elements.profileAnonBadge.classList.add('hidden');
                 elements.changePasswordBtn.classList.remove('hidden');
             }
+            await renderDevices();
             openModal(elements.profileModal);
         }
     });
@@ -857,8 +1193,14 @@ function setupEventListeners() {
     document.querySelectorAll('dialog.modal').forEach(dialog => {
         // Клик по затемнению вокруг окна. Сам dialog без полей, поэтому
         // клик с target === dialog — это клик по ::backdrop, а не по окну.
+        // Нажатие тоже должно быть на затемнении: если выделять текст в
+        // окне и отпустить кнопку снаружи, click приходит на dialog —
+        // общего предка, — и окно закрывалось посреди выделения.
+        let pressedOnBackdrop = false;
+        dialog.addEventListener('pointerdown', e => { pressedOnBackdrop = e.target === dialog; });
         dialog.addEventListener('click', e => {
-            if (e.target === dialog) closeModal(dialog);
+            if (e.target === dialog && pressedOnBackdrop) closeModal(dialog);
+            pressedOnBackdrop = false;
         });
         // Esc закрывает окно сам (событие cancel) — ошибки полей чистим и тут.
         // Тост, если он жил внутри окна, возвращается в body и остаётся виден.
@@ -875,6 +1217,8 @@ function setupEventListeners() {
     });
 
     setupMessageMenu();
+    setupMessageKeyboard();
+    setupMobileScreens();
     // Не дожидаемся таймера отмены, если страницу закрывают.
     window.addEventListener('pagehide', flushPendingDeletes);
 
@@ -906,7 +1250,15 @@ function setupEventListeners() {
         }
     });
 
+    socket.on('deviceAdded', device => {
+        if (!e2ee || !e2ee.isReady() || device.id === e2eeDeviceId) return;
+        notifyNewDevices([device]);
+        e2ee.knownOwnDevices().then(known => e2ee.rememberOwnDevices([...(known || []), device.id]));
+    });
+
     socket.on('messageDeleted', ({ id, chat_id, room_id }) => {
+        // Расшифрованная копия удалённого сообщения не должна пережить его.
+        if (e2ee) e2ee.forgetMessage({ id, chat_id, room_id });
         if (chat_id == currentChatId || room_id == currentRoomId) {
             const bubble = elements.chatMessages.querySelector(`[data-message-id="${id}"]`);
             if (bubble) removeMessageElement(bubble);
@@ -924,7 +1276,17 @@ function setupEventListeners() {
    диктора (inert), а слой — верхний, без ручного оверлея и z-index. */
 
 function openModal(modal) {
-    if (!modal.open) modal.showModal();
+    if (modal.open) return;
+    modal.showModal();
+    // Тост, показанный до окна, остался бы под затемнением: вне окна всё
+    // inert, и крестик с кнопкой действия не нажимались бы. Переносим его
+    // внутрь и показываем заново — так он поднимается над окном.
+    const toast = elements.toast;
+    if (toast.matches(':popover-open') && !modal.contains(toast)) {
+        toast.hidePopover();
+        modal.appendChild(toast);
+        toast.showPopover();
+    }
 }
 
 function closeModal(modal) {
@@ -1018,13 +1380,52 @@ async function loadChats() {
 async function chatPreview(chat) {
     if (chat.last_message) return chat.last_message.substring(0, 30);
     if (e2ee) {
-        const cached = await e2ee.recallPreview(chat.id);
+        const cached = await e2ee.recallPreview(chat);
         if (cached) return cached.substring(0, 30);
     }
     return 'Нет сообщений';
 }
 
+/* --- Телефон: список и переписка — два экрана ---------------------------
+   Открытый чат прячет список, кнопка «назад» (и системная «назад» — через
+   history) возвращает к нему. Невидимый экран делается inert, чтобы его
+   кнопки не ловили Tab и экранный диктор. На широком экране — ничего. */
+
+const mobileLayout = window.matchMedia('(max-width: 640px)');
+
+function showChatScreen(show) {
+    elements.sidebar.classList.toggle('hidden-mobile', show);
+    applyMobileInert();
+}
+
+function applyMobileInert() {
+    const chatShown = elements.sidebar.classList.contains('hidden-mobile');
+    elements.sidebar.inert = mobileLayout.matches && chatShown;
+    elements.mainContent.inert = mobileLayout.matches && !chatShown;
+}
+
+function setupMobileScreens() {
+    mobileLayout.addEventListener('change', applyMobileInert);
+    applyMobileInert();
+    elements.chatBackBtn.addEventListener('click', () => {
+        if (history.state && history.state.nyxoChat) history.back();
+        else backToChatList();
+    });
+    window.addEventListener('popstate', () => {
+        if (!(history.state && history.state.nyxoChat)) backToChatList();
+    });
+}
+
+function backToChatList() {
+    showChatScreen(false);
+    elements.chatsList.querySelector('.chat-item.active')?.focus();
+}
+
 async function openChat(chatId, roomId, name, avatar, online, isBot) {
+    showChatScreen(true);
+    if (mobileLayout.matches && !(history.state && history.state.nyxoChat)) {
+        history.pushState({ nyxoChat: true }, '');
+    }
     currentChatId = chatId;
     currentRoomId = roomId;
     currentChatIsBot = Boolean(isBot);
@@ -1044,8 +1445,14 @@ async function openChat(chatId, roomId, name, avatar, online, isBot) {
     elements.emptyState.classList.add('hidden');
     elements.chatMessages.innerHTML = '';
 
+    // Что из этого чата лежит у нас расшифрованным — до запроса истории:
+    // сообщение, пришедшее, пока она грузится, не должно попасть под чистку.
+    const known = e2ee && e2ee.isReady() ? await e2ee.knownMessages({ id: chatId, room_id: roomId }) : [];
     const data = await api(`/api/messages/${chatId}`);
     if (!data.success) return;
+    // Удалённое и исчезнувшее, пока устройство было не в сети, стираем и
+    // отсюда: в истории его уже нет.
+    if (e2ee && data.messages) await e2ee.forgetMissing({ id: chatId, room_id: roomId }, known, data.messages.map(m => m.id));
 
     if (data.messages) {
         // Последовательно, а не Promise.all: у Double Ratchet состояние
@@ -1094,8 +1501,9 @@ function lastDayInChat() {
     return bubbles.length ? bubbles[bubbles.length - 1].dataset.day : null;
 }
 
-function appendMessage(message) {
+function appendMessage(message, { fresh = false } = {}) {
     const el = createMessageElement(message);
+    if (fresh) el.classList.add('is-new');
     const date = messageDate(message);
     if (date) {
         el.dataset.day = dayKey(date);
@@ -1111,6 +1519,7 @@ function appendMessage(message) {
         }
     }
     elements.chatMessages.appendChild(el);
+    refreshMessageTabStop();
 }
 
 /**
@@ -1125,6 +1534,59 @@ function removeMessageElement(el) {
         && (!next || next.classList.contains('day-separator'))) {
         prev.remove();
     }
+    refreshMessageTabStop();
+}
+
+/* --- Клавиатура в переписке ----------------------------------------------
+   Вся переписка — одна остановка Tab, как список в системных программах:
+   раньше каждая кнопка «⋯» была отдельной остановкой, и до поля ввода
+   приходилось пролистывать все сообщения. Tab приводит на одно сообщение
+   (последнее или то, где были), стрелки ходят по сообщениям, Enter или
+   клавиша меню открывает действия. */
+
+const visibleMessages = () => [...elements.chatMessages.querySelectorAll('.message')].filter(m => !m.hidden);
+
+function refreshMessageTabStop() {
+    const current = elements.chatMessages.querySelector('.message[tabindex="0"]');
+    if (current && !current.hidden && current.isConnected && current.contains(document.activeElement)) return;
+    const list = visibleMessages();
+    const target = list[list.length - 1] || null;
+    if (current && current !== target) current.tabIndex = -1;
+    if (target) target.tabIndex = 0;
+}
+
+function setMessageTabStop(message) {
+    elements.chatMessages.querySelectorAll('.message[tabindex="0"]').forEach(m => { m.tabIndex = -1; });
+    message.tabIndex = 0;
+}
+
+function focusMessage(message) {
+    setMessageTabStop(message);
+    message.focus();
+}
+
+function setupMessageKeyboard() {
+    const list = elements.chatMessages;
+    // Щелчок или фокус на сообщении переносит на него остановку Tab.
+    list.addEventListener('focusin', e => {
+        const message = e.target.closest && e.target.closest('.message');
+        if (message && message.tabIndex !== 0) setMessageTabStop(message);
+    });
+    list.addEventListener('keydown', e => {
+        const message = e.target.classList && e.target.classList.contains('message') ? e.target : null;
+        if (!message) return;   // кнопки и ссылки внутри сообщения — сами
+        const all = visibleMessages();
+        const index = all.indexOf(message);
+        const next = { ArrowDown: all[index + 1], ArrowUp: all[index - 1], Home: all[0], End: all[all.length - 1] }[e.key];
+        if (next) {
+            e.preventDefault();
+            focusMessage(next);
+            next.scrollIntoView({ block: 'nearest' });
+        } else if (e.key === 'Enter' || e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey)) {
+            e.preventDefault();
+            message.openMenu?.();
+        }
+    });
 }
 
 // Элементы с файлом (img/video/audio/a) собираются через DOM API, а не через
@@ -1230,11 +1692,42 @@ function createFileAttachmentElement(message) {
     return wrapper;
 }
 
+/**
+ * Своё ли сообщение. Ответы бота записаны от имени владельца чата, но с
+ * sent = 0: раньше они рисовались справа, как свои, и их предлагалось
+ * редактировать и удалять.
+ */
+function isOwnMessage(message) {
+    return Boolean(currentUser) && message.user_id === currentUser.id
+        && message.sent !== 0 && message.sent !== false;
+}
+
+/** Код приглашения в окне; null — приглашение отключено. */
+function showInviteCode(code) {
+    elements.inviteCodeBox.hidden = !code;
+    elements.inviteCodeDisplay.textContent = code || '';
+    elements.inviteText.textContent = code
+        ? 'Поделитесь этим кодом с друзьями:'
+        : 'Приглашение отключено: по старому коду войти нельзя.';
+    elements.resetInviteBtn.textContent = code ? 'Сменить код' : 'Включить с новым кодом';
+    elements.disableInviteBtn.hidden = !code;
+}
+
 function createMessageElement(message) {
-    const isMine = message.user_id === (currentUser ? currentUser.id : 0);
+    // Событие чата (вошёл, вышел, сменил код) — строкой, без меню.
+    if (message.message_type === 'system') {
+        const line = document.createElement('div');
+        line.className = 'message-system';
+        line.dataset.messageId = message.id;
+        line.textContent = message.text || '';
+        return line;
+    }
+    const isMine = isOwnMessage(message);
     const div = document.createElement('div');
     div.className = `message ${isMine ? 'sent' : 'received'}`;
     div.dataset.messageId = message.id;
+    if (message.sender_username) div.dataset.sender = message.sender_username;
+    div.tabIndex = -1;
 
     const contentDiv = document.createElement('div');
     contentDiv.className = 'message-content';
@@ -1262,7 +1755,7 @@ function createMessageElement(message) {
             // Текст удалённого сообщения сервер стирает — цитировать нечего.
             quoted.textContent = message.reply_to.deleted
                 ? 'Сообщение удалено'
-                : (message.reply_to.text || '').substring(0, 60);
+                : (message.reply_to.text || 'Сообщение').substring(0, 60);
             replyDiv.append(author, quoted);
             contentDiv.appendChild(replyDiv);
         }
@@ -1308,7 +1801,18 @@ function createMessageElement(message) {
 
     const metaDiv = document.createElement('div');
     metaDiv.className = 'message-meta';
-    if (message.encrypted) {
+    if (message.deviceTrust === 'new') {
+        // Собеседник сверен, а это устройство — нет. Так выглядела бы и
+        // подмена сервером, поэтому видно у каждого такого сообщения.
+        div.classList.add('from-new-device');
+        const warn = document.createElement('span');
+        warn.className = 'message-new-device';
+        warn.title = 'Отправлено с устройства, которого не было при сверке ключей. Сверьте код заново.';
+        warn.setAttribute('role', 'img');
+        warn.setAttribute('aria-label', warn.title);
+        warn.appendChild(createIcon('i-alert'));
+        metaDiv.appendChild(warn);
+    } else if (message.encrypted) {
         const lock = document.createElement('span');
         lock.className = 'message-encrypted';
         lock.title = 'Сквозное шифрование';
@@ -1342,13 +1846,21 @@ function createMessageElement(message) {
     more.className = 'icon-btn icon-btn-sm icon-btn-quiet message-more';
     more.setAttribute('aria-label', 'Действия с сообщением');
     more.setAttribute('aria-haspopup', 'menu');
+    more.tabIndex = -1;
     more.appendChild(createIcon('i-more'));
     more.addEventListener('click', e => {
         e.stopPropagation();
         const rect = more.getBoundingClientRect();
-        showMessageMenu(rect.left, rect.bottom + 4, message, more);
+        showMessageMenu(rect.left, rect.bottom + 4, message, div);
     });
-    metaDiv.appendChild(more);
+    div.appendChild(more);
+    // С клавиатуры: меню под сообщением, фокус потом возвращается на него.
+    if (!message.deleted) {
+        div.openMenu = () => {
+            const rect = div.getBoundingClientRect();
+            showMessageMenu(rect.left, rect.bottom + 4, message, div);
+        };
+    }
 
     div.addEventListener('contextmenu', (e) => {
         e.preventDefault();
@@ -1385,8 +1897,9 @@ function menuItems() {
 }
 
 /**
- * Показать меню у точки (x, y) в координатах окна. trigger — кнопка «⋯»,
- * если меню открыли ей: фокус уходит в меню и возвращается на неё.
+ * Показать меню у точки (x, y) в координатах окна. trigger — сообщение,
+ * если меню открыли кнопкой «⋯» или с клавиатуры: фокус уходит в меню и
+ * потом возвращается на сообщение.
  */
 function showMessageMenu(x, y, message, trigger = null) {
     const menu = elements.messageMenu;
@@ -1394,7 +1907,7 @@ function showMessageMenu(x, y, message, trigger = null) {
     // удаления пузыря находилось бы само меню.
     menu.dataset.forMessage = message.id;
     menu.dataset.forMessageText = message.text || '';
-    const isMine = message.user_id === (currentUser ? currentUser.id : 0);
+    const isMine = isOwnMessage(message);
     // Правка зашифрованного сообщения ушла бы на сервер открытым текстом,
     // поэтому её нет вовсе — удалить и отправить заново можно.
     elements.editMessageBtn.hidden = !(isMine && !message.encrypted);
@@ -1405,8 +1918,12 @@ function showMessageMenu(x, y, message, trigger = null) {
     menu.showPopover();
     // Размер известен только после показа: прижимаем меню к краям окна.
     const margin = 8;
-    menu.style.left = `${Math.max(margin, Math.min(x, window.innerWidth - menu.offsetWidth - margin))}px`;
-    menu.style.top = `${Math.max(margin, Math.min(y, window.innerHeight - menu.offsetHeight - margin))}px`;
+    const left = Math.max(margin, Math.min(x, window.innerWidth - menu.offsetWidth - margin));
+    const top = Math.max(margin, Math.min(y, window.innerHeight - menu.offsetHeight - margin));
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+    // Раскрывается из точки нажатия, даже если меню пришлось сдвинуть от края.
+    menu.style.transformOrigin = `${x - left}px ${y - top}px`;
     if (trigger) menuItems()[0]?.focus();
 }
 
@@ -1414,9 +1931,11 @@ function setupMessageMenu() {
     const menu = elements.messageMenu;
     // Нажатие мимо меню закрывает его. pointerdown, а не click: правый клик,
     // открывающий меню, начинается раньше, чем меню появилось.
+    // Кнопка «⋯» того же сообщения — исключение: её click сам покажет меню.
     document.addEventListener('pointerdown', e => {
-        if (menu.matches(':popover-open') && !menu.contains(e.target) && e.target !== menuTrigger
-            && !(menuTrigger && menuTrigger.contains(e.target))) {
+        const ownMoreButton = menuTrigger && e.target.closest && e.target.closest('.message-more')
+            && menuTrigger.contains(e.target);
+        if (menu.matches(':popover-open') && !menu.contains(e.target) && !ownMoreButton) {
             hideMessageMenu();
         }
     }, true);
@@ -1461,6 +1980,7 @@ function scheduleDelete(messageId) {
     const el = elements.chatMessages.querySelector(`[data-message-id="${messageId}"]`);
     if (!el || pendingDeletes.has(messageId)) return;
     el.hidden = true;
+    refreshMessageTabStop();
     pendingDeletes.set(messageId, { el, timer: setTimeout(() => commitDelete(messageId), UNDO_DELETE_MS) });
     showToast('Сообщение удалено', 'info', {
         duration: UNDO_DELETE_MS,
@@ -1474,6 +1994,7 @@ function undoDelete(messageId) {
     clearTimeout(pending.timer);
     pendingDeletes.delete(messageId);
     pending.el.hidden = false;
+    refreshMessageTabStop();
 }
 
 async function commitDelete(messageId) {
@@ -1506,7 +2027,7 @@ function flushPendingDeletes() {
 
 async function handleNewMessage(message) {
     if (message.chat_id == currentChatId || message.room_id == currentRoomId) {
-        await appendMessageDecrypted(message);
+        await appendMessageDecrypted(message, { fresh: true });
         scrollToBottom();
     } else {
         // Чужой чат: расшифровываем ради превью в списке, рисовать
@@ -1514,7 +2035,7 @@ async function handleNewMessage(message) {
         if (message.encrypted && e2ee) {
             const raw = await resolveMessageText(message);
             if (raw !== null) {
-                await e2ee.rememberPreview(message.chat_id, e2ee.payloadPreview(e2ee.decodePayload(raw)));
+                await e2ee.rememberPreview(message, e2ee.payloadPreview(e2ee.decodePayload(raw)));
             }
         }
         loadChats();
@@ -1605,16 +2126,17 @@ async function sendEncryptedPayload(chatId, encoded, { replyToId = null, blobIds
     // Своё содержимое — локально: конверт себе не отправляется. По этой же
     // причине своё сообщение приходится дорисовать самому: сокет-события о
     // нём не будет.
-    await e2ee.rememberSent(data.message.id, encoded);
+    await e2ee.rememberSent(data.message, encoded);
     const content = e2ee.decodePayload(encoded);
     const preview = e2ee.payloadPreview(content);
-    await e2ee.rememberPreview(chatId, preview);
+    await e2ee.rememberPreview(data.message, preview);
     updateChatPreviewInList(data.message, preview);
 
     if (chatId === currentChatId) {
         const local = { ...data.message };
         applyDecryptedContent(local, content);
-        appendMessage(local);
+        await resolveReplyQuote(local);
+        appendMessage(local, { fresh: true });
         scrollToBottom();
     }
 
@@ -1652,18 +2174,43 @@ async function sendEncrypted(text, payload) {
         // это единственный случай, когда уходим на открытый путь.
         return result.sent ? 'sent' : 'plain';
     } catch (error) {
-        reportEncryptedSendError('Сообщение не отправлено', chatId, error);
+        const replyToId = payload.replyToId || null;
+        reportEncryptedSendError('Сообщение не отправлено', chatId, error,
+            () => resendText(chatId, text, replyToId));
         return 'failed';
     }
 }
 
-function reportEncryptedSendError(prefix, chatId, error) {
+/**
+ * «Повторить» из тоста об ошибке. Раньше кнопка вызывала sendMessage, а
+ * та берёт текущий чат и то, что сейчас в поле ввода: переключился на
+ * другой чат — и повтор уходил туда. Теперь повторяется то же сообщение в
+ * тот же чат; текст из поля убирается, только если это он и есть.
+ */
+async function resendText(chatId, text, replyToId) {
+    try {
+        const result = await sendEncryptedPayload(chatId, e2ee.encodeText(text), { replyToId });
+        if (!result.sent) {
+            const data = await api('/api/messages', { method: 'POST', body: JSON.stringify({ chatId, text, replyToId }) });
+            if (!data.success) throw new Error(data.message || 'ошибка сервера');
+        }
+        if (chatId === currentChatId && elements.messageInput.value.trim() === text) {
+            elements.messageInput.value = '';
+            clearReply();
+        }
+    } catch (error) {
+        reportEncryptedSendError('Сообщение не отправлено', chatId, error,
+            () => resendText(chatId, text, replyToId));
+    }
+}
+
+function reportEncryptedSendError(prefix, chatId, error, retry = null) {
     console.error('[E2EE] отправка не удалась:', error);
     // Если отправку остановила сверка ключей, из ошибки сразу можно перейти
-    // к ней; неотправленный текст остался в поле — его можно отправить снова.
+    // к ней; иначе — повторить то же самое в тот же чат.
     const action = error.code === 'verification-changed'
         ? { label: 'Сверить ключи', onClick: () => openSafetyModal(chatId) }
-        : (prefix === 'Сообщение не отправлено' ? { label: 'Повторить', onClick: sendMessage } : null);
+        : (retry ? { label: 'Повторить', onClick: retry } : null);
     showToast(`${prefix}: ${error.message}`, 'error', { action });
     // Отправку остановила сверка — индикатор должен это показать сразу,
     // а не после переоткрытия чата.
@@ -1796,8 +2343,10 @@ async function joinChat() {
 async function deleteChat() {
     if (!currentChatId) return;
     if (!confirm('Удалить чат?')) return;
+    const leaving = { id: currentChatId, room_id: currentRoomId };
     const data = await api(`/api/chats/${currentChatId}`, { method: 'DELETE' });
     if (data.success) {
+        if (e2ee) await e2ee.forgetConversation(leaving);
         showToast('Чат удалён', 'success');
         closeModal(elements.chatMenuModal);
         currentChatId = null;

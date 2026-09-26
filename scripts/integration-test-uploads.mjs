@@ -6,19 +6,24 @@
 //     и XMP; раньше очистка регулярками ломала файл и оставляла автора
 //   - зашифрованный PDF не отправляется: очистить его нельзя (fail closed)
 //   - фото уходит без EXIF, видео — без координат и модели камеры
+//   - фото без поворота не перекодируется, GIF остаётся анимированным,
+//     из WebM стираются теги (координаты, камера, название)
 //   - удалённое сообщение стирает файл с диска и текст из базы, файл больше
 //     не скачивается, цитата ответа говорит «удалено»
 //   - исчезающее сообщение делает то же самое
 //   - уборщик uploads/ не трогает файлы живых сообщений, даже старые, и
 //     удаляет только файлы без ссылок
 //
-// Требует поднятых Postgres, key-server и server.js на 3006, ЧИСТОЙ базы и
-// TEST_DATABASE_URL той же базы. Запускать из корня репозитория.
+// Требует поднятых Postgres, key-server и server.js на 3006, ЧИСТОЙ базы,
+// TEST_DATABASE_URL той же базы и ffmpeg в PATH. Запускать из корня
+// репозитория.
 //
 // Запуск: TEST_DATABASE_URL=... node scripts/integration-test-uploads.mjs
 
 import pg from 'pg';
 import sharp from 'sharp';
+import { execFileSync } from 'node:child_process';
+import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
@@ -127,6 +132,9 @@ check('исходный PDF цел и несёт автора', xrefProblems(pdf
 const up = await upload(A, chatIdA, 'plan.pdf', 'application/pdf', pdf);
 check('PDF загружен', up.json?.success === true, JSON.stringify(up.json)?.slice(0, 100));
 const pdfUrl = up.json.message.file_url;
+const sentAt = new Date(up.json.message.created_at);
+check('сообщение о файле несёт момент отправки (created_at)', !Number.isNaN(sentAt.getTime())
+    && Math.abs(Date.now() - sentAt.getTime()) < 60000, up.json.message.created_at);
 const gotPdf = await download(B, pdfUrl);
 const text = gotPdf.bytes.toString('latin1');
 check('полученный PDF цел: xref указывает на объекты', xrefProblems(gotPdf.bytes).length === 0,
@@ -139,7 +147,7 @@ const before = uploadsCount();
 const encrypted = Buffer.concat([pdf.subarray(0, pdf.lastIndexOf('trailer')),
     Buffer.from('trailer\n<< /Size 9 /Root 1 0 R /Encrypt << /Filter /Standard /V 1 /R 2 /O (x) /U (y) /P -4 >> >>\nstartxref\n0\n%%EOF')]);
 const encUp = await upload(A, chatIdA, 'locked.pdf', 'application/pdf', encrypted);
-check('зашифрованный PDF не отправляется', encUp.status === 400 && /PDF/.test(encUp.json?.message), encUp.json?.message);
+check('зашифрованный PDF не отправляется, и сказано, что он защищён', encUp.status === 400 && /защищён паролем/.test(encUp.json?.message), encUp.json?.message);
 check('и не остаётся на диске', uploadsCount() === before);
 
 /* ------------------------- фото ------------------------- */
@@ -205,6 +213,37 @@ const hist = (await req(B, 'GET', `/api/messages/${chatIdB}`)).json.messages;
 const quoted = hist.find(m => m.id === reply.json.message.id);
 check('цитата ответа говорит, что сообщение удалено, и не несёт его текста',
     quoted?.reply_to?.deleted === true && quoted.reply_to.text === null);
+
+/* ------------------------- без перекодирования ------------------------- */
+
+const grain = Buffer.from(Array.from({ length: 64 * 48 * 3 }, (_, i) => (i * 7919) % 251));
+const straight = await sharp(grain, { raw: { width: 64, height: 48, channels: 3 } }).jpeg({ quality: 80 })
+    .withExifMerge({ IFD0: { Copyright: 'Ivan Petrov', Model: 'EOS R5' } }).toBuffer();
+const straightUp = await upload(A, chatIdA, 'IMG_0007.jpg', 'image/jpeg', straight);
+const straightGot = await download(B, straightUp.json.message.file_url);
+check('фото без поворота сервер не перекодирует: пиксели те же',
+    (await sharp(straightGot.bytes).raw().toBuffer()).equals(await sharp(straight).raw().toBuffer()));
+check('и EXIF в нём нет', !straightGot.bytes.includes('Ivan Petrov') && !straightGot.bytes.includes('EOS R5'));
+
+const frame = color => sharp({ create: { width: 24, height: 16, channels: 3, background: color } }).png().toBuffer();
+let gif = await sharp([await frame('#ff0000'), await frame('#0000ff')], { join: { animated: true } }).gif({ loop: 0 }).toBuffer();
+gif = Buffer.concat([gif.subarray(0, -1), Buffer.from([0x21, 0xfe, 11]), Buffer.from('Ivan Petrov'), Buffer.from([0, 0x3b])]);
+const gifGot = await download(B, (await upload(A, chatIdA, 'fun.gif', 'image/gif', gif)).json.message.file_url);
+check('GIF после сервера анимированный и без комментария',
+    (await sharp(gifGot.bytes, { animated: true }).metadata()).pages === 2 && !gifGot.bytes.includes('Ivan Petrov'));
+
+const webmPath = path.join(os.tmpdir(), `nyxo-upload-${process.pid}.webm`);
+execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc=size=64x48:rate=10:duration=1',
+    '-c:v', 'libvpx-vp9', '-metadata', 'location=+55.7558+037.6173/', '-metadata', 'model=EOS R5',
+    '-metadata', 'title=Ivan Petrov', webmPath]);
+const webm = fs.readFileSync(webmPath);
+fs.unlinkSync(webmPath);
+const webmUp = await upload(A, chatIdA, 'clip.webm', 'video/webm', webm);
+check('WebM загружен', webmUp.json?.success === true, JSON.stringify(webmUp.json).slice(0, 120));
+const webmGot = await download(B, webmUp.json.message.file_url);
+check('из WebM сервер стёр координаты, камеру и название', webm.includes('+55.7558')
+    && !webmGot.bytes.includes('+55.7558') && !webmGot.bytes.includes('EOS R5') && !webmGot.bytes.includes('Ivan Petrov'));
+check('и размер файла тот же (кадры не тронуты)', webmGot.bytes.length === webm.length);
 
 /* ------------------------- исчезающее сообщение ------------------------- */
 
