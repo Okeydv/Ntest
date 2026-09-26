@@ -1862,7 +1862,37 @@ dialog.modal::backdrop {
 .invite-actions .btn { flex: 1 1 auto; }
 
 .link-body { text-align: center; }
-.link-body .toggle-row {
+.link-body /* Цвета палитры аватара — здесь, а не атрибутом style в разметке: CSP
+   больше не разрешает встроенные стили ('unsafe-inline'). */
+.color-option[data-color="#6D5EFC"] { background: #6D5EFC; }
+.color-option[data-color="#A86CF5"] { background: #A86CF5; }
+.color-option[data-color="#4FACFE"] { background: #4FACFE; }
+.color-option[data-color="#2DD4A7"] { background: #2DD4A7; }
+.color-option[data-color="#FA709A"] { background: #FA709A; }
+.color-option[data-color="#F5A524"] { background: #F5A524; }
+
+.security-list {
+    display: grid;
+    gap: 0.375rem;
+    max-height: 12rem;
+    overflow-y: auto;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+.security-item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    font-size: var(--fs-sm);
+}
+.security-item.is-warn .security-what { color: var(--danger); }
+.security-meta { font-size: var(--fs-xs); color: var(--text-3); }
+
+.toggle-row {
     display: flex;
     align-items: center;
     gap: 0.625rem;

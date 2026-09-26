@@ -31,6 +31,7 @@ const { UPLOADS_DIR, ORPHAN_UPLOAD_TTL_MS, purgeMessageContent } = require('./li
 const { createSocketServer } = require('./lib/sockets');
 const e2eeProxy = require('./lib/e2ee-proxy');
 const { createDevicesRouter } = require('./lib/devices');
+const { recordSecurityEvent } = require('./lib/security-events');
 const {
     checkTorConnection,
     getTorHiddenServiceConfig,
@@ -272,7 +273,7 @@ app.use((req, res, next) => {
     // connect-src — только свой origin: 'self' покрывает и ws/wss того же
     // хоста. Было 'self' ws: wss: — то есть сокет на любой адрес, и
     // внедрённый скрипт мог бы вынести переписку через WebSocket.
-    res.set('Content-Security-Policy', `default-src 'self'; script-src 'self' 'nonce-${nonce}'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'`);
+    res.set('Content-Security-Policy', `default-src 'self'; script-src 'self' 'nonce-${nonce}'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'`);
     // HSTS — только по HTTPS (по HTTP браузер заголовок игнорирует). Без
     // includeSubDomains: на соседних поддоменах может жить то, что по HTTPS
     // не открывается. У .onion HTTPS нет, и там запрос сюда не попадёт.
@@ -350,9 +351,11 @@ app.use(createDevicesRouter({
     dbRun,
     revokeDeviceKeys: e2eeProxy.revokeDeviceKeys,
     // Всем открытым сокетам аккаунта — и тем, что на других устройствах.
-    onDeviceAdded: (userId, device) => io.to(`user:${userId}`).emit('deviceAdded', {
-        id: device.id, name: device.name, created_at: device.created_at,
-    }),
+    onDeviceAdded: (userId, device) => {
+        io.to(`user:${userId}`).emit('deviceAdded', { id: device.id, name: device.name, created_at: device.created_at });
+        recordSecurityEvent(userId, 'device_added', { label: device.name });
+    },
+    onDeviceRevoked: (userId, device) => recordSecurityEvent(userId, 'device_revoked', { label: device.name }),
 }));
 
 // Ключи собеседника — только при общем чате (см. requirePeer в e2ee-proxy).

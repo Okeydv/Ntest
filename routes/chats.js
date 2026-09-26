@@ -6,7 +6,7 @@ const { log } = require('../lib/log');
 const { pool, dbGet, dbAll, dbRun } = require('../lib/db');
 const { normalizeExpiry, expiryLabel } = require('../lib/disappearing-messages');
 const { joinLimiter } = require('../lib/rate-limits');
-const { getCurrentTime, generateInviteCodeAsync } = require('../lib/helpers');
+const { onlyStrings, BAD_FIELDS, getCurrentTime, generateInviteCodeAsync } = require('../lib/helpers');
 const { SCOPE, UNREAD_COUNT_SQL, broadcastReceipts } = require('../lib/read-state');
 
 
@@ -123,6 +123,7 @@ module.exports = function registerChatRoutes(app, ctx) {
     app.post('/api/chats', async (req, res) => {
         if (!req.session.userId) return res.json({ success: false, message: 'Не авторизован' });
         const { name } = req.body;
+        if (!onlyStrings(name)) return res.status(400).json(BAD_FIELDS);
         if (!name) return res.json({ success: false, message: 'Введите имя чата' });
         if (name.length > 64) return res.json({ success: false, message: 'Название чата не может быть длиннее 64 символов' });
 
@@ -223,6 +224,7 @@ module.exports = function registerChatRoutes(app, ctx) {
         if (!req.session.userId) return res.json({ success: false, message: 'Не авторизован' });
         // Код вводят руками и копируют из переписки: регистр, пробелы и дефисы
         // («k7q2 mx», «K7Q-2MX») не должны мешать.
+        if (!onlyStrings(req.body && req.body.code)) return res.status(400).json(BAD_FIELDS);
         const code = String((req.body && req.body.code) || '').toUpperCase().replace(/[\s-]/g, '');
         if (!code) return res.json({ success: false, message: 'Введите код приглашения' });
 
@@ -242,16 +244,38 @@ module.exports = function registerChatRoutes(app, ctx) {
             const chatName = otherUser ? `Чат с ${otherUser.username}` : room.name;
             const avatar = chatName.charAt(0).toUpperCase();
 
-            await pool.query('INSERT INTO room_participants (room_id, user_id) VALUES ($1, $2)', [room.id, req.session.userId]);
-            // Всё, что было в комнате до входа, — не «непрочитанное»:
-            // прочитать это новое устройство всё равно не может.
-            const chatResult = await pool.query(
-                `INSERT INTO chats (user_id, room_id, name, avatar, online, is_bot, last_read_id, last_delivered_id)
-                 SELECT $1, $2, $3, $4, $5, $6, top, top
-                 FROM (SELECT COALESCE(max(id), 0) AS top FROM messages WHERE room_id = $2) t
-                 RETURNING id`,
-                [req.session.userId, room.id, chatName, avatar, 0, 0]
-            );
+            // Участник и его запись чата — одной транзакцией, и участник не
+            // записывается дважды: двойное нажатие «Войти» раньше давало два.
+            const client = await pool.connect();
+            let chatResult;
+            try {
+                await client.query('BEGIN');
+                const added = await client.query(
+                    `INSERT INTO room_participants (room_id, user_id) VALUES ($1, $2)
+                     ON CONFLICT (room_id, user_id) DO NOTHING RETURNING id`, [room.id, req.session.userId]);
+                if (added.rowCount === 0) {
+                    // Второй запрос двойного нажатия: первый уже вошёл.
+                    await client.query('ROLLBACK');
+                    res.locals.joined = true;
+                    const existing = await dbGet('SELECT id FROM chats WHERE room_id = $1 AND user_id = $2', [room.id, req.session.userId]);
+                    return res.json(existing ? { success: true, chat: { id: existing.id } } : { success: false, message: 'Чат уже добавлен' });
+                }
+                // Всё, что было в комнате до входа, — не «непрочитанное»:
+                // прочитать это новое устройство всё равно не может.
+                chatResult = await client.query(
+                    `INSERT INTO chats (user_id, room_id, name, avatar, online, is_bot, last_read_id, last_delivered_id)
+                     SELECT $1, $2, $3, $4, $5, $6, top, top
+                     FROM (SELECT COALESCE(max(id), 0) AS top FROM messages WHERE room_id = $2) t
+                     RETURNING id`,
+                    [req.session.userId, room.id, chatName, avatar, 0, 0]
+                );
+                await client.query('COMMIT');
+            } catch (err) {
+                await client.query('ROLLBACK').catch(() => {});
+                throw err;
+            } finally {
+                client.release();
+            }
             res.locals.joined = true;
             await ctx.disappearingMessagesManager.copyRoomExpiry(chatResult.rows[0].id, room.id);
             const me = await dbGet('SELECT username FROM users WHERE id = $1', [req.session.userId]);
@@ -318,6 +342,7 @@ module.exports = function registerChatRoutes(app, ctx) {
 
     app.get('/api/search', async (req, res) => {
         if (!req.session.userId) return res.json({ success: false, message: 'Не авторизован' });
+        if (!onlyStrings(req.query.q)) return res.status(400).json(BAD_FIELDS);
         const query = req.query.q || '';
         // results всегда объект с chats: раньше на пустой запрос отдавался массив,
         // и форма ответа отличалась от успешного случая.

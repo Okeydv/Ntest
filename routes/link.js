@@ -23,6 +23,7 @@ const { log } = require('../lib/log');
 const { dbGet, dbRun } = require('../lib/db');
 const { linkStartLimiter, joinLimiter } = require('../lib/rate-limits');
 const { deviceLabelFromUa } = require('../lib/helpers');
+const { recordSecurityEvent } = require('../lib/security-events');
 
 const LINK_TTL_SECONDS = 5 * 60;
 const TOKEN_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
@@ -77,6 +78,7 @@ module.exports = function registerLinkRoutes(app, ctx) {
             if (!link.user_id) return res.json({ success: true, status: 'pending' });
 
             await dbRun('DELETE FROM device_links WHERE token_hash = $1', [tokenHash]);
+            await recordSecurityEvent(link.user_id, 'link_login', { req });
             await ctx.startSession(req, {
                 userId: link.user_id, username: link.username, uniqueCode: link.unique_code, avatar: link.avatar || '',
             });
@@ -134,6 +136,7 @@ module.exports = function registerLinkRoutes(app, ctx) {
                 [req.session.userId, link.token_hash]
             );
             if (updated.rowCount !== 1) return res.status(409).json({ success: false, message: 'Код уже использован' });
+            await recordSecurityEvent(req.session.userId, 'link_approved', { label: link.label });
             res.locals.joined = true;
             res.json({ success: true });
         } catch (error) {

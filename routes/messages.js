@@ -6,7 +6,7 @@ const { log } = require('../lib/log');
 const { pool, dbGet, dbAll, dbRun } = require('../lib/db');
 const { normalizeExpiry } = require('../lib/disappearing-messages');
 const { sanitizeText } = require('../lib/privacy');
-const { getCurrentTime, getSocketRoomKey } = require('../lib/helpers');
+const { onlyStrings, BAD_FIELDS, getCurrentTime, getSocketRoomKey } = require('../lib/helpers');
 const { receiptsFor, statusFor } = require('../lib/read-state');
 const { BLOB_ID_RE, MAX_BLOBS_PER_MESSAGE, purgeMessageContent } = require('../lib/storage');
 
@@ -564,6 +564,7 @@ module.exports = function registerMessageRoutes(app, ctx) {
     app.post('/api/messages', async (req, res) => {
         if (!req.session.userId) return res.json({ success: false, message: 'Не авторизован' });
         const { chatId, text, replyToId, expirySeconds } = req.body;
+        if (!onlyStrings(text)) return res.status(400).json(BAD_FIELDS);
         if (!text || text.trim() === '' || !chatId) return res.json({ success: false, message: 'Введите текст сообщения' });
         if (text.length > 4000) return res.json({ success: false, message: 'Сообщение не может быть длиннее 4000 символов' });
 
@@ -642,6 +643,7 @@ module.exports = function registerMessageRoutes(app, ctx) {
         if (!req.session.userId) return res.json({ success: false, message: 'Не авторизован' });
         const { messageId } = req.params;
         const { text } = req.body;
+        if (!onlyStrings(text)) return res.status(400).json(BAD_FIELDS);
         if (!text || text.trim() === '') return res.json({ success: false, message: 'Текст не может быть пустым' });
         if (text.length > 4000) return res.json({ success: false, message: 'Сообщение не может быть длиннее 4000 символов' });
 

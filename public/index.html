@@ -389,12 +389,12 @@
                 <div class="field">
                     <span class="field-label">Цвет аватара</span>
                     <div class="color-picker">
-                        <button class="color-option" data-color="#6D5EFC" style="background:#6D5EFC" aria-label="Индиго" type="button"></button>
-                        <button class="color-option" data-color="#A86CF5" style="background:#A86CF5" aria-label="Фиолетовый" type="button"></button>
-                        <button class="color-option" data-color="#4FACFE" style="background:#4FACFE" aria-label="Голубой" type="button"></button>
-                        <button class="color-option" data-color="#2DD4A7" style="background:#2DD4A7" aria-label="Зелёный" type="button"></button>
-                        <button class="color-option" data-color="#FA709A" style="background:#FA709A" aria-label="Розовый" type="button"></button>
-                        <button class="color-option" data-color="#F5A524" style="background:#F5A524" aria-label="Янтарный" type="button"></button>
+                        <button class="color-option" data-color="#6D5EFC" aria-label="Индиго" type="button"></button>
+                        <button class="color-option" data-color="#A86CF5" aria-label="Фиолетовый" type="button"></button>
+                        <button class="color-option" data-color="#4FACFE" aria-label="Голубой" type="button"></button>
+                        <button class="color-option" data-color="#2DD4A7" aria-label="Зелёный" type="button"></button>
+                        <button class="color-option" data-color="#FA709A" aria-label="Розовый" type="button"></button>
+                        <button class="color-option" data-color="#F5A524" aria-label="Янтарный" type="button"></button>
                     </div>
                 </div>
                 <!-- Все устройства, на которых открыт аккаунт. Незнакомое — повод сменить
@@ -403,6 +403,11 @@
                     <h4 id="devices-title" class="field-label">Устройства</h4>
                     <ul id="devices-list" class="devices-list"></ul>
                     <button id="link-device-btn" class="btn btn-secondary btn-block" type="button">Подключить устройство по QR-коду</button>
+                </section>
+                <!-- Незнакомый вход или неверные пароли — повод сменить пароль и отозвать устройство. -->
+                <section id="security-section" class="devices-section" aria-labelledby="security-title" hidden>
+                    <h4 id="security-title" class="field-label">Журнал безопасности</h4>
+                    <ul id="security-list" class="security-list"></ul>
                 </section>
                 <div class="field">
                     <label class="toggle-row">

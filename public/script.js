@@ -16,6 +16,8 @@ const elements = {
     registerBtn: document.getElementById('register-btn'),
     anonymousLoginBtn: document.getElementById('anonymous-login-btn'),
     logoutBtn: document.getElementById('logout-btn'),
+    securitySection: document.getElementById('security-section'),
+    securityList: document.getElementById('security-list'),
     connectionStatus: document.getElementById('connection-status'),
     readReceiptsToggle: document.getElementById('read-receipts-toggle'),
     linkLoginBtn: document.getElementById('link-login-btn'),
@@ -198,6 +200,36 @@ async function checkNewDevices() {
     const fresh = known ? active.filter(d => d.id !== e2eeDeviceId && !known.includes(d.id)) : [];
     await e2ee.rememberOwnDevices(active.map(d => d.id));
     notifyNewDevices(fresh);
+}
+
+const SECURITY_EVENT_TEXT = {
+    login: 'Вход по паролю',
+    login_failed: 'Неверный пароль',
+    password_changed: 'Пароль изменён',
+    device_added: 'Подключено устройство',
+    device_revoked: 'Устройство отозвано',
+    link_approved: 'Подтверждён вход по QR-коду',
+    link_login: 'Вход по QR-коду',
+};
+
+async function renderSecurityEvents() {
+    const data = await api('/api/security-events').catch(() => null);
+    const events = data && data.success ? data.events : [];
+    elements.securitySection.hidden = events.length === 0;
+    elements.securityList.replaceChildren(...events.map(event => {
+        const item = document.createElement('li');
+        item.className = 'security-item';
+        if (event.kind === 'login_failed') item.classList.add('is-warn');
+        const what = document.createElement('span');
+        what.className = 'security-what';
+        what.textContent = SECURITY_EVENT_TEXT[event.kind] || event.kind;
+        const meta = document.createElement('span');
+        meta.className = 'security-meta';
+        const at = new Date(event.created_at);
+        meta.textContent = [event.label, Number.isNaN(at.getTime()) ? '' : fullFormat.format(at)].filter(Boolean).join(' · ');
+        item.append(what, meta);
+        return item;
+    }));
 }
 
 async function renderDevices() {
@@ -1257,6 +1289,7 @@ function setupEventListeners() {
             }
             elements.readReceiptsToggle.checked = data.user.sendReadReceipts !== false;
             await renderDevices();
+            await renderSecurityEvents();
             openModal(elements.profileModal);
         }
     });

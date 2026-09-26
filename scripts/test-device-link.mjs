@@ -108,6 +108,10 @@ check('старое устройство узнаёт о новом', /подк�
 check('код одноразовый', await laptop.evaluate(t => api('/api/link/approve', { method: 'POST', body: JSON.stringify({ token: t }) })
     .then(r => r.success === false), token));
 
+const linkEvents = await laptop.evaluate(async () => (await api('/api/security-events')).events.map(e => e.kind));
+check('в журнале безопасности — подтверждение и вход по QR', linkEvents.includes('link_approved') && linkEvents.includes('link_login'),
+    linkEvents.join(', '));
+
 /* ------------------------- только тот, кто показал код ------------------------- */
 
 const other = await openApp('other');
