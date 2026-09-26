@@ -1892,6 +1892,7 @@ app.post('/api/messages/encrypted', async (req, res) => {
             };
             const keyByDevice = new Map(keys.parsed.map(e => [e.deviceId, {
                 id: e.id,
+                room_id: roomId,
                 sender_device_id: senderDeviceId,
                 envelope_type: e.type,
                 header: b64(e.header),
@@ -2061,6 +2062,7 @@ app.get('/api/messages/:chatId', async (req, res) => {
                 [req.session.deviceId, chat.room_id]
             )).map(e => ({
                 id: Number(e.id),
+                room_id: chat.room_id,
                 sender_user_id: e.sender_user_id,
                 sender_device_id: e.sender_device_id,
                 envelope_type: e.envelope_type,

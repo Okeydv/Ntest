@@ -133,6 +133,27 @@ export const sessions = {
 };
 
 /**
+ * Прежние состояния сессии с устройством — последние несколько. Новая
+ * сессия (собеседник начал заново) не стирает прежнюю: по ней ещё могут
+ * идти сообщения, отправленные раньше, а при встречном начале переписки
+ * обе стороны какое-то время пишут каждая по своей.
+ */
+export const previousSessions = {
+    load: async (userId, deviceId) => (await get(STORE_META, `prev:${sessionKey(userId, deviceId)}`)) || [],
+    save: (userId, deviceId, list) => put(STORE_META, `prev:${sessionKey(userId, deviceId)}`, list),
+};
+
+/**
+ * Базовые (эфемерные) ключи prekey-сообщений, по которым уже строилась
+ * сессия. Повтор такого сообщения — это старое сообщение, а не новое
+ * начало переписки, и сессию он строить заново не должен.
+ */
+export const baseKeys = {
+    load: async (userId, deviceId) => (await get(STORE_META, `base:${sessionKey(userId, deviceId)}`)) || [],
+    save: (userId, deviceId, list) => put(STORE_META, `base:${sessionKey(userId, deviceId)}`, list),
+};
+
+/**
  * Расшифрованный текст сообщений — и своих, и чужих.
  *
  * Кэш здесь обязателен, а не оптимизация. Ключ сообщения в Double Ratchet

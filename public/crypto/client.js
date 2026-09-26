@@ -318,6 +318,10 @@ async function encryptPairwise(targets, plaintext) {
  * В кэш ничего не кладёт: что это — содержимое или раздача ключа, решает
  * вызывающий.
  */
+// Сколько прежних состояний сессии держать и сколько базовых ключей помнить.
+const MAX_PREVIOUS_SESSIONS = 5;
+const MAX_BASE_KEYS = 200;
+
 async function openEnvelope(senderUserId, senderDeviceId, envelope) {
     if (!senderDeviceId || !senderUserId) return null;
 
@@ -325,29 +329,57 @@ async function openEnvelope(senderUserId, senderDeviceId, envelope) {
     const ciphertext = fromB64(envelope.ciphertext);
     const isPrekey = Number(envelope.envelope_type) === ENVELOPE_PREKEY;
 
-    const session = await loadSession(senderUserId, senderDeviceId);
-    if (session) {
+    const saved = await store.sessions.load(senderUserId, senderDeviceId);
+    if (saved) {
+        const session = await importSession(saved);
         try {
             const text = await decryptToText(session, headerBytes, ciphertext);
             await saveSession(senderUserId, senderDeviceId, session);
             return text;
-        } catch (e) {
-            // Существующая сессия не подошла. Для prekey-сообщения это
-            // нормально: собеседник мог начать заново, потеряв своё
-            // состояние. Для обычного — сообщение потеряно.
-            if (!isPrekey) {
-                console.warn('[E2EE] сообщение не расшифровано:', e.message);
-                return null;
-            }
+        } catch {
+            // Не подошла — пробуем прежние состояния, потом (для prekey-
+            // сообщения) новую сессию.
         }
     }
 
-    if (!isPrekey) return null;
+    // Прежние состояния: сообщение могло уйти по сессии, которую у нас уже
+    // сменила другая. Раз собеседник пишет по ней, она и становится
+    // текущей — отвечать будем тоже по ней.
+    const previous = await store.previousSessions.load(senderUserId, senderDeviceId);
+    for (let i = 0; i < previous.length; i++) {
+        const candidate = await importSession(previous[i]);
+        try {
+            const text = await decryptToText(candidate, headerBytes, ciphertext);
+            const rest = previous.filter((_, j) => j !== i);
+            if (saved) rest.unshift(saved);
+            await store.previousSessions.save(senderUserId, senderDeviceId, rest.slice(0, MAX_PREVIOUS_SESSIONS));
+            await saveSession(senderUserId, senderDeviceId, candidate);
+            return text;
+        } catch {
+            // следующее
+        }
+    }
+
+    if (!isPrekey) {
+        console.warn('[E2EE] сообщение не расшифровано ни одной из сессий');
+        return null;
+    }
 
     try {
         const header = parseHeader(headerBytes);
         const signingKey = toB64(header.identitySigningKey);
         const dhKey = toB64(header.identityDhKey);
+        // Сессия по этому prekey-сообщению уже строилась. Раз ни одна из
+        // сохранённых его не открыла, это повтор старого сообщения (сервер
+        // может прислать его ещё раз). Построенная по нему заново сессия
+        // заменила бы рабочую — и переписка с собеседником сломалась бы:
+        // без одноразового prekey такое сообщение открывается снова и снова.
+        const baseKey = toB64(header.ephemeralKey);
+        const seenBaseKeys = await store.baseKeys.load(senderUserId, senderDeviceId);
+        if (seenBaseKeys.includes(baseKey)) {
+            console.warn(`[E2EE] повтор prekey-сообщения от устройства ${senderDeviceId} — отвергнут`);
+            return null;
+        }
         // Проверка до acceptSession: тот съел бы одноразовый prekey.
         if (await identityStatus(senderUserId, senderDeviceId, signingKey, dhKey) === 'changed') {
             console.error(`[E2EE] сообщение от устройства ${senderDeviceId} подписано чужим ключом — отвергнуто`);
@@ -361,6 +393,13 @@ async function openEnvelope(senderUserId, senderDeviceId, envelope) {
         });
         const text = await decryptToText(fresh, headerBytes, ciphertext);
         await rememberIdentity(senderUserId, senderDeviceId, signingKey, dhKey);
+        // Прежняя сессия уходит в архив, а не стирается.
+        if (saved) {
+            await store.previousSessions.save(senderUserId, senderDeviceId,
+                [saved, ...previous].slice(0, MAX_PREVIOUS_SESSIONS));
+        }
+        await store.baseKeys.save(senderUserId, senderDeviceId,
+            [baseKey, ...seenBaseKeys].slice(0, MAX_BASE_KEYS));
         await saveSession(senderUserId, senderDeviceId, fresh);
         // Входящий первый контакт съел одноразовый prekey — пул мог
         // просесть, проверяем не дожидаясь следующего запуска.
@@ -521,9 +560,17 @@ function parseDistribution(text) {
     }
 }
 
-async function importKeyDistribution(senderUserId, senderDeviceId, d) {
+/**
+ * Принять sender key. deliveredRoomId — комната, в которой пришёл конверт.
+ * Комната внутри раздачи зашифрована и подписана отправителем, комнату
+ * доставки называет сервер; они обязаны совпасть. Иначе участник одной
+ * комнаты мог бы раздать ключ «для» другой, где его нет, и сообщения от
+ * его устройства там расшифровывались бы как настоящие.
+ */
+async function importKeyDistribution(senderUserId, senderDeviceId, d, deliveredRoomId) {
     const roomId = Number(d.room);
     if (!Number.isInteger(roomId) || roomId <= 0) throw new Error('distribution: некорректная комната');
+    if (roomId !== Number(deliveredRoomId)) throw new Error('distribution: ключ для другой комнаты');
     const session = importDistribution(d);
     const key = distributionKey(session.distributionId);
     // Уже известный ключ не перезаписываем: у сохранённого могут быть
@@ -548,7 +595,7 @@ async function acceptKeyEnvelopes(list) {
         try {
             const text = await openEnvelope(e.sender_user_id, e.sender_device_id, e);
             const d = parseDistribution(text);
-            if (d) await importKeyDistribution(e.sender_user_id, e.sender_device_id, d);
+            if (d) await importKeyDistribution(e.sender_user_id, e.sender_device_id, d, e.room_id);
             else if (text !== null) console.warn('[E2EE] в конверте ключа не раздача ключа — пропущен');
         } catch (err) {
             console.warn('[E2EE] sender key не принят:', err.message);
@@ -615,7 +662,7 @@ async function decryptIncomingNow(message) {
     // По сокету конверт с ключом приходит вместе с сообщением. Он первым:
     // без ключа групповое сообщение не расшифровать.
     if (message.keyEnvelope) {
-        await acceptKeyEnvelopes([{ ...message.keyEnvelope, sender_user_id: senderUserId }]);
+        await acceptKeyEnvelopes([{ ...message.keyEnvelope, sender_user_id: senderUserId, room_id: message.room_id }]);
     }
 
     if (message.group) {
@@ -635,7 +682,7 @@ async function decryptIncomingNow(message) {
     const d = parseDistribution(text);
     if (d) {
         try {
-            await importKeyDistribution(senderUserId, senderDeviceId, d);
+            await importKeyDistribution(senderUserId, senderDeviceId, d, message.room_id);
         } catch (err) {
             console.warn('[E2EE] sender key не принят:', err.message);
         }
