@@ -160,7 +160,9 @@ async function initDatabase() {
     log.info('База данных инициализирована');
 }
 
-initDatabase().catch(err => {
+// Порт открывается только после миграций: раньше сервер принимал запросы
+// сразу, и первые из них падали с 500 на ещё не созданных таблицах.
+const databaseReady = initDatabase().catch(err => {
     log.error({ err: err }, 'Ошибка инициализации БД');
     process.exit(1);
 });
@@ -397,7 +399,7 @@ app.use((err, req, res, next) => {
     res.status(500).json({ success: false, message: 'Внутренняя ошибка сервера' });
 });
 
-server.listen(PORT, HOST, async () => {
+databaseReady.then(() => server.listen(PORT, HOST, async () => {
     log.info({ port: PORT, addresses: getLocalAddresses().map(addr => `http://${addr}:${PORT}`) }, 'Nyxo запущен');
 
     if (ENABLE_TOR_ROUTING) {
@@ -415,4 +417,4 @@ server.listen(PORT, HOST, async () => {
     const sweepUploads = () => sweepOrphanUploads(UPLOADS_DIR, { dbAll, ttlMs: ORPHAN_UPLOAD_TTL_MS })
         .catch(error => log.error({ err: error }, 'Uploads sweep error'));
     setInterval(sweepUploads, ORPHAN_UPLOAD_TTL_MS).unref();
-});
+}));

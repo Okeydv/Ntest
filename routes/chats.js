@@ -373,9 +373,10 @@ module.exports = function registerChatRoutes(app, ctx) {
             // Собеседники должны знать, что их сообщения теперь исчезают.
             if (chat.room_id && before !== seconds) {
                 const name = req.session.username || 'Участник';
-                await postSystemMessage({ roomId: chat.room_id, chatId: chat.id, text: seconds
-                    ? `${name} включил(а) исчезающие сообщения: ${expiryLabel(seconds)}`
-                    : `${name} выключил(а) исчезающие сообщения` });
+                const text = !seconds ? `${name} выключил(а) исчезающие сообщения`
+                    : before ? `${name} изменил(а) срок исчезающих сообщений: ${expiryLabel(seconds)}`
+                        : `${name} включил(а) исчезающие сообщения: ${expiryLabel(seconds)}`;
+                await postSystemMessage({ roomId: chat.room_id, chatId: chat.id, text });
                 io.to(`room:${chat.room_id}`).emit('chatExpiryChanged', { room_id: chat.room_id, expirySeconds: seconds });
             }
 

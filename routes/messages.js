@@ -114,7 +114,7 @@ module.exports = function registerMessageRoutes(app, ctx) {
     // чата. Возвращает момент исчезновения или null.
     async function applyExpiry(messageId, chatId, expiry) {
         const seconds = expiry || (await ctx.disappearingMessagesManager.getChatSettings(chatId))?.default_message_expiry;
-        return seconds ? ctx.disappearingMessagesManager.setMessageExpiry(messageId, seconds, false) : null;
+        return seconds ? ctx.disappearingMessagesManager.setMessageExpiry(messageId, seconds) : null;
     }
 
     function expiryFrom(value) {
@@ -791,7 +791,7 @@ module.exports = function registerMessageRoutes(app, ctx) {
     app.post('/api/messages/:messageId/set-expiry', async (req, res) => {
         if (!req.session.userId) return res.json({ success: false, message: 'Не авторизован' });
         const messageId = Number(req.params.messageId);
-        const { expirySeconds, autoDeleteOnRead } = req.body;
+        const { expirySeconds } = req.body;
 
         if (!Number.isFinite(messageId) || normalizeExpiry(expirySeconds) === null) {
             return res.json({ success: false, message: 'Неверные параметры' });
@@ -806,11 +806,7 @@ module.exports = function registerMessageRoutes(app, ctx) {
                 return res.json({ success: false, message: 'Сообщение не найдено или нет доступа' });
             }
 
-            await ctx.disappearingMessagesManager.setMessageExpiry(
-                messageId,
-                expirySeconds,
-                autoDeleteOnRead || false
-            );
+            await ctx.disappearingMessagesManager.setMessageExpiry(messageId, expirySeconds);
 
             res.json({ success: true, message: 'Таймер самоуничтожения установлен' });
         } catch (error) {
@@ -819,5 +815,5 @@ module.exports = function registerMessageRoutes(app, ctx) {
         }
     });
 
-    return { userCanAccessMessage };
+    return { userCanAccessMessage, applyExpiry };
 };

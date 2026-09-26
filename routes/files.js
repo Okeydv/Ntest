@@ -323,6 +323,9 @@ module.exports = function registerFileRoutes(app, ctx) {
             // «Доставлено» и «прочитано» больше не подделываются таймерами:
             // их ставят отметки собеседников (lib/read-state.js).
 
+            // Срок чата — и для файлов: раньше они не исчезали вовсе.
+            const expiresAt = await ctx.applyExpiry(messageId, chatId, null);
+
             const fileMessage = {
                 id: messageId, chat_id: Number(chatId), room_id: roomId, user_id: req.session.userId,
                 sender_username: senderUsername, sender_avatar: senderAvatar,
@@ -330,6 +333,7 @@ module.exports = function registerFileRoutes(app, ctx) {
                 file_type: fileType, message_type: messageType, sent: true, time, status: 'sent',
                 // Без него получатель не знал дня и показывал время сервера.
                 created_at: createdAt,
+                expires_at: expiresAt,
             };
             io.to(socketRoomKey).emit('newMessage', fileMessage);
             res.json({ success: true, message: fileMessage });

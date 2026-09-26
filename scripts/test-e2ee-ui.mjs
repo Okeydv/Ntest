@@ -174,6 +174,42 @@ check('собеседник сразу видит срок в шапке', await
 check('и системное сообщение, кто включил',
     (await systemLines(bob.page)).some(t => t === 'alice включил(а) исчезающие сообщения: 1 час'),
     JSON.stringify(await systemLines(bob.page)));
+check('себе — «Вы включили», со значком таймера',
+    await alice.page.evaluate(() => [...document.querySelectorAll('#chat-messages .message-system')]
+        .some(l => l.textContent === 'Вы включили исчезающие сообщения: 1 час' && l.querySelector('svg.icon'))),
+    JSON.stringify(await systemLines(alice.page)));
+
+// Сменили срок — «изменил(а) срок»; тост с «Отменить» возвращает прежний.
+await alice.page.click('#chat-menu-btn');
+await alice.page.selectOption('#chat-expiry-select', '86400');
+await alice.page.waitForTimeout(1000);
+const expiryToast = await alice.page.evaluate(() => {
+    const t = document.getElementById('toast');
+    return { text: t.querySelector('.toast-text')?.textContent, action: t.querySelector('.toast-action')?.textContent,
+        icon: Boolean(t.querySelector('.toast-icon')), bg: getComputedStyle(t).backgroundColor,
+        theme: document.documentElement.dataset.theme };
+});
+check('тост: «Исчезающие сообщения: 1 день · Отменить», со значком, цвета противоположного теме',
+    expiryToast.text === 'Исчезающие сообщения: 1 день' && expiryToast.action === 'Отменить' && expiryToast.icon
+    && expiryToast.bg === (expiryToast.theme === 'light' ? 'rgb(27, 27, 39)' : 'rgb(242, 243, 247)'), JSON.stringify(expiryToast));
+check('собеседнику — «изменил(а) срок»',
+    (await systemLines(bob.page)).includes('alice изменил(а) срок исчезающих сообщений: 1 день'), JSON.stringify(await systemLines(bob.page)));
+await alice.page.click('#toast .toast-action');
+await alice.page.waitForTimeout(1200);
+check('«Отменить» вернул прежний срок — и у собеседника',
+    await expiryBadge(alice.page) === '1 час' && await expiryBadge(bob.page) === '1 час',
+    `${await expiryBadge(alice.page)} / ${await expiryBadge(bob.page)}`);
+await alice.page.keyboard.press('Escape');
+
+// Файл по открытому пути тоже получает срок чата.
+const fileExpiry = await alice.page.evaluate(async () => {
+    const form = new FormData();
+    form.append('file', new Blob(['заметка'], { type: 'text/plain' }), 'note.txt');
+    form.append('chatId', String(currentChatId));
+    const r = await fetch('/api/messages/file', { method: 'POST', headers: { 'X-CSRF-Token': await csrfToken() }, body: form });
+    return (await r.json()).message?.expires_at || null;
+});
+check('файл без шифрования тоже получает срок чата', Boolean(fileExpiry), String(fileExpiry));
 
 await bob.page.fill('#message-input', 'исчезнет через час');
 await bob.page.click('#send-btn');

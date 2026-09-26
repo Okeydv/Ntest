@@ -12,7 +12,8 @@
 //   - «Повторить» после ошибки отправляет в тот чат, где была ошибка
 //   - на телефоне: открытый чат прячет список, «назад» (и системная тоже)
 //     возвращает к нему; тост не сжимается в узкую колонку
-//   - удаление с «Вернуть»: отмена возвращает сообщение и не трогает сервер;
+//   - удаление с «Вернуть»: пузырь плавно сжимается, отмена возвращает
+//     сообщение и не трогает сервер;
 //     без отмены через 5 секунд сообщение удаляется; при закрытии страницы
 //     удаление не теряется
 //   - ошибка сервера показывается с кодом; «Отчёт об ошибке» в профиле
@@ -225,7 +226,8 @@ await page.keyboard.press('Escape');
 await page.waitForTimeout(300);
 check('и то и другое видно в переписке', await page.evaluate(() => {
     const lines = [...document.querySelectorAll('#chat-messages .message-system')].map(el => el.textContent);
-    return lines.some(t => t.includes('сменил(а) код')) && lines.some(t => t.includes('отключил(а) приглашение'));
+    // О себе — «Вы …»: себе строка в третьем лице читалась бы странно.
+    return lines.includes('Вы сменили код приглашения') && lines.includes('Вы отключили приглашение');
 }));
 
 /* ------------------------- цитата ответа ------------------------- */
@@ -260,8 +262,20 @@ async function deleteViaMenu(text) {
 }
 
 const firstId = await idOf('первое');
+// Записываем высоту пузыря на каждом кадре: сжимается плавно, а не скачком.
+await page.evaluate(id => {
+    const el = document.querySelector(`[data-message-id="${id}"]`);
+    window.__heights = [];
+    const tick = () => { window.__heights.push(el.hidden ? 0 : el.getBoundingClientRect().height); if (!el.hidden) requestAnimationFrame(tick); };
+    requestAnimationFrame(tick);
+}, firstId);
 await deleteViaMenu('первое');
-check('после «Удалить» сообщение сразу пропадает с экрана',
+await page.waitForTimeout(400);
+const heights = await page.evaluate(() => window.__heights);
+const full = heights[0];
+check('удалённое сжимается плавно (~150 мс), а не пропадает скачком',
+    heights.some(h => h > 0 && h < full - 1) && heights.at(-1) === 0, heights.map(h => Math.round(h)).join(' '));
+check('после «Удалить» сообщение пропадает с экрана',
     await page.evaluate(id => document.querySelector(`[data-message-id="${id}"]`).hidden, firstId));
 check('в тосте есть «Вернуть»', (await page.textContent('#toast')).includes('Вернуть'));
 await page.click('#toast .toast-action');

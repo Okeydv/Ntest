@@ -909,7 +909,9 @@ function showToast(message, type = 'info', { action = null, duration = null } = 
     const text = document.createElement('span');
     text.className = 'toast-text';
     text.textContent = message;
-    toast.replaceChildren(text);
+    const icon = createIcon(type === 'success' ? 'i-check' : type === 'error' ? 'i-alert' : 'i-info');
+    icon.classList.add('toast-icon');
+    toast.replaceChildren(icon, text);
     if (action) {
         const button = document.createElement('button');
         button.type = 'button';
@@ -1180,25 +1182,30 @@ function setupEventListeners() {
         openModal(elements.chatMenuModal);
     });
     elements.chatExpiry.addEventListener('click', () => openModal(elements.chatMenuModal));
-    elements.chatExpirySelect.addEventListener('change', async () => {
+    // Смена срока с «Отменить»: выбрали не то — вернуть прежний одним нажатием.
+    const setChatExpiry = async (expirySeconds, { undoable = true } = {}) => {
         const select = elements.chatExpirySelect;
-        const expirySeconds = Number(select.value);
+        const previous = chatExpirySeconds || 0;
+        const chatId = currentChatId;
         select.disabled = true;
         try {
-            const data = await api(`/api/chats/${currentChatId}/set-default-expiry`, {
+            const data = await api(`/api/chats/${chatId}/set-default-expiry`, {
                 method: 'POST', body: JSON.stringify({ expirySeconds }) });
             if (!data.success) {
-                select.value = String(chatExpirySeconds || 0);
+                select.value = String(previous);
                 return showToast(data.message, 'error');
             }
-            showChatExpiry(data.expirySeconds);
-            showToast(data.expirySeconds
-                ? `Новые сообщения исчезнут ${expiryPhrase(data.expirySeconds)}`
-                : 'Исчезающие сообщения выключены', 'success');
+            if (chatId === currentChatId) showChatExpiry(data.expirySeconds);
+            showToast(`Исчезающие сообщения: ${data.expirySeconds ? expiryName(data.expirySeconds) : 'выключены'}`, 'success',
+                undoable && previous !== (data.expirySeconds || 0) ? {
+                    duration: 6000,
+                    action: { label: 'Отменить', onClick: () => currentChatId === chatId && setChatExpiry(previous, { undoable: false }) },
+                } : {});
         } finally {
             select.disabled = false;
         }
-    });
+    };
+    elements.chatExpirySelect.addEventListener('change', () => setChatExpiry(Number(elements.chatExpirySelect.value)));
 
     elements.deleteChatBtn.addEventListener('click', deleteChat);
 
@@ -1934,6 +1941,21 @@ const EXPIRY_UNITS = [
     [3600, ['час', 'часа', 'часов']], [60, ['минуту', 'минуты', 'минут']], [1, ['секунду', 'секунды', 'секунд']],
 ];
 
+const EXPIRY_NAMES = [
+    [604800, ['неделя', 'недели', 'недель']], [86400, ['день', 'дня', 'дней']],
+    [3600, ['час', 'часа', 'часов']], [60, ['минута', 'минуты', 'минут']], [1, ['секунда', 'секунды', 'секунд']],
+];
+
+const pluralForm = n => (n % 10 === 1 && n % 100 !== 11 ? 0 : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? 1 : 2);
+
+// «1 неделя», «5 минут»
+function expiryName(seconds) {
+    for (const [size, forms] of EXPIRY_NAMES) {
+        if (seconds % size === 0) return `${seconds / size} ${forms[pluralForm(seconds / size)]}`;
+    }
+    return `${seconds} с`;
+}
+
 // «через 1 день», «через 5 минут»
 function expiryPhrase(seconds) {
     for (const [size, forms] of EXPIRY_UNITS) {
@@ -2300,13 +2322,37 @@ function showInviteCode(code) {
     elements.disableInviteBtn.hidden = !code;
 }
 
+/*
+ * Системная строка пишется сервером в третьем лице («alice включил(а)…»).
+ * О себе — «Вы включили…».
+ */
+const SELF_VERBS = [
+    [/^включил\(а\)/, 'включили'], [/^выключил\(а\)/, 'выключили'], [/^изменил\(а\)/, 'изменили'],
+    [/^вошёл\(ла\)/, 'вошли'], [/^вышел\(ла\)/, 'вышли'], [/^сменил\(а\)/, 'сменили'], [/^отключил\(а\)/, 'отключили'],
+];
+
+function systemLineText(text) {
+    const me = currentUser && currentUser.username;
+    if (!me || !text.startsWith(`${me} `)) return text;
+    let rest = text.slice(me.length + 1);
+    for (const [pattern, replacement] of SELF_VERBS) {
+        if (pattern.test(rest)) {
+            rest = rest.replace(pattern, replacement);
+            return `Вы ${rest}`;
+        }
+    }
+    return text;
+}
+
 function createMessageElement(message) {
     // Событие чата (вошёл, вышел, сменил код) — строкой, без меню.
     if (message.message_type === 'system') {
         const line = document.createElement('div');
         line.className = 'message-system';
         line.dataset.messageId = message.id;
-        line.textContent = message.text || '';
+        const text = systemLineText(message.text || '');
+        if (/исчезающ/.test(text)) line.appendChild(createIcon('i-timer'));
+        line.append(text);
         return line;
     }
     const isMine = isOwnMessage(message);
@@ -2574,11 +2620,37 @@ function setupMessageMenu() {
 const UNDO_DELETE_MS = 5000;
 const pendingDeletes = new Map();
 
+/*
+ * Удалённое не пропадает скачком: пузырь за 150 мс сжимается по высоте и
+ * гаснет, соседние сообщения плавно смыкаются. Потом — hidden, как раньше.
+ */
+const COLLAPSE_MS = 150;
+
+function collapseMessage(el) {
+    el.style.height = `${el.offsetHeight}px`;
+    el.getBoundingClientRect();
+    el.classList.add('is-collapsing');
+    el.style.height = '0px';
+    el.collapseTimer = setTimeout(() => {
+        el.hidden = true;
+        el.classList.remove('is-collapsing');
+        el.style.height = '';
+        refreshMessageTabStop();
+    }, COLLAPSE_MS);
+}
+
+function expandMessage(el) {
+    clearTimeout(el.collapseTimer);
+    el.classList.remove('is-collapsing');
+    el.style.height = '';
+    el.hidden = false;
+    refreshMessageTabStop();
+}
+
 function scheduleDelete(messageId) {
     const el = elements.chatMessages.querySelector(`[data-message-id="${messageId}"]`);
     if (!el || pendingDeletes.has(messageId)) return;
-    el.hidden = true;
-    refreshMessageTabStop();
+    collapseMessage(el);
     pendingDeletes.set(messageId, { el, timer: setTimeout(() => commitDelete(messageId), UNDO_DELETE_MS) });
     showToast('Сообщение удалено', 'info', {
         duration: UNDO_DELETE_MS,
@@ -2591,8 +2663,7 @@ function undoDelete(messageId) {
     if (!pending) return;
     clearTimeout(pending.timer);
     pendingDeletes.delete(messageId);
-    pending.el.hidden = false;
-    refreshMessageTabStop();
+    expandMessage(pending.el);
 }
 
 async function commitDelete(messageId) {
@@ -2604,7 +2675,7 @@ async function commitDelete(messageId) {
     if (data && data.success) {
         if (pending.el.isConnected) removeMessageElement(pending.el);
     } else {
-        pending.el.hidden = false;
+        expandMessage(pending.el);
         showToast(`Сообщение не удалено: ${(data && data.message) || 'ошибка сети'}`, 'error');
     }
 }

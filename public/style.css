@@ -84,6 +84,13 @@
     --accent-strong: #5b49f0;
     /* Низ своего пузыря: белое время на нём держит контраст 4,5+. */
     --accent-deep: #4a38dc;
+    /* Тост — противоположного теме цвета (см. .toast). */
+    --toast-bg: #f2f3f7;
+    --toast-ink: #12131a;
+    --toast-ink-2: #4a4d5c;
+    --toast-ok: #0a8566;
+    --toast-danger: #d01f39;
+    --toast-action: #4a38dc;
     --accent-2: #a86cf5;
     --accent-ink: #ffffff;
     --brand-from: #8b7bff;
@@ -141,6 +148,12 @@
 }
 
 [data-theme="light"] {
+    --toast-bg: #1b1b27;
+    --toast-ink: #f2f3f7;
+    --toast-ink-2: #b7b9c7;
+    --toast-ok: #2dd4a7;
+    --toast-danger: #ff7a8a;
+    --toast-action: #b3a8ff;
     color-scheme: light;
 
     --bg: #eef0f5;
@@ -1230,6 +1243,14 @@ input.is-invalid:focus {
 
 /* Появляются только новые сообщения. История при открытии чата не
    анимируется: полсотни пузырей, въезжающих разом, — это не отклик, а шум. */
+.message.is-collapsing {
+    overflow: hidden;
+    opacity: 0;
+    padding-block: 0;
+    margin-block: 0;
+    transition: height 150ms var(--ease), opacity 150ms var(--ease), padding 150ms var(--ease);
+}
+
 .message.is-new {
     animation: messageIn var(--dur-2) var(--ease) both;
 }
@@ -1332,6 +1353,13 @@ input.is-invalid:focus {
 
 /* Системное сообщение — кто вошёл, вышел, сменил код. Не пузырь: это
    событие чата, а не чья-то реплика, и отвечать на него нечего. */
+.message-system .icon {
+    width: 0.8125rem;
+    height: 0.8125rem;
+    margin-right: 0.3125rem;
+    vertical-align: -0.125rem;
+}
+
 .message-system {
     align-self: center;
     max-width: 80%;
@@ -2018,12 +2046,12 @@ dialog.modal::backdrop {
     gap: 0.5rem;
     max-width: min(36rem, calc(100vw - 2.5rem));
     padding: 0.75rem 1.125rem;
-    border: 1px solid var(--border-2);
+    border: 0;
     border-radius: var(--r-md);
-    background: var(--layer-4);
+    background: var(--toast-bg);
     font-size: var(--fs-sm);
     font-weight: 500;
-    color: var(--text);
+    color: var(--toast-ink);
     box-shadow: var(--sh-3);
     animation: toastIn var(--dur-2) var(--ease) both;
 }
@@ -2032,9 +2060,9 @@ dialog.modal::backdrop {
    браузерное «закрытый popover не показывается». */
 .toast:popover-open { display: flex; }
 
-/* В открытом окне поле ввода недоступно, а поднятый тост закрывал бы
-   кнопки внизу окна — там он у самого края экрана. */
-dialog.modal .toast { bottom: calc(1.75rem + env(safe-area-inset-bottom, 0px)); }
+/* В открытом окне поле ввода недоступно, а тост внизу закрывал бы кнопки
+   окна — там он у верхнего края экрана. */
+dialog.modal .toast { top: calc(1rem + env(safe-area-inset-top, 0px)); bottom: auto; }
 
 .toast-text { min-width: 0; }
 
@@ -2047,7 +2075,7 @@ dialog.modal .toast { bottom: calc(1.75rem + env(safe-area-inset-bottom, 0px)); 
     background: none;
     font: inherit;
     font-weight: 600;
-    color: var(--accent);
+    color: var(--toast-action);
     cursor: pointer;
 }
 
@@ -2055,28 +2083,20 @@ dialog.modal .toast { bottom: calc(1.75rem + env(safe-area-inset-bottom, 0px)); 
     .toast-action:hover { background: var(--accent-soft); }
 }
 
-.toast-close { flex-shrink: 0; margin: -0.25rem -0.5rem -0.25rem 0; }
+.toast-close { flex-shrink: 0; margin: -0.25rem -0.5rem -0.25rem 0; color: var(--toast-ink-2); background: none; border-color: transparent; }
 
 @keyframes toastIn {
     from { opacity: 0; transform: translateY(1rem); }
     to { opacity: 1; transform: none; }
 }
 
-/* Тип тоста — цветная полоса слева, а не заливка всей плашки: текст остаётся
-   на нейтральном слое и читается одинаково в обеих темах. */
-.toast::before {
-    content: '';
-    width: 0.25rem;
-    align-self: stretch;
-    flex-shrink: 0;
-    margin: -0.75rem 0.25rem -0.75rem -0.5rem;
-    border-radius: var(--r-pill);
-    background: var(--accent);
-}
-
-.toast.success::before { background: var(--ok); }
-.toast.error::before { background: var(--danger); }
-.toast.info::before { background: var(--accent); }
+/* Тост — плашка противоположного теме цвета: на тёмной теме светлая, на
+   светлой тёмная. Её видно поверх любой переписки и окна. Тип — значком,
+   а не цветной полосой. */
+.toast-icon { width: 1.125rem; height: 1.125rem; flex: none; }
+.toast.success .toast-icon { color: var(--toast-ok); }
+.toast.error .toast-icon { color: var(--toast-danger); }
+.toast.info .toast-icon { color: var(--toast-ink-2); }
 
 /* ============================================================================
    13. АДАПТИВ
