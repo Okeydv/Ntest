@@ -22,7 +22,9 @@ cd "$(dirname "$0")/.."
 
 KEY_SERVER_BIN=${KEY_SERVER_BIN:-e2ee-key-server/target/debug/e2ee-key-server}
 SECRET=test-secret-at-least-32-chars-long-xx
-LOGS=$(mktemp -d)
+# Журналы наборов; в CI каталог задаётся, чтобы выложить его при провале.
+LOGS=${TEST_LOGS:-$(mktemp -d)}
+mkdir -p "$LOGS"
 
 OFFLINE="test-e2ee-crypto test-metadata test-file-sandbox test-media-cleaning test-pdf-cleaning test-e2ee-crypto-browser"
 ONLINE="integration-test-access integration-test-migrations integration-test-security integration-test-devices

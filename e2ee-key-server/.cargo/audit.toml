@@ -1,0 +1,10 @@
+# Настройки cargo audit для сервера ключей.
+
+[advisories]
+ignore = [
+    # rsa (Marvin Attack) попадает в Cargo.lock только через sqlx-mysql:
+    # sqlx записывает в lock-файл драйверы всех баз, но собирается у нас
+    # один postgres. `cargo tree -i rsa` пуст — в бинарник rsa не входит.
+    # Убрать отсюда, если в дереве зависимостей rsa появится по-настоящему.
+    "RUSTSEC-2023-0071",
+]

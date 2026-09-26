@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/nyxo_test
+      TEST_LOGS: ${{ github.workspace }}/test-logs
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            e2ee-key-server/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('e2ee-key-server/Cargo.lock') }}
+
+      # Настоящие программы, файлами которых проверяется очистка метаданных.
+      - name: Программы для тестов очистки
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qpdf libimage-exiftool-perl ghostscript \
+            libreoffice-writer-nogui libopenjp2-tools ffmpeg webp mkvtoolnix
+
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+
+      - name: Сервер ключей
+        working-directory: e2ee-key-server
+        run: |
+          cargo build --locked
+          cargo test --locked
+
+      - name: Тесты
+        run: npm test
+
+      - name: Журналы и трассы упавших наборов
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs
+          path: test-logs
+          retention-days: 7
+
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: npm audit
+        run: npm audit --omit=dev --audit-level=moderate
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: cargo audit
+        working-directory: e2ee-key-server
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
