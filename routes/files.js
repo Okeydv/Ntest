@@ -12,6 +12,7 @@ const { pool, dbGet, dbAll, dbRun } = require('../lib/db');
 const { shared } = require('../lib/shared');
 const { stripMetadataInWorker } = require('../lib/metadata-stripper');
 const { getCurrentTime, getSocketRoomKey } = require('../lib/helpers');
+const { ROOM_EMPTY, canWriteTo } = require('../lib/rooms');
 const {
     BLOBS_DIR, BLOB_ID_RE, MAX_BLOB_BYTES, MIN_BLOB_BYTES, ORPHAN_BLOB_TTL_MS, blobPath,
 } = require('../lib/storage');
@@ -116,6 +117,7 @@ module.exports = function registerFileRoutes(app, ctx) {
                 const chat = await dbGet('SELECT id, room_id FROM chats WHERE id = $1 AND user_id = $2',
                     [chatId, req.session.userId]);
                 if (!chat) return res.status(404).json({ success: false, message: 'Чат не найден' });
+                if (!(await canWriteTo(chat, req.session.userId))) return res.status(409).json(ROOM_EMPTY);
 
                 const id = crypto.randomBytes(16).toString('hex');
                 await fs.promises.writeFile(blobPath(id), body, { flag: 'wx' });
@@ -243,6 +245,18 @@ module.exports = function registerFileRoutes(app, ctx) {
         if (!chatId) {
             cleanupUploadedFile(file);
             return res.status(400).json({ success: false, message: 'Указан чат' });
+        }
+        // До разбора файла: в пустую комнату он всё равно не уйдёт.
+        try {
+            const target = await dbGet('SELECT room_id FROM chats WHERE id = $1 AND user_id = $2', [chatId, req.session.userId]);
+            if (target && !(await canWriteTo(target, req.session.userId))) {
+                cleanupUploadedFile(file);
+                return res.status(409).json(ROOM_EMPTY);
+            }
+        } catch (error) {
+            log.error({ err: error }, 'Room check error');
+            cleanupUploadedFile(file);
+            return res.status(500).json({ success: false, message: 'Ошибка сервера' });
         }
 
         const uploadedFilePath = path.join(ROOT, 'uploads', file.filename);

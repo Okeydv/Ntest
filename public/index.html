@@ -69,6 +69,9 @@
         <symbol id="i-user" viewBox="0 0 24 24">
             <circle cx="12" cy="8" r="3.9"/><path d="M4.5 20.5v-1.2A4.3 4.3 0 0 1 8.8 15h6.4a4.3 4.3 0 0 1 4.3 4.3v1.2"/>
         </symbol>
+        <symbol id="i-user-plus" viewBox="0 0 24 24">
+            <circle cx="10" cy="8" r="3.6"/><path d="M3.5 20.5v-1a4.2 4.2 0 0 1 4.2-4.2h4.6a4.2 4.2 0 0 1 4.2 4.2v1M18.5 7.5v6M15.5 10.5h6"/>
+        </symbol>
         <symbol id="i-logout" viewBox="0 0 24 24">
             <path d="M9.5 20.5H6a2 2 0 0 1-2-2v-13a2 2 0 0 1 2-2h3.5"/><path d="M16 16.5l4.5-4.5L16 7.5"/><path d="M20.5 12H9.5"/>
         </symbol>
@@ -260,6 +263,21 @@
             </div>
 
             <div id="chat-messages" class="chat-messages"></div>
+            <!-- Группа, где пока только вы: писать некому, и сервер такое не примет —
+                 шифровать не для кого, текст лёг бы на него открытым. -->
+            <div id="room-empty" class="room-empty" hidden>
+                <span class="room-empty-icon" aria-hidden="true">
+                    <svg class="icon"><use href="#i-user-plus"/></svg>
+                </span>
+                <div class="room-empty-text">
+                    <h2>Пригласите участников</h2>
+                    <p>Пока в чате только вы. Писать можно будет, когда кто-то войдёт: сообщения уйдут зашифрованными, а не открытым текстом на сервер.</p>
+                </div>
+                <button id="room-empty-invite" class="btn btn-primary" type="button">
+                    <svg class="icon" aria-hidden="true"><use href="#i-link"/></svg>
+                    Код приглашения
+                </button>
+            </div>
             <!-- Файл, который тащат в окно: куда его можно бросить. -->
             <div id="drop-zone" class="drop-zone" hidden>
                 <svg class="icon" aria-hidden="true"><use href="#i-attach"/></svg>

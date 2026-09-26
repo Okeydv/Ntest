@@ -65,6 +65,8 @@ const elements = {
     chatHeader: document.getElementById('chat-header'),
     sidebar: document.querySelector('.sidebar'),
     mainContent: document.querySelector('.main-content'),
+    roomEmpty: document.getElementById('room-empty'),
+    roomEmptyInvite: document.getElementById('room-empty-invite'),
     chatBackBtn: document.getElementById('chat-back-btn'),
     chatName: document.getElementById('chat-name'),
     chatStatus: document.getElementById('chat-status'),
@@ -1263,6 +1265,7 @@ function setupEventListeners() {
 
     elements.deleteChatBtn.addEventListener('click', deleteChat);
 
+    elements.roomEmptyInvite.addEventListener('click', () => elements.getChatCodeBtn.click());
     elements.getChatCodeBtn.addEventListener('click', async () => {
         if (!currentChatId) return;
         const data = await api(`/api/chats/invite/${currentChatId}`);
@@ -1744,6 +1747,7 @@ async function openChat(chatId, roomId, name, avatar, online, isBot) {
     resetNewBelow();
     if (!reopening) restoreDraft(chatId);
     showChatExpiry(null);
+    applyRoomState();
     // Скелетон — только если история грузится заметно долго.
     const skeletonTimer = setTimeout(renderMessagesSkeleton, 150);
 
@@ -1784,6 +1788,34 @@ async function openChat(chatId, roomId, name, avatar, online, isBot) {
         else scrollToBottom();
     }
     scheduleReadMark();
+    applyRoomState();
+}
+
+/* --- Пустая группа ---------------------------------------------------------
+   В группе, где пока только вы, писать нельзя: сервер такое не примет
+   (lib/rooms.js), потому что шифровать не для кого. Вместо ленты — экран
+   «Пригласите участников», поле ввода выключено. Если в чате уже есть
+   история (все остальные вышли), она остаётся на месте, а приглашение
+   встаёт полосой над полем. Кто-то вошёл — всё включается само. */
+
+function currentRoomIsEmpty() {
+    const chat = currentChatMeta();
+    return Boolean(chat && chat.room_id && !chat.is_bot && !chat.peer_count);
+}
+
+function applyRoomState() {
+    if (!currentChatId) return;
+    const empty = currentRoomIsEmpty();
+    const history = Boolean(elements.chatMessages.querySelector('.message'));
+    elements.roomEmpty.hidden = !empty;
+    elements.roomEmpty.classList.toggle('is-strip', history);
+    elements.chatMessages.hidden = empty && !history;
+    for (const control of [elements.messageInput, elements.attachBtn, elements.sendBtn]) control.disabled = empty;
+    elements.messageInput.placeholder = empty ? 'Сначала пригласите участников' : 'Введите сообщение';
+    if (empty) {
+        clearReply();
+        editingMessageId = null;
+    }
 }
 
 /* --- Черновик и место в каждом чате ----------------------------------------
@@ -3105,7 +3137,15 @@ async function handleNewMessage(message) {
         if (wasAtBottom || isOwnMessage(message)) scrollToBottom();
         else noteNewBelow();
         scheduleReadMark();
-        refreshOpenChatItem(message);
+        // Строка «вошёл» или «вышел» меняет состав: может быть, теперь есть
+        // кому писать (или уже нет).
+        if (message.message_type === 'system') {
+            await loadChats();
+            renderChatStatus(currentChatIsBot);
+            applyRoomState();
+        } else {
+            refreshOpenChatItem(message);
+        }
     } else {
         // Чужой чат: расшифровываем ради превью в списке, рисовать
         // нечего.
@@ -3144,11 +3184,10 @@ async function sendMessage() {
             method: 'PUT',
             body: JSON.stringify({ text }),
         });
-        if (data.success) {
-            showToast('Сообщение изменено', 'success');
-            const el = elements.chatMessages.querySelector(`[data-message-id="${editingMessageId}"] .message-text`);
-            if (el) el.textContent = text;
-        }
+        if (!data.success) return showToast(data.message || 'Не удалось изменить сообщение', 'error');
+        showToast('Сообщение изменено', 'success');
+        const el = elements.chatMessages.querySelector(`[data-message-id="${editingMessageId}"] .message-text`);
+        if (el) el.textContent = text;
         editingMessageId = null;
     } else {
         const outcome = await sendEncrypted(text, payload);
@@ -3156,10 +3195,16 @@ async function sendMessage() {
         // набирать заново.
         if (outcome === 'failed') return;
         if (outcome === 'plain') {
-            await api('/api/messages', {
+            const data = await api('/api/messages', {
                 method: 'POST',
                 body: JSON.stringify(payload),
             });
+            // Отказ сервера (например, в группе никого нет) — текст остаётся в поле.
+            if (!data.success) {
+                showToast(data.message || 'Сообщение не отправлено', 'error');
+                if (data.code === 'ROOM_EMPTY') { await loadChats(); applyRoomState(); }
+                return;
+            }
         }
     }
 
@@ -3481,6 +3526,7 @@ let filesToConfirm = [];
 
 function confirmFiles(files) {
     if (!currentChatId || !files.length) return;
+    if (currentRoomIsEmpty()) return showToast('В чате пока никого нет — сначала пригласите участников', 'error');
     filesToConfirm = files;
     elements.sendFilesTitle.textContent = files.length === 1 ? 'Отправить файл?'
         : `Отправить ${files.length} ${['файл', 'файла', 'файлов'][pluralForm(files.length)]}?`;
@@ -3688,7 +3734,7 @@ async function createChat() {
         input.value = '';
         closeModal(elements.newChatModal);
         showToast('Чат создан', 'success');
-        loadChats();
+        await loadChats();
         openChat(data.chat.id, data.chat.room_id, data.chat.name, data.chat.avatar, 0, 0);
     } else {
         setFieldError('new-chat-name', data.message);
@@ -3709,7 +3755,7 @@ async function joinChat() {
         input.value = '';
         closeModal(elements.newChatModal);
         showToast('Вы присоединились к чату', 'success');
-        loadChats();
+        await loadChats();
         openChat(data.chat.id, data.chat.room_id, data.chat.name, data.chat.avatar, 0, 0);
     } else {
         setFieldError('join-chat-code', data.message);
