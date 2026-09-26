@@ -1597,6 +1597,40 @@ dialog.modal::backdrop {
     color: var(--text-2);
 }
 
+/* Список устройств в профиле. */
+.devices-section { margin-bottom: 1.25rem; }
+
+.devices-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    margin-top: 0.5rem;
+    padding: 0;
+    list-style: none;
+}
+
+.device-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+}
+
+.device-info { flex: 1; min-width: 0; }
+
+.device-name {
+    overflow: hidden;
+    font-size: var(--fs-sm);
+    font-weight: 500;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.device-meta { font-size: var(--fs-xs); color: var(--text-3); }
+.device-item .btn { flex-shrink: 0; padding: 0.375rem 0.75rem; font-size: var(--fs-xs); }
+
 .invite-actions {
     display: flex;
     flex-wrap: wrap;
@@ -1680,13 +1714,15 @@ dialog.modal::backdrop {
     /* Центровка полями, а не left: 50% с translate(-50%): при left: 50%
        ширина тоста ограничена половиной экрана, и на телефоне он сжимался
        в узкую колонку. */
+    /* Над полем ввода, а не поверх него: ошибка висит, пока её не
+       закроют, и не должна мешать набирать и отправлять. */
     position: fixed;
-    inset: auto 0 1.75rem;
+    inset: auto 0 calc(5.75rem + env(safe-area-inset-bottom, 0px));
     width: fit-content;
     margin: 0 auto;
     align-items: center;
     gap: 0.5rem;
-    max-width: calc(100vw - 2.5rem);
+    max-width: min(36rem, calc(100vw - 2.5rem));
     padding: 0.75rem 1.125rem;
     border: 1px solid var(--border-2);
     border-radius: var(--r-md);
@@ -1701,6 +1737,10 @@ dialog.modal::backdrop {
 /* display — только у открытого: иначе авторское flex перебило бы
    браузерное «закрытый popover не показывается». */
 .toast:popover-open { display: flex; }
+
+/* В открытом окне поле ввода недоступно, а поднятый тост закрывал бы
+   кнопки внизу окна — там он у самого края экрана. */
+dialog.modal .toast { bottom: calc(1.75rem + env(safe-area-inset-bottom, 0px)); }
 
 .toast-text { min-width: 0; }
 

@@ -68,6 +68,8 @@ const elements = {
     profileCode: document.getElementById('profile-code'),
     profileAvatar: document.getElementById('profile-avatar'),
     profileAnonBadge: document.getElementById('profile-anon-badge'),
+    devicesList: document.getElementById('devices-list'),
+    devicesSection: document.getElementById('devices-section'),
     emptyNewChatBtn: document.getElementById('empty-new-chat-btn'),
 };
 
@@ -91,6 +93,19 @@ function cryptoModule() {
 }
 
 /**
+ * Имя устройства для списка и уведомлений: «Chrome, Linux». Раньше уходил
+ * User-Agent целиком — нечитаемо, и серверу ни к чему лишняя примета
+ * браузера.
+ */
+function deviceLabel(ua = navigator.userAgent) {
+    const browser = /Edg\//.test(ua) ? 'Edge' : /OPR\//.test(ua) ? 'Opera' : /Firefox\//.test(ua) ? 'Firefox'
+        : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : 'Браузер';
+    const os = /Android/.test(ua) ? 'Android' : /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad'
+        : /Windows/.test(ua) ? 'Windows' : /Mac OS X/.test(ua) ? 'macOS' : /Linux/.test(ua) ? 'Linux' : '';
+    return os ? `${browser}, ${os}` : browser;
+}
+
+/**
  * Поднять шифрование для текущей сессии: зарегистрировать или привязать
  * устройство, опубликовать ключи, пополнить пул prekeys.
  *
@@ -107,7 +122,7 @@ async function setupE2EE() {
     const result = await e2ee.bootstrap({
         api,
         userId: currentUser.id,
-        deviceName: navigator.userAgent.slice(0, 64),
+        deviceName: deviceLabel(),
     });
     if (!result) {
         e2eeDeviceId = null;
@@ -127,6 +142,76 @@ async function setupE2EE() {
         // деградирует до обновления по перезагрузке, но работает.
         setTimeout(resolve, 3000);
     });
+    checkNewDevices();
+}
+
+/* --- Новые устройства аккаунта --------------------------------------------
+   Устройство, подключённое к аккаунту, получает ключи ко всем новым
+   сообщениям. Раньше оно появлялось молча: узнавший пароль мог читать
+   переписку, и никто бы не заметил. Теперь о нём говорят остальные
+   устройства — сразу, если они в сети, и при следующем запуске, если нет. */
+
+function notifyNewDevices(devices) {
+    if (devices.length === 0) return;
+    const names = devices.map(d => `«${d.name}»`).join(', ');
+    showToast(devices.length === 1
+        ? `К аккаунту подключено новое устройство ${names}. Если это не вы — смените пароль и отзовите его.`
+        : `К аккаунту подключены новые устройства: ${names}. Если это не вы — смените пароль и отзовите их.`,
+    'error', { action: { label: 'Устройства', onClick: () => elements.profileBtn.click() } });
+}
+
+async function checkNewDevices() {
+    if (!e2ee || !e2ee.isReady()) return;
+    const list = await api('/api/devices').catch(() => null);
+    if (!list || !list.success) return;
+    const active = list.devices.filter(d => !d.revoked_at);
+    const known = await e2ee.knownOwnDevices();
+    // Устройство только что появилось само — о тех, что были до него,
+    // сообщать нечего.
+    const fresh = known ? active.filter(d => d.id !== e2eeDeviceId && !known.includes(d.id)) : [];
+    await e2ee.rememberOwnDevices(active.map(d => d.id));
+    notifyNewDevices(fresh);
+}
+
+async function renderDevices() {
+    const list = await api('/api/devices').catch(() => null);
+    elements.devicesSection.hidden = !(list && list.success);
+    if (!list || !list.success) return;
+    elements.devicesList.replaceChildren();
+    for (const device of list.devices.filter(d => !d.revoked_at)) {
+        const item = document.createElement('li');
+        item.className = 'device-item';
+        const info = document.createElement('div');
+        info.className = 'device-info';
+        const name = document.createElement('div');
+        name.className = 'device-name';
+        name.textContent = device.name;
+        name.title = device.name;
+        const meta = document.createElement('div');
+        meta.className = 'device-meta';
+        const since = new Date(device.created_at);
+        meta.textContent = device.id === e2eeDeviceId
+            ? 'Это устройство'
+            : `Подключено ${Number.isNaN(since.getTime()) ? '' : fullFormat.format(since)}`;
+        info.append(name, meta);
+        item.appendChild(info);
+        if (device.id !== e2eeDeviceId) {
+            const revoke = document.createElement('button');
+            revoke.type = 'button';
+            revoke.className = 'btn btn-ghost';
+            revoke.textContent = 'Отозвать';
+            revoke.setAttribute('aria-label', `Отозвать устройство ${device.name}`);
+            revoke.addEventListener('click', () => withBusy(revoke, async () => {
+                if (!confirm(`Отозвать «${device.name}»? На нём больше не получится читать новые сообщения.`)) return;
+                const r = await api(`/api/devices/${device.id}`, { method: 'DELETE' });
+                if (!r.success) return showToast(r.message || 'Не удалось отозвать устройство', 'error');
+                showToast('Устройство отозвано', 'success');
+                renderDevices();
+            }));
+            item.appendChild(revoke);
+        }
+        elements.devicesList.appendChild(item);
+    }
 }
 
 /**
@@ -776,6 +861,7 @@ function setupEventListeners() {
                 elements.profileAnonBadge.classList.add('hidden');
                 elements.changePasswordBtn.classList.remove('hidden');
             }
+            await renderDevices();
             openModal(elements.profileModal);
         }
     });
@@ -941,6 +1027,12 @@ function setupEventListeners() {
                 }
             }
         }
+    });
+
+    socket.on('deviceAdded', device => {
+        if (!e2ee || !e2ee.isReady() || device.id === e2eeDeviceId) return;
+        notifyNewDevices([device]);
+        e2ee.knownOwnDevices().then(known => e2ee.rememberOwnDevices([...(known || []), device.id]));
     });
 
     socket.on('messageDeleted', ({ id, chat_id, room_id }) => {

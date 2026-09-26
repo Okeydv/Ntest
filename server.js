@@ -1025,6 +1025,10 @@ app.use(createDevicesRouter({
     dbAll,
     dbRun,
     revokeDeviceKeys: e2eeProxy.revokeDeviceKeys,
+    // Всем открытым сокетам аккаунта — и тем, что на других устройствах.
+    onDeviceAdded: (userId, device) => io.to(`user:${userId}`).emit('deviceAdded', {
+        id: device.id, name: device.name, created_at: device.created_at,
+    }),
 }));
 // Ключи собеседника — только при общем чате (см. requirePeer в e2ee-proxy).
 e2eeProxy.setPeerCheck(async (userId, otherUserId) => Boolean(await dbGet(

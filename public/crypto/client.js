@@ -963,6 +963,13 @@ export async function senderDeviceTrust(userId, deviceId) {
     return record.devices.some(d => d.deviceId === Number(deviceId)) ? 'verified' : 'new';
 }
 
+/**
+ * Свои устройства, о которых это устройство уже знает. null — список ещё
+ * не запоминался (устройство новое): тогда о существующих не сообщаем.
+ */
+export const knownOwnDevices = async () => (await store.meta.get('knownOwnDevices')) || null;
+export const rememberOwnDevices = ids => store.meta.set('knownOwnDevices', [...new Set(ids.map(Number))]);
+
 export async function verificationStatus(devices) {
     const result = new Map();
     for (const [userId, deviceIds] of groupByUser(devices)) {

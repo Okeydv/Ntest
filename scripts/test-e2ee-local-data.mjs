@@ -9,6 +9,8 @@
 //   - при выходе из аккаунта — всё, и устройство отзывается на сервере.
 // И что превью полученного сообщения в комнате лежит под этой комнатой
 // (раньше — под чатом отправителя, и после перезагрузки его не было).
+// И что о новом устройстве аккаунта узнают остальные — сразу или при
+// следующем запуске, — а отозвать его можно из профиля.
 //
 // Требует поднятых Postgres, key-server и server.js на 3006 и ЧИСТОЙ базы.
 // Запуск: TEST_DATABASE_URL=... node scripts/test-e2ee-local-data.mjs
@@ -156,6 +158,46 @@ const leftovers = Object.entries(dump.counts).filter(([, n]) => n > 0);
 check('после выхода IndexedDB пуст: ни ключей, ни переписки', leftovers.length === 0, JSON.stringify(leftovers));
 const revoked = await db.query('SELECT revoked_at FROM devices WHERE id = $1', [bobInfo.deviceId]);
 check('и устройство отозвано на сервере', revoked.rows[0]?.revoked_at !== null);
+
+/* ------------------------- новые устройства аккаунта ------------------------- */
+
+const loginOn = async (app, u) => app.page.evaluate(async u => {
+    const r = await api('/api/login', { method: 'POST', body: JSON.stringify({ email: `${u}@example.com`, password: 'password123' }) });
+    if (!r.success) throw new Error(r.message);
+    currentUser = r.user; showApp(); await setupE2EE(); await loadChats();
+    return e2eeDeviceId;
+}, u);
+const toastText = page => page.evaluate(() =>
+    document.getElementById('toast').matches(':popover-open') ? document.getElementById('toast').textContent : '');
+
+const laptop = await openApp('hank-laptop');
+await register(laptop, 'hank');
+check('первое устройство ни о чём не предупреждает', !(await toastText(laptop.page)).includes('новое устройство'));
+const phoneApp = await openApp('hank-phone');
+await loginOn(phoneApp, 'hank');
+await sleep(800);
+check('устройство в сети сразу узнаёт о новом — по понятному имени',
+    (await toastText(laptop.page)).includes('подключено новое устройство «Chrome, Linux»'),
+    await toastText(laptop.page));
+check('а само новое — нет', !(await toastText(phoneApp.page)).includes('новое устройство'));
+
+await laptop.page.goto('about:blank');
+const tabletApp = await openApp('hank-tablet');
+const tabletId = await loginOn(tabletApp, 'hank');
+await laptop.page.goto(BASE, { waitUntil: 'networkidle' });
+await sleep(1500);
+check('вернувшееся в сеть узнаёт о подключённом без него', (await toastText(laptop.page)).includes('подключено новое устройство'),
+    await toastText(laptop.page));
+
+await laptop.page.click('#toast .toast-action');
+await laptop.page.waitForFunction(() => document.getElementById('profile-modal').open);
+const listed = await laptop.page.evaluate(() => [...document.querySelectorAll('#devices-list .device-item')].length);
+check('«Устройства» открывает профиль со списком', listed === 3, `${listed} в списке`);
+laptop.page.once('dialog', d => d.accept());
+await laptop.page.locator('#devices-list .device-item').last().locator('button').click();
+await sleep(1000);
+check('устройство отзывается из профиля', (await db.query('SELECT revoked_at FROM devices WHERE id = $1', [tabletId])).rows[0].revoked_at !== null
+    && await laptop.page.evaluate(() => document.querySelectorAll('#devices-list .device-item').length) === 2);
 
 check('ошибок на страницах нет', errors.length === 0, errors.join('; '));
 await browser.close();
