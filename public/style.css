@@ -1675,7 +1675,7 @@ dialog.modal::backdrop {
 }
 
 .device-meta { font-size: var(--fs-xs); color: var(--text-3); }
-.device-item .btn { flex-shrink: 0; padding: 0.375rem 0.75rem; font-size: var(--fs-xs); }
+.device-item .btn { flex: 0 0 auto; width: auto; padding: 0.375rem 0.75rem; font-size: var(--fs-xs); }
 
 /* QR-код сверки. Белый фон и «тихая зона» — часть кода: без них камера
    его не найдёт, в тёмной теме тоже. */
