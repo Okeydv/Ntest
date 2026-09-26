@@ -56,6 +56,8 @@ function validFile(p) {
     }
 }
 
+const validSide = n => Number.isInteger(n) && n > 0 && n <= 30000;
+
 /**
  * Разобрать расшифрованную строку.
  *
@@ -76,7 +78,14 @@ export function decodePayload(str) {
             // Имя назначил отправитель — и его клиент мог быть каким угодно.
             // Расширение по типу и без символов направления текста: иначе
             // «photo‮gpj.exe» скачалось бы с тем, что в нём написано.
-            if (parsed.t === 'file') return validFile(parsed) ? { ...parsed, name: attachmentName(parsed.mime, parsed.name) } : { t: 'invalid' };
+            if (parsed.t === 'file') {
+                if (!validFile(parsed)) return { t: 'invalid' };
+                // Размеры картинки — только подсказка для места под неё:
+                // странные просто отбрасываются.
+                const { w, h, ...rest } = parsed;
+                const sized = validSide(w) && validSide(h) ? { w, h } : {};
+                return { ...rest, ...sized, name: attachmentName(parsed.mime, parsed.name) };
+            }
             return { t: 'invalid' };
         }
     }
@@ -225,6 +234,7 @@ export async function prepareAttachment(file) {
 export async function encryptAttachment(file) {
     const { blob, mime, name } = await prepareAttachment(file);
     const plain = new Uint8Array(await blob.arrayBuffer());
+    const size = IMAGE_TYPES.has(mime) ? await imageSize(blob) : null;
 
     const key = await subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
     const iv = crypto.getRandomValues(new Uint8Array(12));
@@ -239,8 +249,24 @@ export async function encryptAttachment(file) {
             name: name.slice(0, MAX_NAME),
             mime,
             size: plain.length,
+            ...(size || {}),
         },
     };
+}
+
+// Размеры картинки едут вместе с ключом: получатель заранее оставляет под
+// неё место нужной формы, и лента не прыгает, когда картинка расшифруется.
+async function imageSize(blob) {
+    try {
+        const bitmap = await createImageBitmap(blob);
+        try {
+            return { w: bitmap.width, h: bitmap.height };
+        } finally {
+            bitmap.close();
+        }
+    } catch {
+        return null;
+    }
 }
 
 /* ========================================================================

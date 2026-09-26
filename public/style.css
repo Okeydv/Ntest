@@ -911,8 +911,10 @@ input.is-invalid:focus {
     z-index: 1;
 }
 
+/* --sidebar-w ставит перетаскивание границы (setupSidebarResize). Больше
+   половины окна список не занимает, как его ни тяни. */
 .sidebar {
-    width: 21.25rem;
+    width: min(var(--sidebar-w, 21.25rem), 50vw);
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
@@ -1015,6 +1017,25 @@ input.is-invalid:focus {
     text-overflow: ellipsis;
 }
 
+.chat-item .chat-top {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    margin-bottom: 0.125rem;
+}
+.chat-item .chat-top .chat-name {
+    flex: 1;
+    min-width: 0;
+    margin-bottom: 0;
+}
+.chat-time {
+    flex: none;
+    font-size: var(--fs-xs);
+    font-variant-numeric: tabular-nums;
+    color: var(--text-3);
+}
+.chat-item.active .chat-time { color: var(--text-2); }
+
 .chat-item .chat-last {
     font-size: var(--fs-sm);
     line-height: 1.4;
@@ -1054,11 +1075,82 @@ input.is-invalid:focus {
     border-top: 1px solid var(--border);
 }
 
+/* Граница списка: полоска шире линии, чтобы в неё было легко попасть. */
+.sidebar-resizer {
+    position: relative;
+    z-index: 3;
+    flex: none;
+    width: 0.5rem;
+    margin-inline: -0.25rem;
+    cursor: col-resize;
+    touch-action: none;
+}
+.sidebar-resizer::after {
+    content: '';
+    position: absolute;
+    inset-block: 0;
+    left: calc(50% - 1px);
+    width: 2px;
+    transition: background var(--dur-1) var(--ease);
+}
+@media (hover: hover) {
+    .sidebar-resizer:hover::after { background: var(--accent-line); }
+}
+.sidebar-resizer:focus-visible { outline: none; }
+.sidebar-resizer:focus-visible::after,
+.is-resizing .sidebar-resizer::after { background: var(--accent); }
+.is-resizing { cursor: col-resize; user-select: none; }
+
+/* Компактный список — 76px, только аватары и счётчики. Название чата
+   остаётся для экранного диктора и всплывает подсказкой. */
+@media (min-width: 641px) {
+    .sidebar.is-compact .brand-word,
+    .sidebar.is-compact .search-container,
+    .sidebar.is-compact .btn-label { display: none; }
+    .sidebar.is-compact .sidebar-header {
+        flex-direction: column;
+        padding-inline: 0;
+    }
+    .sidebar.is-compact .chats-list { padding: 0.5rem 0.375rem; }
+    .sidebar.is-compact .chat-item {
+        position: relative;
+        justify-content: center;
+        padding: 0.5rem;
+    }
+    .sidebar.is-compact .chat-avatar-small {
+        width: 2.75rem;
+        height: 2.75rem;
+        font-size: 1rem;
+    }
+    .sidebar.is-compact .chat-item .chat-info {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+    }
+    .sidebar.is-compact .chat-badge {
+        position: absolute;
+        top: 0.125rem;
+        right: 0.125rem;
+    }
+    .sidebar.is-compact .sidebar-footer {
+        flex-direction: column;
+        padding-inline: 0;
+    }
+}
+
+@media (max-width: 640px) {
+    .sidebar-resizer { display: none; }
+}
+
 /* ============================================================================
    8. ЧАТ
    ========================================================================= */
 
 .main-content {
+    position: relative;
     flex: 1;
     min-width: 0;
     display: flex;
@@ -1424,6 +1516,8 @@ input.is-invalid:focus {
     aspect-ratio: 3 / 2;
     border-radius: var(--r-md);
 }
+/* Размеры известны (едут в данных вложения) — место ровно под картинку. */
+.attachment-skeleton.is-sized { max-width: 100%; }
 .message-status { font-weight: 600; }
 
 .message-image,
@@ -1436,6 +1530,7 @@ input.is-invalid:focus {
 }
 
 .message-image {
+    height: auto;
     cursor: pointer;
     transition: transform var(--dur-2) var(--ease);
 }
@@ -1677,13 +1772,121 @@ input.is-invalid:focus {
     white-space: nowrap;
 }
 
+/* Кнопки — у нижнего края: поле растёт вверх вместе с текстом. */
 .input-wrapper {
     display: flex;
-    align-items: center;
+    align-items: flex-end;
     gap: 0.625rem;
 }
 
-.input-wrapper input { flex: 1; min-width: 0; }
+.input-wrapper textarea {
+    flex: 1;
+    min-width: 0;
+    max-height: 10.5rem;
+    padding: 0.8125rem 1rem;
+    border: 1px solid var(--border-2);
+    border-radius: var(--r-md);
+    background: var(--field);
+    font-family: inherit;
+    font-size: var(--fs-body);
+    line-height: 1.4;
+    letter-spacing: var(--tr-body);
+    color: var(--text);
+    resize: none;
+    overflow-y: auto;
+    transition:
+        border-color var(--dur-2) var(--ease),
+        background var(--dur-2) var(--ease),
+        box-shadow var(--dur-2) var(--ease);
+}
+.input-wrapper textarea::placeholder { color: var(--text-3); }
+.input-wrapper textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+    background: var(--field-focus);
+    box-shadow: 0 0 0 3px var(--accent-ring);
+}
+@media (pointer: coarse), (max-width: 640px) {
+    .input-wrapper textarea { font-size: max(16px, var(--fs-body)); }
+}
+
+.upload-status {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    margin-bottom: 0.75rem;
+    padding: 0.5rem 0.625rem;
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    background: var(--layer-3);
+    font-size: var(--fs-sm);
+    color: var(--text-2);
+    animation: fadeIn var(--dur-1) var(--ease) both;
+}
+.upload-status > .icon { flex: none; width: 1rem; height: 1rem; color: var(--accent); }
+.upload-status-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.upload-progress {
+    flex: 0 1 8rem;
+    height: 0.375rem;
+    border: none;
+    border-radius: var(--r-pill);
+    background: var(--skeleton-base);
+    overflow: hidden;
+    appearance: none;
+}
+.upload-progress::-webkit-progress-bar { background: var(--skeleton-base); }
+.upload-progress::-webkit-progress-value { background: var(--accent-strong); }
+.upload-progress::-moz-progress-bar { background: var(--accent-strong); }
+.upload-status-percent {
+    flex: none;
+    min-width: 2.75rem;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-3);
+}
+
+/* Поверх переписки, пока над ней держат файл. Мышь проходит насквозь —
+   иначе dragleave срабатывал бы на самой подсказке. */
+.drop-zone {
+    position: absolute;
+    inset: 0.75rem;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    border: 2px dashed var(--accent);
+    border-radius: var(--r-xl);
+    background: color-mix(in srgb, var(--layer-1) 88%, transparent);
+    font-weight: 600;
+    color: var(--text);
+    pointer-events: none;
+    animation: fadeIn var(--dur-1) var(--ease) both;
+}
+.drop-zone .icon { width: 1.25rem; height: 1.25rem; color: var(--accent); }
+
+.send-files-list {
+    display: grid;
+    gap: 0.375rem;
+    max-height: 12rem;
+    margin: 0 0 1rem;
+    padding: 0;
+    overflow-y: auto;
+    list-style: none;
+    font-size: var(--fs-sm);
+    color: var(--text-2);
+}
+.send-files-list li {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 
 /* ============================================================================
    9. ПУСТОЙ ЭКРАН
@@ -2240,7 +2443,7 @@ dialog.modal .toast { top: calc(1rem + env(safe-area-inset-top, 0px)); bottom: a
    ========================================================================= */
 
 @media (max-width: 860px) {
-    .sidebar { width: 17.5rem; }
+    .sidebar { width: min(var(--sidebar-w, 17.5rem), 50vw); }
     .chat-messages { padding: 1.125rem; }
 }
 

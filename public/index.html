@@ -184,7 +184,7 @@
     </div>
 
     <div id="app" class="app hidden">
-        <div class="sidebar">
+        <div id="sidebar" class="sidebar">
             <div class="sidebar-header">
                 <div class="brand brand-sm">
                     <span class="brand-mark" aria-hidden="true">
@@ -209,11 +209,11 @@
             <div class="sidebar-footer">
                 <button id="profile-btn" class="btn btn-ghost" type="button">
                     <svg class="icon" aria-hidden="true"><use href="#i-user"/></svg>
-                    Профиль
+                    <span class="btn-label">Профиль</span>
                 </button>
                 <button id="logout-btn" class="btn btn-ghost" type="button">
                     <svg class="icon" aria-hidden="true"><use href="#i-logout"/></svg>
-                    Выйти
+                    <span class="btn-label">Выйти</span>
                 </button>
                 <button class="icon-btn icon-btn-sm theme-toggle" data-theme-toggle title="Переключить тему" aria-label="Переключить тему" type="button">
                     <svg class="icon icon-when-dark" aria-hidden="true"><use href="#i-moon"/></svg>
@@ -221,6 +221,10 @@
                 </button>
             </div>
         </div>
+
+        <!-- Граница списка: тянуть мышью или стрелками с клавиатуры, двойной щелчок — ширина по умолчанию. -->
+        <div id="sidebar-resizer" class="sidebar-resizer" role="separator" aria-orientation="vertical" aria-controls="sidebar"
+             aria-label="Ширина списка чатов" tabindex="0" aria-valuemin="76" aria-valuemax="480" aria-valuenow="340"></div>
 
         <div class="main-content">
             <div id="chat-header" class="chat-header hidden">
@@ -256,6 +260,11 @@
             </div>
 
             <div id="chat-messages" class="chat-messages"></div>
+            <!-- Файл, который тащат в окно: куда его можно бросить. -->
+            <div id="drop-zone" class="drop-zone" hidden>
+                <svg class="icon" aria-hidden="true"><use href="#i-attach"/></svg>
+                Отпустите, чтобы отправить
+            </div>
             <!-- Новое, пока читаешь историю: не прокручиваем, а показываем кнопку. -->
             <button id="jump-down" class="jump-down" type="button" aria-label="К новым сообщениям" hidden>
                 <svg class="icon" aria-hidden="true"><use href="#i-back"/></svg>
@@ -275,16 +284,27 @@
                         <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
                     </button>
                 </div>
+                <!-- Файл шифруется и загружается: сколько осталось, и можно отменить. -->
+                <div id="upload-status" class="upload-status" hidden>
+                    <svg class="icon" aria-hidden="true"><use href="#i-attach"/></svg>
+                    <span id="upload-status-name" class="upload-status-name"></span>
+                    <progress id="upload-progress" class="upload-progress" max="100" aria-labelledby="upload-status-name"></progress>
+                    <span id="upload-status-percent" class="upload-status-percent" aria-hidden="true"></span>
+                    <button id="upload-cancel-btn" class="icon-btn icon-btn-sm icon-btn-quiet" title="Отменить отправку" aria-label="Отменить отправку" type="button">
+                        <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
+                    </button>
+                </div>
                 <div class="input-wrapper">
                     <button id="attach-btn" class="icon-btn" title="Прикрепить файл" aria-label="Прикрепить файл" type="button">
                         <svg class="icon" aria-hidden="true"><use href="#i-attach"/></svg>
                     </button>
-                    <input type="text" id="message-input" placeholder="Введите сообщение" maxlength="4000" autocomplete="off" enterkeyhint="send">
+                    <!-- Enter отправляет, Shift+Enter — перенос строки. -->
+                    <textarea id="message-input" rows="1" placeholder="Введите сообщение" maxlength="4000" autocomplete="off" enterkeyhint="send" aria-label="Сообщение"></textarea>
                     <button id="send-btn" class="icon-btn icon-btn-accent" title="Отправить" aria-label="Отправить" type="button">
                         <svg class="icon" aria-hidden="true"><use href="#i-send"/></svg>
                     </button>
                 </div>
-                <input type="file" id="file-input" class="hidden" accept="image/*,video/*,.pdf,.txt">
+                <input type="file" id="file-input" class="hidden" accept="image/*,video/*,.pdf,.txt" multiple>
             </div>
 
             <div id="empty-state" class="empty-state">
@@ -421,11 +441,38 @@
                     </label>
                     <p class="field-hint">Если выключить, собеседники не увидят, что вы прочитали их сообщения, а вы не увидите, прочитали ли ваши.</p>
                 </div>
+                <div class="field">
+                    <label class="toggle-row">
+                        <input type="checkbox" id="notify-toggle">
+                        <span>Уведомления о новых сообщениях</span>
+                    </label>
+                    <p class="field-hint">Только «Новое сообщение» — без текста и имени: уведомление видно и на заблокированном экране. Настройка действует в этом браузере.</p>
+                </div>
                 <button id="change-password-btn" class="btn btn-secondary btn-block" type="button">
                     <svg class="icon" aria-hidden="true"><use href="#i-lock"/></svg>
                     Сменить пароль
                 </button>
                 <button id="error-report-btn" class="btn btn-ghost btn-block" type="button">Отчёт об ошибке</button>
+            </div>
+        </div>
+    </dialog>
+
+    <!-- Вставленное из буфера и брошенное в окно уходит только после подтверждения:
+         скриншот, вставленный по ошибке, не должен улететь сам. -->
+    <dialog id="send-files-modal" class="modal" aria-labelledby="send-files-title">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="send-files-title">Отправить файлы?</h3>
+                <button class="icon-btn icon-btn-sm icon-btn-quiet close-modal" aria-label="Закрыть" type="button">
+                    <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <ul id="send-files-list" class="send-files-list"></ul>
+                <div class="logout-actions">
+                    <button id="send-files-cancel" class="btn btn-secondary btn-block" type="button">Отмена</button>
+                    <button id="send-files-confirm" class="btn btn-primary btn-block" type="button">Отправить</button>
+                </div>
             </div>
         </div>
     </dialog>
