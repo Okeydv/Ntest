@@ -1005,7 +1005,11 @@ input.is-invalid:focus {
     border-bottom: 1px solid var(--border);
 }
 
+.chat-back { display: none; flex-shrink: 0; }
+
 .chat-identity {
+    flex: 1;
+    min-width: 0;
     display: flex;
     align-items: center;
     gap: 0.875rem;
@@ -1049,6 +1053,8 @@ input.is-invalid:focus {
     display: inline-flex;
     align-items: center;
     gap: 0.3125rem;
+    /* Переносится целиком на свою строку, а не по словам. */
+    white-space: nowrap;
     padding: 0;
     border: 0;
     background: none;
@@ -1106,6 +1112,7 @@ input.is-invalid:focus {
 }
 
 .message {
+    position: relative;
     max-width: min(70%, 34rem);
     padding: 0.75rem 1rem;
     border-radius: var(--r-xl);
@@ -1161,13 +1168,25 @@ input.is-invalid:focus {
 .message-time { font-weight: 500; }
 
 /* Кнопка «⋯»: у мыши появляется при наведении и фокусе, чтобы не
-   зашумлять переписку; на тач-экранах наведения нет — там видна всегда. */
+   зашумлять переписку; на тач-экранах наведения нет — там видна всегда.
+   Стоит сбоку от пузыря, а не в строке со временем: невидимая, она всё
+   равно занимала там место и сдвигала время. В порядке Tab её нет —
+   сообщения обходятся стрелками (см. setupMessageKeyboard). */
 .message-more {
-    width: 1.5rem;
-    height: 1.5rem;
-    margin: -0.25rem -0.375rem -0.25rem 0;
+    position: absolute;
+    top: 0.25rem;
+    width: 1.75rem;
+    height: 1.75rem;
     opacity: 0;
     transition: opacity var(--dur-1) var(--ease);
+}
+
+.message.sent .message-more { right: calc(100% + 0.25rem); }
+.message.received .message-more { left: calc(100% + 0.25rem); }
+
+.message:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
 }
 
 .message-more .icon { width: 0.875rem; height: 0.875rem; }
@@ -1416,6 +1435,9 @@ input.is-invalid:focus {
    без полей: вид даёт .modal-content, а клик по dialog вне него — это клик
    по затемнению. */
 dialog.modal {
+    /* margin: auto у dialog — браузерный, а общий сброс margin: 0 наверху
+       файла его обнулял, и окна прилипали к левому верхнему углу. */
+    margin: auto;
     max-width: none;
     max-height: none;
     padding: 0;
@@ -1630,11 +1652,13 @@ dialog.modal::backdrop {
 .menu-item.danger:hover { background: var(--danger-soft); }
 
 .toast {
+    /* Центровка полями, а не left: 50% с translate(-50%): при left: 50%
+       ширина тоста ограничена половиной экрана, и на телефоне он сжимался
+       в узкую колонку. */
     position: fixed;
-    inset: auto;
-    bottom: 1.75rem;
-    left: 50%;
-    margin: 0;
+    inset: auto 0 1.75rem;
+    width: fit-content;
+    margin: 0 auto;
     align-items: center;
     gap: 0.5rem;
     max-width: calc(100vw - 2.5rem);
@@ -1673,8 +1697,8 @@ dialog.modal::backdrop {
 .toast-close { flex-shrink: 0; margin: -0.25rem -0.5rem -0.25rem 0; }
 
 @keyframes toastIn {
-    from { opacity: 0; transform: translate(-50%, 1rem); }
-    to { opacity: 1; transform: translate(-50%, 0); }
+    from { opacity: 0; transform: translateY(1rem); }
+    to { opacity: 1; transform: none; }
 }
 
 /* Тип тоста — цветная полоса слева, а не заливка всей плашки: текст остаётся
@@ -1708,10 +1732,18 @@ dialog.modal::backdrop {
         inset: 0;
         width: 100%;
         z-index: 50;
-        transition: transform var(--dur-3) var(--ease);
+        transition: transform var(--dur-3) var(--ease), visibility 0s;
     }
 
-    .sidebar.hidden-mobile { transform: translateX(-100%); }
+    /* Список уезжает влево и после этого скрывается совсем: иначе его
+       кнопки оставались бы в порядке Tab и для экранного диктора. */
+    .sidebar.hidden-mobile {
+        transform: translateX(-100%);
+        visibility: hidden;
+        transition: transform var(--dur-3) var(--ease), visibility 0s var(--dur-3);
+    }
+
+    .chat-back { display: inline-flex; margin-left: -0.5rem; }
 
     .main-content { width: 100%; }
     .message { max-width: 86%; }

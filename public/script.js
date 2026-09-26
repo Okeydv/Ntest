@@ -24,6 +24,9 @@ const elements = {
     fileInput: document.getElementById('file-input'),
     newChatBtn: document.getElementById('new-chat-btn'),
     chatHeader: document.getElementById('chat-header'),
+    sidebar: document.querySelector('.sidebar'),
+    mainContent: document.querySelector('.main-content'),
+    chatBackBtn: document.getElementById('chat-back-btn'),
     chatName: document.getElementById('chat-name'),
     chatStatus: document.getElementById('chat-status'),
     chatAvatar: document.getElementById('chat-avatar'),
@@ -857,8 +860,14 @@ function setupEventListeners() {
     document.querySelectorAll('dialog.modal').forEach(dialog => {
         // Клик по затемнению вокруг окна. Сам dialog без полей, поэтому
         // клик с target === dialog — это клик по ::backdrop, а не по окну.
+        // Нажатие тоже должно быть на затемнении: если выделять текст в
+        // окне и отпустить кнопку снаружи, click приходит на dialog —
+        // общего предка, — и окно закрывалось посреди выделения.
+        let pressedOnBackdrop = false;
+        dialog.addEventListener('pointerdown', e => { pressedOnBackdrop = e.target === dialog; });
         dialog.addEventListener('click', e => {
-            if (e.target === dialog) closeModal(dialog);
+            if (e.target === dialog && pressedOnBackdrop) closeModal(dialog);
+            pressedOnBackdrop = false;
         });
         // Esc закрывает окно сам (событие cancel) — ошибки полей чистим и тут.
         // Тост, если он жил внутри окна, возвращается в body и остаётся виден.
@@ -875,6 +884,8 @@ function setupEventListeners() {
     });
 
     setupMessageMenu();
+    setupMessageKeyboard();
+    setupMobileScreens();
     // Не дожидаемся таймера отмены, если страницу закрывают.
     window.addEventListener('pagehide', flushPendingDeletes);
 
@@ -924,7 +935,17 @@ function setupEventListeners() {
    диктора (inert), а слой — верхний, без ручного оверлея и z-index. */
 
 function openModal(modal) {
-    if (!modal.open) modal.showModal();
+    if (modal.open) return;
+    modal.showModal();
+    // Тост, показанный до окна, остался бы под затемнением: вне окна всё
+    // inert, и крестик с кнопкой действия не нажимались бы. Переносим его
+    // внутрь и показываем заново — так он поднимается над окном.
+    const toast = elements.toast;
+    if (toast.matches(':popover-open') && !modal.contains(toast)) {
+        toast.hidePopover();
+        modal.appendChild(toast);
+        toast.showPopover();
+    }
 }
 
 function closeModal(modal) {
@@ -1024,7 +1045,46 @@ async function chatPreview(chat) {
     return 'Нет сообщений';
 }
 
+/* --- Телефон: список и переписка — два экрана ---------------------------
+   Открытый чат прячет список, кнопка «назад» (и системная «назад» — через
+   history) возвращает к нему. Невидимый экран делается inert, чтобы его
+   кнопки не ловили Tab и экранный диктор. На широком экране — ничего. */
+
+const mobileLayout = window.matchMedia('(max-width: 640px)');
+
+function showChatScreen(show) {
+    elements.sidebar.classList.toggle('hidden-mobile', show);
+    applyMobileInert();
+}
+
+function applyMobileInert() {
+    const chatShown = elements.sidebar.classList.contains('hidden-mobile');
+    elements.sidebar.inert = mobileLayout.matches && chatShown;
+    elements.mainContent.inert = mobileLayout.matches && !chatShown;
+}
+
+function setupMobileScreens() {
+    mobileLayout.addEventListener('change', applyMobileInert);
+    applyMobileInert();
+    elements.chatBackBtn.addEventListener('click', () => {
+        if (history.state && history.state.nyxoChat) history.back();
+        else backToChatList();
+    });
+    window.addEventListener('popstate', () => {
+        if (!(history.state && history.state.nyxoChat)) backToChatList();
+    });
+}
+
+function backToChatList() {
+    showChatScreen(false);
+    elements.chatsList.querySelector('.chat-item.active')?.focus();
+}
+
 async function openChat(chatId, roomId, name, avatar, online, isBot) {
+    showChatScreen(true);
+    if (mobileLayout.matches && !(history.state && history.state.nyxoChat)) {
+        history.pushState({ nyxoChat: true }, '');
+    }
     currentChatId = chatId;
     currentRoomId = roomId;
     currentChatIsBot = Boolean(isBot);
@@ -1111,6 +1171,7 @@ function appendMessage(message) {
         }
     }
     elements.chatMessages.appendChild(el);
+    refreshMessageTabStop();
 }
 
 /**
@@ -1125,6 +1186,59 @@ function removeMessageElement(el) {
         && (!next || next.classList.contains('day-separator'))) {
         prev.remove();
     }
+    refreshMessageTabStop();
+}
+
+/* --- Клавиатура в переписке ----------------------------------------------
+   Вся переписка — одна остановка Tab, как список в системных программах:
+   раньше каждая кнопка «⋯» была отдельной остановкой, и до поля ввода
+   приходилось пролистывать все сообщения. Tab приводит на одно сообщение
+   (последнее или то, где были), стрелки ходят по сообщениям, Enter или
+   клавиша меню открывает действия. */
+
+const visibleMessages = () => [...elements.chatMessages.querySelectorAll('.message')].filter(m => !m.hidden);
+
+function refreshMessageTabStop() {
+    const current = elements.chatMessages.querySelector('.message[tabindex="0"]');
+    if (current && !current.hidden && current.isConnected && current.contains(document.activeElement)) return;
+    const list = visibleMessages();
+    const target = list[list.length - 1] || null;
+    if (current && current !== target) current.tabIndex = -1;
+    if (target) target.tabIndex = 0;
+}
+
+function setMessageTabStop(message) {
+    elements.chatMessages.querySelectorAll('.message[tabindex="0"]').forEach(m => { m.tabIndex = -1; });
+    message.tabIndex = 0;
+}
+
+function focusMessage(message) {
+    setMessageTabStop(message);
+    message.focus();
+}
+
+function setupMessageKeyboard() {
+    const list = elements.chatMessages;
+    // Щелчок или фокус на сообщении переносит на него остановку Tab.
+    list.addEventListener('focusin', e => {
+        const message = e.target.closest && e.target.closest('.message');
+        if (message && message.tabIndex !== 0) setMessageTabStop(message);
+    });
+    list.addEventListener('keydown', e => {
+        const message = e.target.classList && e.target.classList.contains('message') ? e.target : null;
+        if (!message) return;   // кнопки и ссылки внутри сообщения — сами
+        const all = visibleMessages();
+        const index = all.indexOf(message);
+        const next = { ArrowDown: all[index + 1], ArrowUp: all[index - 1], Home: all[0], End: all[all.length - 1] }[e.key];
+        if (next) {
+            e.preventDefault();
+            focusMessage(next);
+            next.scrollIntoView({ block: 'nearest' });
+        } else if (e.key === 'Enter' || e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey)) {
+            e.preventDefault();
+            message.openMenu?.();
+        }
+    });
 }
 
 // Элементы с файлом (img/video/audio/a) собираются через DOM API, а не через
@@ -1235,6 +1349,7 @@ function createMessageElement(message) {
     const div = document.createElement('div');
     div.className = `message ${isMine ? 'sent' : 'received'}`;
     div.dataset.messageId = message.id;
+    div.tabIndex = -1;
 
     const contentDiv = document.createElement('div');
     contentDiv.className = 'message-content';
@@ -1342,13 +1457,21 @@ function createMessageElement(message) {
     more.className = 'icon-btn icon-btn-sm icon-btn-quiet message-more';
     more.setAttribute('aria-label', 'Действия с сообщением');
     more.setAttribute('aria-haspopup', 'menu');
+    more.tabIndex = -1;
     more.appendChild(createIcon('i-more'));
     more.addEventListener('click', e => {
         e.stopPropagation();
         const rect = more.getBoundingClientRect();
-        showMessageMenu(rect.left, rect.bottom + 4, message, more);
+        showMessageMenu(rect.left, rect.bottom + 4, message, div);
     });
-    metaDiv.appendChild(more);
+    div.appendChild(more);
+    // С клавиатуры: меню под сообщением, фокус потом возвращается на него.
+    if (!message.deleted) {
+        div.openMenu = () => {
+            const rect = div.getBoundingClientRect();
+            showMessageMenu(rect.left, rect.bottom + 4, message, div);
+        };
+    }
 
     div.addEventListener('contextmenu', (e) => {
         e.preventDefault();
@@ -1385,8 +1508,9 @@ function menuItems() {
 }
 
 /**
- * Показать меню у точки (x, y) в координатах окна. trigger — кнопка «⋯»,
- * если меню открыли ей: фокус уходит в меню и возвращается на неё.
+ * Показать меню у точки (x, y) в координатах окна. trigger — сообщение,
+ * если меню открыли кнопкой «⋯» или с клавиатуры: фокус уходит в меню и
+ * потом возвращается на сообщение.
  */
 function showMessageMenu(x, y, message, trigger = null) {
     const menu = elements.messageMenu;
@@ -1414,9 +1538,11 @@ function setupMessageMenu() {
     const menu = elements.messageMenu;
     // Нажатие мимо меню закрывает его. pointerdown, а не click: правый клик,
     // открывающий меню, начинается раньше, чем меню появилось.
+    // Кнопка «⋯» того же сообщения — исключение: её click сам покажет меню.
     document.addEventListener('pointerdown', e => {
-        if (menu.matches(':popover-open') && !menu.contains(e.target) && e.target !== menuTrigger
-            && !(menuTrigger && menuTrigger.contains(e.target))) {
+        const ownMoreButton = menuTrigger && e.target.closest && e.target.closest('.message-more')
+            && menuTrigger.contains(e.target);
+        if (menu.matches(':popover-open') && !menu.contains(e.target) && !ownMoreButton) {
             hideMessageMenu();
         }
     }, true);
@@ -1461,6 +1587,7 @@ function scheduleDelete(messageId) {
     const el = elements.chatMessages.querySelector(`[data-message-id="${messageId}"]`);
     if (!el || pendingDeletes.has(messageId)) return;
     el.hidden = true;
+    refreshMessageTabStop();
     pendingDeletes.set(messageId, { el, timer: setTimeout(() => commitDelete(messageId), UNDO_DELETE_MS) });
     showToast('Сообщение удалено', 'info', {
         duration: UNDO_DELETE_MS,
@@ -1474,6 +1601,7 @@ function undoDelete(messageId) {
     clearTimeout(pending.timer);
     pendingDeletes.delete(messageId);
     pending.el.hidden = false;
+    refreshMessageTabStop();
 }
 
 async function commitDelete(messageId) {
@@ -1652,18 +1780,43 @@ async function sendEncrypted(text, payload) {
         // это единственный случай, когда уходим на открытый путь.
         return result.sent ? 'sent' : 'plain';
     } catch (error) {
-        reportEncryptedSendError('Сообщение не отправлено', chatId, error);
+        const replyToId = payload.replyToId || null;
+        reportEncryptedSendError('Сообщение не отправлено', chatId, error,
+            () => resendText(chatId, text, replyToId));
         return 'failed';
     }
 }
 
-function reportEncryptedSendError(prefix, chatId, error) {
+/**
+ * «Повторить» из тоста об ошибке. Раньше кнопка вызывала sendMessage, а
+ * та берёт текущий чат и то, что сейчас в поле ввода: переключился на
+ * другой чат — и повтор уходил туда. Теперь повторяется то же сообщение в
+ * тот же чат; текст из поля убирается, только если это он и есть.
+ */
+async function resendText(chatId, text, replyToId) {
+    try {
+        const result = await sendEncryptedPayload(chatId, e2ee.encodeText(text), { replyToId });
+        if (!result.sent) {
+            const data = await api('/api/messages', { method: 'POST', body: JSON.stringify({ chatId, text, replyToId }) });
+            if (!data.success) throw new Error(data.message || 'ошибка сервера');
+        }
+        if (chatId === currentChatId && elements.messageInput.value.trim() === text) {
+            elements.messageInput.value = '';
+            clearReply();
+        }
+    } catch (error) {
+        reportEncryptedSendError('Сообщение не отправлено', chatId, error,
+            () => resendText(chatId, text, replyToId));
+    }
+}
+
+function reportEncryptedSendError(prefix, chatId, error, retry = null) {
     console.error('[E2EE] отправка не удалась:', error);
     // Если отправку остановила сверка ключей, из ошибки сразу можно перейти
-    // к ней; неотправленный текст остался в поле — его можно отправить снова.
+    // к ней; иначе — повторить то же самое в тот же чат.
     const action = error.code === 'verification-changed'
         ? { label: 'Сверить ключи', onClick: () => openSafetyModal(chatId) }
-        : (prefix === 'Сообщение не отправлено' ? { label: 'Повторить', onClick: sendMessage } : null);
+        : (retry ? { label: 'Повторить', onClick: retry } : null);
     showToast(`${prefix}: ${error.message}`, 'error', { action });
     // Отправку остановила сверка — индикатор должен это показать сразу,
     // а не после переоткрытия чата.

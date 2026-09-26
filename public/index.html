@@ -88,6 +88,7 @@
             <path d="M17.8 3.2a2 2 0 0 1 2.9 2.9L12 14.8l-3.8.9.9-3.8 8.7-8.7Z"/>
         </symbol>
         <symbol id="i-close" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></symbol>
+        <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 5.5L8.5 12l6.5 6.5"/></symbol>
         <symbol id="i-lock" viewBox="0 0 24 24">
             <rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>
         </symbol>
@@ -217,6 +218,10 @@
 
         <div class="main-content">
             <div id="chat-header" class="chat-header hidden">
+                <!-- На телефоне список чатов и переписка — два экрана, это путь назад. -->
+                <button id="chat-back-btn" class="icon-btn chat-back" aria-label="К списку чатов" type="button">
+                    <svg class="icon" aria-hidden="true"><use href="#i-back"/></svg>
+                </button>
                 <div class="chat-identity">
                     <div id="chat-avatar" class="chat-avatar"></div>
                     <div class="chat-details">
