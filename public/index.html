@@ -462,6 +462,36 @@
         </div>
     </dialog>
 
+    <!-- Выход: по умолчанию устройство стирается и отзывается, но на своём
+         компьютере это лишнее — собеседникам потом заново сверять ключи. -->
+    <dialog id="logout-modal" class="modal" aria-labelledby="logout-modal-title" aria-describedby="logout-modal-text">
+        <div class="modal-content modal-content-sm">
+            <div class="modal-header">
+                <h3 id="logout-modal-title">Выйти из аккаунта?</h3>
+                <button class="icon-btn icon-btn-sm icon-btn-quiet close-modal" aria-label="Закрыть" type="button">
+                    <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <p id="logout-modal-text" class="logout-text">
+                    Ключи и расшифрованная переписка сотрутся с этого устройства,
+                    а само устройство будет отозвано. Когда вы войдёте снова, для
+                    собеседников это будет новое устройство: тем, кто сверял с
+                    вами ключи, придётся сверить их заново.
+                </p>
+                <div class="logout-actions">
+                    <button id="logout-wipe-btn" class="btn btn-danger btn-block" type="button">Выйти и стереть с устройства</button>
+                    <button id="logout-keep-btn" class="btn btn-secondary btn-block" type="button">Выйти, оставив устройство</button>
+                </div>
+                <p class="field-hint">
+                    Если оставить устройство, ключи и переписка останутся в этом
+                    браузере. Так стоит делать только на своём компьютере или
+                    телефоне.
+                </p>
+            </div>
+        </div>
+    </dialog>
+
     <div id="message-menu" class="context-menu" role="menu" aria-label="Действия с сообщением" popover="manual">
         <button id="reply-message-btn" class="menu-item" role="menuitem" type="button">
             <svg class="icon" aria-hidden="true"><use href="#i-reply"/></svg>

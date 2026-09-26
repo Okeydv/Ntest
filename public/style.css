@@ -82,6 +82,8 @@
     /* --- Акцент -------------------------------------------------------------- */
     --accent: #6d5efc;
     --accent-strong: #5b49f0;
+    /* Низ своего пузыря: белое время на нём держит контраст 4,5+. */
+    --accent-deep: #4a38dc;
     --accent-2: #a86cf5;
     --accent-ink: #ffffff;
     --brand-from: #8b7bff;
@@ -578,6 +580,17 @@ input[type="password"] {
         border-color var(--dur-2) var(--ease),
         background var(--dur-2) var(--ease),
         box-shadow var(--dur-2) var(--ease);
+}
+
+/* Safari на iPhone увеличивает страницу, когда фокус попадает в поле со
+   шрифтом мельче 16px, и обратно сам не уменьшает. На тач-экранах и узких
+   окнах поля не мельче 16px. */
+@media (pointer: coarse), (max-width: 640px) {
+    input[type="text"]:not(.input-code),
+    input[type="email"],
+    input[type="password"] {
+        font-size: max(16px, var(--fs-body));
+    }
 }
 
 input::placeholder { color: var(--text-3); }
@@ -1090,6 +1103,15 @@ input.is-invalid:focus {
     font-weight: 500;
     letter-spacing: 0.01em;
     border-radius: var(--r-xs);
+    min-width: 0;
+}
+
+.encryption-badge .icon { flex: none; }
+
+.encryption-badge-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 /* В зашифрованном чате индикатор — вход в сверку ключей. */
@@ -1163,7 +1185,9 @@ input.is-invalid:focus {
     --bubble-inset-hover: rgba(0, 0, 0, 0.28);
     --bubble-rule: rgba(255, 255, 255, 0.5);
     align-self: flex-end;
-    background: linear-gradient(140deg, var(--accent) 0%, var(--accent-strong) 100%);
+    /* Темнее, чем у кнопок: на пузыре мелкий текст — время и отметки, — и
+       на светлом начале прежнего градиента он не дотягивал до 4,5:1. */
+    background: linear-gradient(140deg, var(--accent-strong) 0%, var(--accent-deep) 100%);
     color: var(--accent-ink);
     border-bottom-right-radius: var(--r-xs);
     box-shadow: var(--sh-accent);
@@ -1199,6 +1223,10 @@ input.is-invalid:focus {
     opacity: 0.66;
 }
 
+/* На своём пузыре белое время полупрозрачно лишь чуть-чуть: при 0,66 оно
+   давало около 3:1, а мелкому тексту нужно 4,5:1. */
+.message.sent .message-meta { opacity: 0.9; }
+
 .message-time { font-weight: 500; }
 
 /* Кнопка «⋯»: у мыши появляется при наведении и фокусе, чтобы не
@@ -1233,6 +1261,16 @@ input.is-invalid:focus {
     .message-more { opacity: 0.7; }
 }
 
+/* На тач-экране палец больше курсора: кнопка выглядит так же, но
+   нажимается в квадрате 44×44 вокруг неё. */
+@media (pointer: coarse) {
+    .message-more::before {
+        content: '';
+        position: absolute;
+        inset: calc((1.75rem - 44px) / 2);
+    }
+}
+
 /* Системное сообщение — кто вошёл, вышел, сменил код. Не пузырь: это
    событие чата, а не чья-то реплика, и отвечать на него нечего. */
 .message-system {
@@ -1245,9 +1283,17 @@ input.is-invalid:focus {
 }
 
 /* Разделитель дней. Подпись прилипает к верху, пока листаешь день, —
-   так всегда видно, к какому дню относятся сообщения на экране. Та же
+   так всегда видно, к какому дню относятся сообщения на экране. Каждый
+   день — отдельный блок, поэтому подпись уезжает вместе со своим днём, а
+   не копится стопкой под следующей. Та же
    капсула, что у разделителя «или» на входе, но без линий: в переписке
    они спорили бы с пузырями. */
+.day-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
 .day-separator {
     position: sticky;
     top: 0;
@@ -1725,6 +1771,18 @@ dialog.modal::backdrop {
 
 .invite-actions .btn { flex: 1 1 auto; }
 
+.logout-text {
+    margin-bottom: 1rem;
+    font-size: var(--fs-sm);
+    color: var(--text-2);
+}
+
+.logout-actions {
+    display: grid;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+}
+
 .invite-code-container {
     display: flex;
     align-items: center;
@@ -1918,6 +1976,13 @@ dialog.modal .toast { bottom: calc(1.75rem + env(safe-area-inset-bottom, 0px)); 
     .auth-logo .brand-word { font-size: var(--fs-h1); }
     .chat-header,
     .message-input-container { padding-inline: 1rem; }
+
+    /* Подпись под названием — в одну строку: «В сети» целиком, а длинная
+       надпись о шифровании обрезается многоточием, а не переносится и не
+       вылезает за шапку. */
+    .chat-subline { flex-wrap: nowrap; min-width: 0; }
+    .chat-subline .status { flex: none; }
+    .chat-subline .encryption-badge { flex: 0 1 auto; }
     .modal-body,
     .modal-header { padding-inline: 1.25rem; }
     .sidebar-footer .btn-ghost { font-size: var(--fs-xs); }

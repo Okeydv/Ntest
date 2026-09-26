@@ -6,7 +6,9 @@
 //   - когда удалили, пока его не было, — при следующем открытии чата;
 //   - когда сообщение исчезло по сроку;
 //   - когда из чата вышли — всё по этому чату;
-//   - при выходе из аккаунта — всё, и устройство отзывается на сервере.
+//   - при выходе из аккаунта — всё, и устройство отзывается на сервере;
+//     а если выйти, оставив устройство, — не стирается ничего, и после
+//     входа то же устройство читает старую переписку.
 // И что превью полученного сообщения в комнате лежит под этой комнатой
 // (раньше — под чатом отправителя, и после перезагрузки его не было).
 // И что о новом устройстве аккаунта узнают остальные — сразу или при
@@ -150,8 +152,11 @@ check('после выхода из чата от него ничего не о�
 
 /* ------------------------- выход из аккаунта ------------------------- */
 
-bob.page.once('dialog', d => d.accept());
 await bob.page.click('#logout-btn');
+await bob.page.waitForFunction(() => document.getElementById('logout-modal').open);
+check('перед выходом предупреждают, что ключи придётся сверять заново',
+    /сверить их заново/.test(await bob.page.textContent('#logout-modal')));
+await bob.page.click('#logout-wipe-btn');
 await sleep(1500);
 dump = await local(bob.page);
 const leftovers = Object.entries(dump.counts).filter(([, n]) => n > 0);
@@ -159,14 +164,42 @@ check('после выхода IndexedDB пуст: ни ключей, ни пе�
 const revoked = await db.query('SELECT revoked_at FROM devices WHERE id = $1', [bobInfo.deviceId]);
 check('и устройство отозвано на сервере', revoked.rows[0]?.revoked_at !== null);
 
-/* ------------------------- новые устройства аккаунта ------------------------- */
-
+// Выйти, оставив устройство: ключи и переписка остаются, при следующем
+// входе привязывается то же устройство — собеседникам сверять нечего.
 const loginOn = async (app, u) => app.page.evaluate(async u => {
     const r = await api('/api/login', { method: 'POST', body: JSON.stringify({ email: `${u}@example.com`, password: 'password123' }) });
     if (!r.success) throw new Error(r.message);
     currentUser = r.user; showApp(); await setupE2EE(); await loadChats();
     return e2eeDeviceId;
 }, u);
+
+const ivy = await openApp('ivy');
+const ivyInfo = await register(ivy, 'ivy');
+const ivyRoom = await alice.page.evaluate(async () => {
+    const c = await api('/api/chats', { method: 'POST', body: JSON.stringify({ name: 'С Айви' }) });
+    return { roomId: c.chat.room_id, code: (await api(`/api/chats/invite/${c.chat.id}`)).code };
+});
+await ivy.page.evaluate(c => api('/api/chats/join', { method: 'POST', body: JSON.stringify({ code: c }) }), ivyRoom.code);
+await openRoom(alice.page, ivyRoom.roomId);
+await openRoom(ivy.page, ivyRoom.roomId);
+await send(alice.page, 'прочитаю и после выхода');
+check('до выхода сообщение у Айви', await waitText(ivy.page, 'прочитаю и после выхода'));
+await ivy.page.click('#logout-btn');
+await ivy.page.waitForFunction(() => document.getElementById('logout-modal').open);
+await ivy.page.click('#logout-keep-btn');
+await sleep(1500);
+check('«оставив устройство» — вышли, окно входа на экране',
+    await ivy.page.evaluate(() => !currentUser && !document.getElementById('logout-modal').open));
+check('и устройство не отозвано',
+    (await db.query('SELECT revoked_at FROM devices WHERE id = $1', [ivyInfo.deviceId])).rows[0]?.revoked_at === null);
+check('а переписка осталась в браузере', hasText(await local(ivy.page), 'прочитаю и после выхода'));
+const ivyAgain = await loginOn(ivy, 'ivy');
+check('после входа — то же устройство', ivyAgain === ivyInfo.deviceId, `${ivyInfo.deviceId} → ${ivyAgain}`);
+await openRoom(ivy.page, ivyRoom.roomId);
+check('и старое сообщение читается', await waitText(ivy.page, 'прочитаю и после выхода'));
+
+/* ------------------------- новые устройства аккаунта ------------------------- */
+
 const toastText = page => page.evaluate(() =>
     document.getElementById('toast').matches(':popover-open') ? document.getElementById('toast').textContent : '');
 

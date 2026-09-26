@@ -1355,6 +1355,11 @@ app.post('/api/logout', async (req, res) => {
     });
 });
 
+// Ничего не отдаёт: кука csrf_token выставляется общим обработчиком выше
+// на любом запросе, где её нет. Клиент зовёт это после выхода, когда
+// сервер куку стёр.
+app.get('/api/csrf', (req, res) => res.json({ success: true }));
+
 app.get('/api/auth', async (req, res) => {
     if (!req.session.userId) return res.json({ authenticated: false });
     try {

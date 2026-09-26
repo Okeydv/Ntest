@@ -16,6 +16,9 @@ const elements = {
     registerBtn: document.getElementById('register-btn'),
     anonymousLoginBtn: document.getElementById('anonymous-login-btn'),
     logoutBtn: document.getElementById('logout-btn'),
+    logoutModal: document.getElementById('logout-modal'),
+    logoutWipeBtn: document.getElementById('logout-wipe-btn'),
+    logoutKeepBtn: document.getElementById('logout-keep-btn'),
     chatsList: document.getElementById('chats-list'),
     chatMessages: document.getElementById('chat-messages'),
     messageInput: document.getElementById('message-input'),
@@ -362,7 +365,12 @@ async function refreshEncryptionBadge(chatId, isBot) {
     badge.className = `encryption-badge is-${mode}`;
     badge.disabled = mode === 'off';
     badge.title = mode === 'off' ? '' : 'Сверить ключи';
-    badge.replaceChildren(createIcon(icon), document.createTextNode(text));
+    // Текст в отдельном элементе: на узком экране он обрезается
+    // многоточием, а замок остаётся виден.
+    const label = document.createElement('span');
+    label.className = 'encryption-badge-text';
+    label.textContent = text;
+    badge.replaceChildren(createIcon(icon), label);
 }
 
 /* --- Сверка ключей -------------------------------------------------------
@@ -718,6 +726,12 @@ function createIcon(id) {
 
 function applyTheme(theme) {
     document.documentElement.setAttribute('data-theme', theme);
+    // Строка состояния на телефоне красится по theme-color. Обе метки (для
+    // светлой и тёмной системы) получают цвет выбранной темы, иначе при
+    // ручной смене полоса сверху осталась бы цвета системной.
+    document.querySelectorAll('meta[name="theme-color"]').forEach(meta => {
+        meta.setAttribute('content', theme === 'light' ? '#f4f4f7' : '#08080e');
+    });
     try {
         localStorage.setItem(THEME_KEY, theme);
     } catch (e) {
@@ -908,10 +922,19 @@ function getCsrfToken() {
     return match ? match[1] : '';
 }
 
+// Кука с токеном пропадает после выхода (сервер её стирает) и через сутки.
+// Тогда любой изменяющий запрос получал бы 403 до перезагрузки страницы —
+// например, вход сразу после выхода. Без куки сначала берём новую.
+async function csrfToken() {
+    if (!getCsrfToken()) await fetch('/api/csrf', { credentials: 'same-origin' });
+    return getCsrfToken();
+}
+
 async function api(url, options = {}) {
+    const method = (options.method || 'GET').toUpperCase();
     const headers = {
         'Content-Type': 'application/json',
-        'X-CSRF-Token': getCsrfToken(),
+        'X-CSRF-Token': method === 'GET' ? getCsrfToken() : await csrfToken(),
         ...options.headers,
     };
     const res = await fetch(url, { ...options, headers });
@@ -1007,17 +1030,15 @@ function setupEventListeners() {
         }
     }));
 
-    elements.logoutBtn.addEventListener('click', async () => {
-        // Выход стирает с устройства ключи и расшифрованную переписку и
-        // отзывает устройство: иначе всё это оставалось бы в браузере для
-        // любого, кто сядет за него следом. Анонимный аккаунт удаляется
-        // целиком и так — спрашивать не о чем.
+    // Выход стирает с устройства ключи и расшифрованную переписку и
+    // отзывает устройство: иначе всё это оставалось бы в браузере для
+    // любого, кто сядет за него следом. На своём устройстве можно выйти, не
+    // стирая, — тогда при следующем входе собеседникам не придётся заново
+    // сверять ключи. Анонимный аккаунт при выходе удаляется целиком, так что
+    // спрашивать не о чем.
+    const finishLogout = async ({ keepDevice }) => {
         if (e2ee && e2ee.isReady()) {
-            if (!(currentUser && currentUser.isAnonymous)
-                && !confirm('Выйти? Переписка на этом устройстве будет стёрта, прочитать её здесь снова не получится.')) {
-                return;
-            }
-            await e2ee.wipeDevice();
+            await (keepDevice ? e2ee.detach() : e2ee.wipeDevice());
             e2eeDeviceId = null;
         }
         await api('/api/logout', { method: 'POST' });
@@ -1026,7 +1047,21 @@ function setupEventListeners() {
         currentRoomId = null;
         showToast('Вы вышли из аккаунта', 'info');
         showAuth();
+    };
+    elements.logoutBtn.addEventListener('click', () => {
+        if (!(e2ee && e2ee.isReady()) || (currentUser && currentUser.isAnonymous)) {
+            return finishLogout({ keepDevice: false });
+        }
+        openModal(elements.logoutModal);
     });
+    elements.logoutWipeBtn.addEventListener('click', () => withBusy(elements.logoutWipeBtn, async () => {
+        closeModal(elements.logoutModal);
+        await finishLogout({ keepDevice: false });
+    }));
+    elements.logoutKeepBtn.addEventListener('click', () => withBusy(elements.logoutKeepBtn, async () => {
+        closeModal(elements.logoutModal);
+        await finishLogout({ keepDevice: true });
+    }));
 
     elements.newChatBtn.addEventListener('click', () => openModal(elements.newChatModal));
     if (elements.emptyNewChatBtn) {
@@ -1490,44 +1525,49 @@ function dayLabel(date) {
     return (date.getFullYear() === today.getFullYear() ? dayFormat : dayWithYearFormat).format(date);
 }
 
-function lastDayInChat() {
-    const bubbles = elements.chatMessages.querySelectorAll('[data-day]');
-    return bubbles.length ? bubbles[bubbles.length - 1].dataset.day : null;
+/*
+ * Каждый день — свой блок, и разделитель прилипает к верху только в
+ * пределах своего дня. Когда все разделители лежали вперемешку с
+ * сообщениями в одном списке, при прокрутке они прилипали все разом и
+ * наезжали друг на друга.
+ */
+function dayGroup(date) {
+    const day = date ? dayKey(date) : '';
+    const last = elements.chatMessages.lastElementChild;
+    // Сообщение без даты (своё, ещё не дошедшее) идёт в текущий день.
+    if (last && (!date || last.dataset.day === day)) return last;
+    const group = document.createElement('div');
+    group.className = 'day-group';
+    group.dataset.day = day;
+    if (date) {
+        const separator = document.createElement('div');
+        separator.className = 'day-separator';
+        separator.setAttribute('role', 'separator');
+        const label = document.createElement('span');
+        label.textContent = dayLabel(date);
+        separator.appendChild(label);
+        group.appendChild(separator);
+    }
+    elements.chatMessages.appendChild(group);
+    return group;
 }
 
 function appendMessage(message, { fresh = false } = {}) {
     const el = createMessageElement(message);
     if (fresh) el.classList.add('is-new');
-    const date = messageDate(message);
-    if (date) {
-        el.dataset.day = dayKey(date);
-        if (lastDayInChat() !== el.dataset.day) {
-            const separator = document.createElement('div');
-            separator.className = 'day-separator';
-            separator.setAttribute('role', 'separator');
-            separator.dataset.day = el.dataset.day;
-            const label = document.createElement('span');
-            label.textContent = dayLabel(date);
-            separator.appendChild(label);
-            elements.chatMessages.appendChild(separator);
-        }
-    }
-    elements.chatMessages.appendChild(el);
+    dayGroup(messageDate(message)).appendChild(el);
     refreshMessageTabStop();
 }
 
 /**
  * Убрать пузырь сообщения. Если это было последнее сообщение дня,
- * вместе с ним уходит и разделитель, иначе он висел бы над пустотой.
+ * вместе с ним уходит и день с разделителем, иначе разделитель висел бы
+ * над пустотой.
  */
 function removeMessageElement(el) {
-    const prev = el.previousElementSibling;
-    const next = el.nextElementSibling;
+    const group = el.closest('.day-group');
     el.remove();
-    if (prev && prev.classList.contains('day-separator')
-        && (!next || next.classList.contains('day-separator'))) {
-        prev.remove();
-    }
+    if (group && !group.querySelector('.message, .message-system')) group.remove();
     refreshMessageTabStop();
 }
 
@@ -2228,7 +2268,7 @@ async function sendEncryptedFile(chatId, file) {
 
     const upload = await fetch(`/api/blobs?chatId=${encodeURIComponent(chatId)}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/octet-stream', 'X-CSRF-Token': getCsrfToken() },
+        headers: { 'Content-Type': 'application/octet-stream', 'X-CSRF-Token': await csrfToken() },
         body: ciphertext,
     });
     const uploaded = await upload.json().catch(() => null);
@@ -2283,7 +2323,7 @@ async function handleFileUpload() {
 
     const res = await fetch('/api/messages/file', {
         method: 'POST',
-        headers: { 'X-CSRF-Token': getCsrfToken() },
+        headers: { 'X-CSRF-Token': await csrfToken() },
         body: formData,
     });
     const data = await res.json();
