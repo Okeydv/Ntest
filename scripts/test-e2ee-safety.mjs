@@ -147,11 +147,24 @@ const b2 = await badge(alice);
 check('новое устройство у сверенного собеседника видно в шапке',
     b2.cls.includes('is-warn') && /изменились/.test(b2.text), b2.text);
 
+// Новое устройство пишет само. Читать его сообщения можно, но видно, что
+// они с устройства, которого не было при сверке.
+await openRoom(bobPhone);
+await send(bobPhone, 'пишу с телефона');
+await send(bob, 'пишу с ноутбука');
+const marked = text => alice.page.evaluate(t => {
+    const bubble = [...document.querySelectorAll('#chat-messages .message')].find(m => m.textContent.includes(t));
+    return bubble ? Boolean(bubble.querySelector('.message-new-device')) : null;
+}, text);
+check('сообщение с несверенного устройства помечено', await marked('пишу с телефона') === true);
+check('а со сверенного — нет', await marked('пишу с ноутбука') === false);
+
 const before = await roomMessages(roomId);
 const blocked = await send(alice, 'это не должно уйти');
 check('отправка остановлена до повторной сверки',
     await roomMessages(roomId) === before && /сверьте код заново/.test(blocked.toast), blocked.toast);
 check('набранный текст не пропал', blocked.input === 'это не должно уйти');
+
 
 const a3 = await safety(alice);
 check('окно сверки объясняет, что изменилось',
@@ -169,6 +182,8 @@ const sent = await send(alice, 'после сверки');
 await bobPhone.page.waitForTimeout(800);
 check('после повторной сверки отправка идёт', sent.input === '' && await roomMessages(roomId) === before + 1);
 check('и новое устройство Боба сообщение читает', await seesText(bobPhone, 'после сверки'));
+await openRoom(alice);
+check('после повторной сверки пометки нет', await marked('пишу с телефона') === false);
 
 /* ------------------------- подмена ключа сервером ------------------------- */
 

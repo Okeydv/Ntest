@@ -1238,6 +1238,11 @@ input.is-invalid:focus {
 
 .message-encrypted .icon { width: 0.6875rem; height: 0.6875rem; }
 
+/* Сообщение с устройства, которого не было при сверке ключей. */
+.message-new-device { display: inline-flex; color: var(--danger); }
+.message-new-device .icon { width: 0.8125rem; height: 0.8125rem; }
+.message.received.from-new-device { border-color: var(--danger); }
+
 /* Место под вложение, пока оно скачивается и расшифровывается: форма
    картинки, чтобы подгрузка не дёргала ленту. */
 .encrypted-attachment { margin-bottom: 0.5rem; }

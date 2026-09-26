@@ -892,6 +892,21 @@ export const clearVerified = userId => store.verified.drop(userId);
  *
  * devices — ответ /api/chats/:id/devices. Возвращает Map userId → state.
  */
+/**
+ * Сверено ли устройство, с которого пришло сообщение. 'new' — собеседник
+ * сверен, а этого устройства при сверке не было: писать на него мы не
+ * дадим (assertVerifiedTargets), а читать его сообщения — читаем, но
+ * человек должен видеть, что они с непроверенного устройства. Так выглядела
+ * бы и подмена сервером. 'verified' — было при сверке; 'unverified' —
+ * собеседника не сверяли вовсе, отмечать нечего.
+ */
+export async function senderDeviceTrust(userId, deviceId) {
+    if (!userId || !deviceId || userId === state.userId) return 'unverified';
+    const record = await store.verified.load(userId);
+    if (!record) return 'unverified';
+    return record.devices.some(d => d.deviceId === Number(deviceId)) ? 'verified' : 'new';
+}
+
 export async function verificationStatus(devices) {
     const result = new Map();
     for (const [userId, deviceIds] of groupByUser(devices)) {

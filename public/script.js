@@ -187,6 +187,7 @@ async function appendMessageDecrypted(message) {
         const raw = await resolveMessageText(message);
         const content = raw === null ? null : e2ee.decodePayload(raw);
         applyDecryptedContent(message, content);
+        message.deviceTrust = await e2ee.senderDeviceTrust(message.user_id, message.sender_device_id);
         if (content) {
             const preview = e2ee.payloadPreview(content);
             await e2ee.rememberPreview(message, preview);
@@ -1475,7 +1476,18 @@ function createMessageElement(message) {
 
     const metaDiv = document.createElement('div');
     metaDiv.className = 'message-meta';
-    if (message.encrypted) {
+    if (message.deviceTrust === 'new') {
+        // Собеседник сверен, а это устройство — нет. Так выглядела бы и
+        // подмена сервером, поэтому видно у каждого такого сообщения.
+        div.classList.add('from-new-device');
+        const warn = document.createElement('span');
+        warn.className = 'message-new-device';
+        warn.title = 'Отправлено с устройства, которого не было при сверке ключей. Сверьте код заново.';
+        warn.setAttribute('role', 'img');
+        warn.setAttribute('aria-label', warn.title);
+        warn.appendChild(createIcon('i-alert'));
+        metaDiv.appendChild(warn);
+    } else if (message.encrypted) {
         const lock = document.createElement('span');
         lock.className = 'message-encrypted';
         lock.title = 'Сквозное шифрование';
