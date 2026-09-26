@@ -150,6 +150,12 @@ const encUp = await upload(A, chatIdA, 'locked.pdf', 'application/pdf', encrypte
 check('зашифрованный PDF не отправляется, и сказано, что он защищён', encUp.status === 400 && /защищён паролем/.test(encUp.json?.message), encUp.json?.message);
 check('и не остаётся на диске', uploadsCount() === before);
 
+// Мусор с заголовком %PDF: раньше очистка падала на нём с TypeError, и
+// человек видел общее «не удалось удалить метаданные».
+const junkUp = await upload(A, chatIdA, 'junk.pdf', 'application/pdf', Buffer.from('%PDF-1.7\nэто не PDF\n%%EOF\n'));
+check('битый PDF не отправляется, и сказано, что он повреждён', junkUp.status === 400 && /повреждён/.test(junkUp.json?.message),
+    junkUp.json?.message);
+
 /* ------------------------- фото ------------------------- */
 
 const jpeg = await sharp({ create: { width: 40, height: 20, channels: 3, background: '#3a7bd5' } })

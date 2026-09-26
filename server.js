@@ -20,7 +20,7 @@ const rateLimit = require('express-rate-limit');
 const { ipKeyGenerator } = rateLimit;
 
 // Импорт новых модулей безопасности и приватности
-const { stripMetadataFromFile } = require('./lib/metadata-stripper');
+const { stripMetadataInWorker } = require('./lib/metadata-stripper');
 const { shared } = require('./lib/shared');
 const { secureCookieFor, sessionCookieSecurity } = require('./lib/cookie-security');
 const { sweepOrphanUploads } = require('./lib/upload-sweeper');
@@ -2386,7 +2386,9 @@ app.post('/api/messages/file', upload.single('file'), async (req, res) => {
         if (file.mimetype.startsWith('image/') || file.mimetype === 'application/pdf'
             || file.mimetype === 'video/webm' || fileTypes.ISO_BMFF_TYPES.has(file.mimetype)) {
             try {
-                await stripMetadataFromFile(uploadedFilePath, file.mimetype);
+                // В отдельном процессе с пределом памяти и времени: разбор
+                // чужого файла не должен уметь уронить или повесить сервер.
+                await stripMetadataInWorker(uploadedFilePath, file.mimetype);
             } catch (stripErr) {
                 log.error({ err: stripErr }, 'Metadata strip error');
                 try { if (fs.existsSync(uploadedFilePath)) fs.unlinkSync(uploadedFilePath); } catch (_) { /* ignore */ }
@@ -2394,7 +2396,9 @@ app.post('/api/messages/file', upload.single('file'), async (req, res) => {
                 // повреждён, — и советы для них разные.
                 return res.status(400).json({ success: false, message: stripErr.name === 'PdfCleanError'
                     ? `Файл не отправлен: ${stripErr.message}`
-                    : 'Не удалось удалить метаданные из файла — он не отправлен' });
+                    : stripErr.name === 'WorkerLimitError'
+                        ? 'Файл слишком сложный: очистка не уложилась в пределы — он не отправлен'
+                        : 'Не удалось удалить метаданные из файла — он не отправлен' });
             }
         }
     } catch (magicErr) {
