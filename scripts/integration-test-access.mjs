@@ -161,19 +161,21 @@ check('про чужой чат не спросить, и не больше 1000
 
 // Втроём: после ухода Боба в чате остаётся кому писать — в пустую группу
 // сервер ничего не принимает (lib/rooms.js).
-const trio = await roomChat(alice, 'Трое', bob, eve);
+// Третий — отдельный пользователь: Ева дальше должна оставаться посторонней.
+const dave = await register('dave');
+const trio = await roomChat(alice, 'Трое', bob, dave);
 const bobSock = await bob.socket(`room:${trio.roomId}`);
-const eveSock = await eve.socket(`room:${trio.roomId}`);
+const daveSock = await dave.socket(`room:${trio.roomId}`);
 await alice.req('POST', '/api/messages', { chatId: trio.chats[alice.userId], text: 'пока Боб здесь' });
 await sleep(400);
 check('участник получает сообщения по сокету', bobSock.received.some(m => m.text === 'пока Боб здесь'));
 await bob.req('DELETE', `/api/chats/${trio.chats[bob.userId]}`);
 const afterLeave = await alice.req('POST', '/api/messages', { chatId: trio.chats[alice.userId], text: 'Боб уже ушёл' });
 await sleep(400);
-check('после выхода из чата — нет', afterLeave.json.success && eveSock.received.some(m => m.text === 'Боб уже ушёл')
+check('после выхода из чата — нет', afterLeave.json.success && daveSock.received.some(m => m.text === 'Боб уже ушёл')
     && !bobSock.received.some(m => m.text === 'Боб уже ушёл'));
 bobSock.close();
-eveSock.close();
+daveSock.close();
 
 /* ------------------------- выход из аккаунта и смена пароля ------------------------- */
 
