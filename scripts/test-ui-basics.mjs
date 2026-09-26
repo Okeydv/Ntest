@@ -274,11 +274,14 @@ const subline = await phone.evaluate(() => {
     return {
         oneLine: line.getBoundingClientRect().height < 24,
         inside: line.getBoundingClientRect().right <= header.right,
-        cut: text.scrollWidth > text.clientWidth && getComputedStyle(text).textOverflow === 'ellipsis',
+        // Обрезана многоточием или, если места совсем нет, спрятана только
+        // с экрана — диктор её читает.
+        cut: (text.scrollWidth > text.clientWidth && getComputedStyle(text).textOverflow === 'ellipsis')
+            || (getComputedStyle(text).clipPath === 'inset(50%)' && getComputedStyle(text).display !== 'none'),
         status: document.getElementById('chat-status').scrollWidth <= document.getElementById('chat-status').clientWidth,
     };
 });
-check('подпись в шапке на телефоне — в одну строку, длинная обрезана многоточием',
+check('подпись в шапке на телефоне — в одну строку, длинная не вылезает (многоточие или только значок)',
     subline.oneLine && subline.inside && subline.cut && subline.status, JSON.stringify(subline));
 await phoneContext.close();
 

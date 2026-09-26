@@ -4,7 +4,7 @@
 
 const { log } = require('../lib/log');
 const { pool, dbGet, dbAll, dbRun } = require('../lib/db');
-const { normalizeExpiry } = require('../lib/disappearing-messages');
+const { normalizeExpiry, expiryLabel } = require('../lib/disappearing-messages');
 const { joinLimiter } = require('../lib/rate-limits');
 const { getCurrentTime, generateInviteCodeAsync } = require('../lib/helpers');
 
@@ -235,6 +235,7 @@ module.exports = function registerChatRoutes(app, ctx) {
                 [req.session.userId, room.id, chatName, avatar, 0, 0]
             );
             res.locals.joined = true;
+            await ctx.disappearingMessagesManager.copyRoomExpiry(chatResult.rows[0].id, room.id);
             const me = await dbGet('SELECT username FROM users WHERE id = $1', [req.session.userId]);
             await postSystemMessage({
                 roomId: room.id, chatId: chatResult.rows[0].id,
@@ -344,14 +345,23 @@ module.exports = function registerChatRoutes(app, ctx) {
 
         try {
             // Проверка доступа к чату
-            const chat = await dbGet('SELECT id FROM chats WHERE id = $1 AND user_id = $2', [chatId, req.session.userId]);
+            const chat = await dbGet('SELECT id, room_id FROM chats WHERE id = $1 AND user_id = $2', [chatId, req.session.userId]);
             if (!chat) {
                 return res.json({ success: false, message: 'Чат не найден' });
             }
 
-            await ctx.disappearingMessagesManager.setChatDefaultExpiry(chatId, expirySeconds);
+            const seconds = Number(expirySeconds) === 0 ? null : normalizeExpiry(expirySeconds);
+            const before = await ctx.disappearingMessagesManager.setChatDefaultExpiry(chatId, expirySeconds);
+            // Собеседники должны знать, что их сообщения теперь исчезают.
+            if (chat.room_id && before !== seconds) {
+                const name = req.session.username || 'Участник';
+                await postSystemMessage({ roomId: chat.room_id, chatId: chat.id, text: seconds
+                    ? `${name} включил(а) исчезающие сообщения: ${expiryLabel(seconds)}`
+                    : `${name} выключил(а) исчезающие сообщения` });
+                io.to(`room:${chat.room_id}`).emit('chatExpiryChanged', { room_id: chat.room_id, expirySeconds: seconds });
+            }
 
-            res.json({ success: true, message: 'Автоудаление сообщений настроено для чата' });
+            res.json({ success: true, expirySeconds: seconds });
         } catch (error) {
             log.error({ err: error }, 'Set chat default expiry error');
             res.status(500).json({ success: false, message: 'Ошибка настройки автоудаления' });

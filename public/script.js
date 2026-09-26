@@ -16,6 +16,8 @@ const elements = {
     registerBtn: document.getElementById('register-btn'),
     anonymousLoginBtn: document.getElementById('anonymous-login-btn'),
     logoutBtn: document.getElementById('logout-btn'),
+    chatExpiry: document.getElementById('chat-expiry'),
+    chatExpirySelect: document.getElementById('chat-expiry-select'),
     logoutModal: document.getElementById('logout-modal'),
     logoutWipeBtn: document.getElementById('logout-wipe-btn'),
     logoutKeepBtn: document.getElementById('logout-keep-btn'),
@@ -1150,6 +1152,26 @@ function setupEventListeners() {
         e.stopPropagation();
         openModal(elements.chatMenuModal);
     });
+    elements.chatExpiry.addEventListener('click', () => openModal(elements.chatMenuModal));
+    elements.chatExpirySelect.addEventListener('change', async () => {
+        const select = elements.chatExpirySelect;
+        const expirySeconds = Number(select.value);
+        select.disabled = true;
+        try {
+            const data = await api(`/api/chats/${currentChatId}/set-default-expiry`, {
+                method: 'POST', body: JSON.stringify({ expirySeconds }) });
+            if (!data.success) {
+                select.value = String(chatExpirySeconds || 0);
+                return showToast(data.message, 'error');
+            }
+            showChatExpiry(data.expirySeconds);
+            showToast(data.expirySeconds
+                ? `Новые сообщения исчезнут ${expiryPhrase(data.expirySeconds)}`
+                : 'Исчезающие сообщения выключены', 'success');
+        } finally {
+            select.disabled = false;
+        }
+    });
 
     elements.deleteChatBtn.addEventListener('click', deleteChat);
 
@@ -1372,6 +1394,10 @@ function setupEventListeners() {
         e2ee.knownOwnDevices().then(known => e2ee.rememberOwnDevices([...(known || []), device.id]));
     });
 
+    socket.on('chatExpiryChanged', ({ room_id, expirySeconds }) => {
+        if (currentRoomId && Number(room_id) === Number(currentRoomId)) showChatExpiry(expirySeconds);
+    });
+
     socket.on('messageDeleted', ({ id, chat_id, room_id }) => {
         // Расшифрованная копия удалённого сообщения не должна пережить его.
         if (e2ee) e2ee.forgetMessage({ id, chat_id, room_id });
@@ -1550,6 +1576,7 @@ async function openChat(chatId, roomId, name, avatar, online, isBot) {
     elements.messageInputContainer.classList.remove('hidden');
     elements.emptyState.classList.add('hidden');
     elements.chatMessages.innerHTML = '';
+    showChatExpiry(null);
 
     // Что из этого чата лежит у нас расшифрованным — до запроса истории:
     // сообщение, пришедшее, пока она грузится, не должно попасть под чистку.
@@ -1560,6 +1587,7 @@ async function openChat(chatId, roomId, name, avatar, online, isBot) {
     const data = await api(`/api/messages/${chatId}?limit=${historyPageSize}`);
     if (!data.success || currentChatId !== chatId) return;
     const page = data.messages || [];
+    showChatExpiry(data.expirySeconds);
     historyPaging.hasMore = Boolean(data.hasMore);
     historyPaging.oldestId = page.length ? page[0].id : null;
     // Удалённое и исчезнувшее, пока устройство было не в сети, стираем и
@@ -1577,6 +1605,43 @@ async function openChat(chatId, roomId, name, avatar, online, isBot) {
 
     const roomKey = roomId ? `room:${roomId}` : `chat:${chatId}`;
     socket.emit('joinChat', roomKey);
+}
+
+/* --- Исчезающие сообщения ---------------------------------------------------
+   Срок общий для чата: его видно в шапке, у каждого исчезающего сообщения
+   таймер, а сменить можно в меню чата. */
+
+let chatExpirySeconds = null;
+
+const EXPIRY_UNITS = [
+    [604800, ['неделю', 'недели', 'недель']], [86400, ['день', 'дня', 'дней']],
+    [3600, ['час', 'часа', 'часов']], [60, ['минуту', 'минуты', 'минут']], [1, ['секунду', 'секунды', 'секунд']],
+];
+
+// «через 1 день», «через 5 минут»
+function expiryPhrase(seconds) {
+    for (const [size, forms] of EXPIRY_UNITS) {
+        if (seconds % size !== 0) continue;
+        const n = seconds / size;
+        const form = n % 10 === 1 && n % 100 !== 11 ? 0 : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? 1 : 2;
+        return `через ${n} ${forms[form]}`;
+    }
+    return `через ${seconds} с`;
+}
+
+function showChatExpiry(seconds) {
+    chatExpirySeconds = seconds || null;
+    const badge = elements.chatExpiry;
+    badge.classList.toggle('hidden', !chatExpirySeconds);
+    elements.chatExpirySelect.value = String(chatExpirySeconds || 0);
+    if (!chatExpirySeconds) return;
+    const phrase = expiryPhrase(chatExpirySeconds);
+    const label = document.createElement('span');
+    label.className = 'expiry-badge-text';
+    label.textContent = phrase.replace(/^через /, '');
+    badge.replaceChildren(createIcon('i-timer'), label);
+    badge.title = `Новые сообщения исчезают ${phrase}`;
+    badge.setAttribute('aria-label', badge.title);
 }
 
 /* --- История страницами ---------------------------------------------------
@@ -2024,6 +2089,16 @@ function createMessageElement(message) {
         lock.title = 'Сквозное шифрование';
         lock.appendChild(createIcon('i-lock'));
         metaDiv.appendChild(lock);
+    }
+    const expiresAt = message.expires_at ? new Date(message.expires_at) : null;
+    if (expiresAt && !Number.isNaN(expiresAt.getTime())) {
+        const timer = document.createElement('span');
+        timer.className = 'message-expiry';
+        timer.title = `Исчезнет ${fullFormat.format(expiresAt)}`;
+        timer.setAttribute('role', 'img');
+        timer.setAttribute('aria-label', timer.title);
+        timer.appendChild(createIcon('i-timer'));
+        metaDiv.appendChild(timer);
     }
     const timeSpan = document.createElement('time');
     timeSpan.className = 'message-time';

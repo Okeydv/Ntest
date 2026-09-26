@@ -593,6 +593,25 @@ input[type="password"] {
     }
 }
 
+select.select {
+    width: 100%;
+    padding: 0.75rem 1rem;
+    border: 1px solid var(--border-2);
+    border-radius: var(--r-md);
+    background: var(--field);
+    color: var(--text);
+    font: inherit;
+    font-size: var(--fs-body);
+}
+select.select:focus-visible {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-ring);
+}
+@media (pointer: coarse), (max-width: 640px) {
+    select.select { font-size: max(16px, var(--fs-body)); }
+}
+
 input::placeholder { color: var(--text-3); }
 
 /* Фокус: сдвиг фона + акцентная рамка + кольцо. Видно и на тёмной, и на
@@ -1069,7 +1088,9 @@ input.is-invalid:focus {
     box-shadow: var(--sh-1);
 }
 
-.chat-details { min-width: 0; }
+/* Контейнер для запросов по ширине: подпись под названием подстраивается
+   под место, которое осталось между аватаркой и кнопками. */
+.chat-details { flex: 1; min-width: 0; container-type: inline-size; }
 
 .chat-details h3 {
     font-size: var(--fs-h3);
@@ -1124,6 +1145,44 @@ input.is-invalid:focus {
 .encryption-badge.is-on { color: var(--ok); }
 .encryption-badge.is-off { color: var(--text-3); }
 .encryption-badge.is-warn { color: var(--danger); }
+
+/* Срок исчезающих сообщений в шапке: нажатие открывает меню чата. */
+.expiry-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3125rem;
+    min-width: 0;
+    white-space: nowrap;
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    font-size: var(--fs-xs);
+    font-weight: 500;
+    color: var(--text-2);
+    cursor: pointer;
+    border-radius: var(--r-xs);
+}
+@media (hover: hover) {
+    .expiry-badge:hover { text-decoration: underline; text-underline-offset: 0.2em; }
+}
+.expiry-badge .icon { flex: none; width: 0.8125rem; height: 0.8125rem; }
+.expiry-badge-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* Совсем мало места (узкий телефон): у шифрования и срока остаются
+   значки, текст — в подсказке, у диктора и в меню чата. На ширине
+   побольше надпись о шифровании обрезается многоточием. */
+@container (max-width: 13rem) {
+    .expiry-badge-text,
+    .encryption-badge-text {
+        /* Не display: none — экранный диктор текст по-прежнему читает. */
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+    }
+}
 
 .status {
     display: inline-flex;
@@ -1312,6 +1371,9 @@ input.is-invalid:focus {
     font-weight: 600;
     color: var(--text-3);
 }
+
+.message-expiry { display: inline-flex; opacity: 0.85; }
+.message-expiry .icon { width: 0.75rem; height: 0.75rem; }
 
 .message-encrypted {
     display: inline-flex;
@@ -2002,9 +2064,12 @@ dialog.modal .toast { bottom: calc(1.75rem + env(safe-area-inset-bottom, 0px)); 
     /* Подпись под названием — в одну строку: «В сети» целиком, а длинная
        надпись о шифровании обрезается многоточием, а не переносится и не
        вылезает за шапку. */
-    .chat-subline { flex-wrap: nowrap; min-width: 0; }
+    .chat-subline { flex-wrap: nowrap; min-width: 0; overflow: hidden; gap: 0.25rem 0.5rem; }
     .chat-subline .status { flex: none; }
-    .chat-subline .encryption-badge { flex: 0 1 auto; }
+    /* Места мало: сначала до замка сжимается надпись о шифровании, и
+       только потом — срок исчезающих сообщений. */
+    .chat-subline .encryption-badge { flex: 0 100 auto; min-width: 0.8125rem; overflow: hidden; }
+    .chat-subline .expiry-badge { flex: none; }
     .modal-body,
     .modal-header { padding-inline: 1.25rem; }
     .sidebar-footer .btn-ghost { font-size: var(--fs-xs); }

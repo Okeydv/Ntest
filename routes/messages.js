@@ -109,6 +109,13 @@ module.exports = function registerMessageRoutes(app, ctx) {
      * где пока не для кого шифровать.
      */
     /** Срок жизни из запроса: null — не задан, false — недопустим. */
+    // Срок жизни нового сообщения: свой, если его прислали, иначе — срок
+    // чата. Возвращает момент исчезновения или null.
+    async function applyExpiry(messageId, chatId, expiry) {
+        const seconds = expiry || (await ctx.disappearingMessagesManager.getChatSettings(chatId))?.default_message_expiry;
+        return seconds ? ctx.disappearingMessagesManager.setMessageExpiry(messageId, seconds, false) : null;
+    }
+
     function expiryFrom(value) {
         if (value === undefined || value === null || value === '' || Number(value) === 0) return null;
         return normalizeExpiry(value) ?? false;
@@ -265,14 +272,7 @@ module.exports = function registerMessageRoutes(app, ctx) {
                 client.release();
             }
 
-            if (expiry) {
-                await ctx.disappearingMessagesManager.setMessageExpiry(messageId, expiry, false);
-            } else {
-                const chatSettings = await ctx.disappearingMessagesManager.getChatSettings(chatId);
-                if (chatSettings && chatSettings.default_message_expiry) {
-                    await ctx.disappearingMessagesManager.setMessageExpiry(messageId, chatSettings.default_message_expiry, false);
-                }
-            }
+            const expiresAt = await applyExpiry(messageId, chatId, expiry);
 
             const sender = await dbGet('SELECT username, avatar FROM users WHERE id = $1', [req.session.userId]);
             const base = {
@@ -290,6 +290,7 @@ module.exports = function registerMessageRoutes(app, ctx) {
                 sent: true,
                 time,
                 created_at: createdAt,
+                expires_at: expiresAt,
                 status: 'sent',
             };
 
@@ -427,19 +428,21 @@ module.exports = function registerMessageRoutes(app, ctx) {
 
             const selectParam = chat.room_id || chatId;
             const selectQuery = chat.room_id
-                ? `SELECT m.*, u.username as sender_username, u.avatar as sender_avatar,
+                ? `SELECT m.*, u.username as sender_username, u.avatar as sender_avatar, ex.expires_at,
                           rt.id as reply_to_id, rt.text as reply_to_text, rt.deleted as reply_to_deleted, ru.username as reply_to_sender_username, ru.avatar as reply_to_sender_avatar
                    FROM messages m
                    LEFT JOIN users u ON m.user_id = u.id
+                   LEFT JOIN message_expiry ex ON ex.message_id = m.id
                    LEFT JOIN messages rt ON m.reply_to_id = rt.id AND rt.room_id = m.room_id
                    LEFT JOIN users ru ON rt.user_id = ru.id
                    WHERE m.room_id = $1 AND m.deleted = 0 AND ($2::int IS NULL OR m.id < $2)
                    ORDER BY m.id DESC
                    LIMIT $3`
-                : `SELECT m.*, u.username as sender_username, u.avatar as sender_avatar,
+                : `SELECT m.*, u.username as sender_username, u.avatar as sender_avatar, ex.expires_at,
                           rt.id as reply_to_id, rt.text as reply_to_text, rt.deleted as reply_to_deleted, ru.username as reply_to_sender_username, ru.avatar as reply_to_sender_avatar
                    FROM messages m
                    LEFT JOIN users u ON m.user_id = u.id
+                   LEFT JOIN message_expiry ex ON ex.message_id = m.id
                    LEFT JOIN messages rt ON m.reply_to_id = rt.id AND rt.chat_id = m.chat_id AND rt.room_id IS NULL
                    LEFT JOIN users ru ON rt.user_id = ru.id
                    WHERE m.chat_id = $1 AND m.deleted = 0 AND ($2::int IS NULL OR m.id < $2)
@@ -457,9 +460,14 @@ module.exports = function registerMessageRoutes(app, ctx) {
                 ? 'UPDATE messages SET status = $1 WHERE room_id = $2 AND sent = 0'
                 : 'UPDATE messages SET status = $1 WHERE chat_id = $2 AND sent = 0', ['read', selectParam]);
 
+            // Срок исчезающих сообщений чата — вместе с первой страницей.
+            const expirySeconds = before === null
+                ? (await ctx.disappearingMessagesManager.getChatSettings(chat.id))?.default_message_expiry || null
+                : undefined;
+
             if (messages.length === 0) {
                 await markRead();
-                return res.json({ success: true, messages: [], hasMore: false, chat });
+                return res.json({ success: true, messages: [], hasMore: false, chat, expirySeconds });
             }
 
             const messageIds = messages.map(m => m.id);
@@ -545,7 +553,7 @@ module.exports = function registerMessageRoutes(app, ctx) {
 
             await markRead();
 
-            res.json({ success: true, messages, hasMore, chat, keyEnvelopes });
+            res.json({ success: true, messages, hasMore, chat, keyEnvelopes, expirySeconds });
         } catch (error) {
             log.error({ err: error }, 'Get messages error');
             res.status(500).json({ success: false, message: 'Ошибка загрузки сообщений' });
@@ -580,23 +588,16 @@ module.exports = function registerMessageRoutes(app, ctx) {
             );
             const messageId = result.rows[0].id;
 
-            // Установка времени жизни сообщения если указано
-            if (expiry) {
-                await ctx.disappearingMessagesManager.setMessageExpiry(messageId, expiry, false);
-            } else {
-                // Проверка настроек чата на автоудаление
-                const chatSettings = await ctx.disappearingMessagesManager.getChatSettings(chatId);
-                if (chatSettings && chatSettings.default_message_expiry) {
-                    await ctx.disappearingMessagesManager.setMessageExpiry(messageId, chatSettings.default_message_expiry, false);
-                }
-            }
+            const expiresAt = await applyExpiry(messageId, chatId, expiry);
 
             const fullMessage = await dbGet(
                 'SELECT m.*, u.username, u.avatar as user_avatar FROM messages m JOIN users u ON m.user_id = u.id WHERE m.id = $1',
                 [messageId]
             );
 
-            const messageForSocket = { ...fullMessage, sender_username: fullMessage.username, sender_avatar: fullMessage.user_avatar };
+            const messageForSocket = {
+                ...fullMessage, sender_username: fullMessage.username, sender_avatar: fullMessage.user_avatar, expires_at: expiresAt,
+            };
             io.to(socketRoomKey).emit('newMessage', messageForSocket);
             res.json({ success: true, message: messageForSocket });
 
