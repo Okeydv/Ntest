@@ -84,7 +84,7 @@ function rawGet(pathname) {
         sock.on('error', reject);
     });
 }
-const secretPaths = ['/.env', '/.git/config', '/server.js', '/package.json', '/package-lock.json', '/database.sql',
+const secretPaths = ['/.env', '/.git/config', '/server.js', '/package.json', '/package-lock.json', '/migrations/001_baseline.sql',
     '/scripts/run-all-tests.sh', '/node_modules/express/package.json', '/lib/privacy.js', '/e2ee-key-server/Cargo.toml',
     '/uploads/../.env', '/%2e%2e/.env', '/crypto/../../server.js', '/nothing-here'];
 const answers = await Promise.all(secretPaths.map(rawGet));
