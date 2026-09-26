@@ -271,6 +271,7 @@ function applyDecryptedContent(message, content) {
  * пришло только что (анимируется), а не из истории.
  */
 async function appendMessageDecrypted(message, { fresh = false } = {}) {
+    await resolveReplyQuote(message);
     if (message.encrypted) {
         const raw = await resolveMessageText(message);
         const content = raw === null ? null : e2ee.decodePayload(raw);
@@ -283,6 +284,26 @@ async function appendMessageDecrypted(message, { fresh = false } = {}) {
         }
     }
     appendMessage(message, { fresh });
+}
+
+/**
+ * Цитата ответа. Текст цитаты сервер берёт из базы, а у зашифрованного
+ * сообщения его там нет — цитата была пустой. По сокету приходит только
+ * reply_to_id — и цитаты не было вовсе до перезагрузки. Текст берём из
+ * локального кэша расшифрованного или из пузыря на экране.
+ */
+async function resolveReplyQuote(message) {
+    if (!message.reply_to_id && !message.reply_to) return;
+    const quote = message.reply_to
+        || { id: message.reply_to_id, text: null, deleted: false, sender_username: null };
+    const bubble = elements.chatMessages.querySelector(`[data-message-id="${quote.id}"]`);
+    if (!quote.deleted && !quote.text) {
+        const cached = e2ee ? await e2ee.recallPlaintext(quote.id) : null;
+        if (cached) quote.text = e2ee.payloadPreview(e2ee.decodePayload(cached));
+        else if (bubble) quote.text = bubble.querySelector('.message-text')?.textContent || null;
+    }
+    if (!quote.sender_username && bubble) quote.sender_username = bubble.dataset.sender || null;
+    message.reply_to = quote;
 }
 
 /** Есть ли в чате устройства, кроме этого: то есть есть ли для кого шифровать. */
@@ -1671,6 +1692,16 @@ function createFileAttachmentElement(message) {
     return wrapper;
 }
 
+/**
+ * Своё ли сообщение. Ответы бота записаны от имени владельца чата, но с
+ * sent = 0: раньше они рисовались справа, как свои, и их предлагалось
+ * редактировать и удалять.
+ */
+function isOwnMessage(message) {
+    return Boolean(currentUser) && message.user_id === currentUser.id
+        && message.sent !== 0 && message.sent !== false;
+}
+
 /** Код приглашения в окне; null — приглашение отключено. */
 function showInviteCode(code) {
     elements.inviteCodeBox.hidden = !code;
@@ -1691,10 +1722,11 @@ function createMessageElement(message) {
         line.textContent = message.text || '';
         return line;
     }
-    const isMine = message.user_id === (currentUser ? currentUser.id : 0);
+    const isMine = isOwnMessage(message);
     const div = document.createElement('div');
     div.className = `message ${isMine ? 'sent' : 'received'}`;
     div.dataset.messageId = message.id;
+    if (message.sender_username) div.dataset.sender = message.sender_username;
     div.tabIndex = -1;
 
     const contentDiv = document.createElement('div');
@@ -1723,7 +1755,7 @@ function createMessageElement(message) {
             // Текст удалённого сообщения сервер стирает — цитировать нечего.
             quoted.textContent = message.reply_to.deleted
                 ? 'Сообщение удалено'
-                : (message.reply_to.text || '').substring(0, 60);
+                : (message.reply_to.text || 'Сообщение').substring(0, 60);
             replyDiv.append(author, quoted);
             contentDiv.appendChild(replyDiv);
         }
@@ -1875,7 +1907,7 @@ function showMessageMenu(x, y, message, trigger = null) {
     // удаления пузыря находилось бы само меню.
     menu.dataset.forMessage = message.id;
     menu.dataset.forMessageText = message.text || '';
-    const isMine = message.user_id === (currentUser ? currentUser.id : 0);
+    const isMine = isOwnMessage(message);
     // Правка зашифрованного сообщения ушла бы на сервер открытым текстом,
     // поэтому её нет вовсе — удалить и отправить заново можно.
     elements.editMessageBtn.hidden = !(isMine && !message.encrypted);
@@ -2103,6 +2135,7 @@ async function sendEncryptedPayload(chatId, encoded, { replyToId = null, blobIds
     if (chatId === currentChatId) {
         const local = { ...data.message };
         applyDecryptedContent(local, content);
+        await resolveReplyQuote(local);
         appendMessage(local, { fresh: true });
         scrollToBottom();
     }

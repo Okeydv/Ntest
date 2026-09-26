@@ -232,6 +232,15 @@ const systemLines = async () => (await host.req('GET', `/api/messages/${hostChat
     .filter(m => m.message_type === 'system').map(m => m.text);
 check('вошедший по коду виден всем: системное сообщение', (await systemLines()).some(t => t.startsWith('guest вошёл')),
     JSON.stringify(await systemLines()));
+const joinLine = (await guest.req('GET', `/api/messages/${(await guest.req('GET', '/api/chats')).json.chats
+    .find(c => c.room_id === room.json.chat.room_id).id}`)).json.messages.find(m => m.message_type === 'system');
+await guest.req('DELETE', `/api/messages/${joinLine.id}`);
+await guest.req('PUT', `/api/messages/${joinLine.id}`, { text: 'ничего не было' });
+await guest.req('POST', `/api/messages/${joinLine.id}/set-expiry`, { expirySeconds: 1 });
+await sleep(2500);
+check('вошедший не может стереть, переписать или «состарить» строку о своём входе',
+    (await systemLines()).some(t => t.startsWith('guest вошёл')) && !(await systemLines()).includes('ничего не было'),
+    JSON.stringify(await systemLines()));
 
 const reset = await host.req('POST', `/api/chats/${hostChat}/invite`, { action: 'reset' });
 check('код можно сменить', reset.json?.success === true && reset.json.code && reset.json.code !== firstCode);

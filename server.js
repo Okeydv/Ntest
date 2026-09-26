@@ -2420,7 +2420,10 @@ app.put('/api/messages/:messageId', async (req, res) => {
     if (text.length > 4000) return res.json({ success: false, message: 'Сообщение не может быть длиннее 4000 символов' });
 
     try {
-        const message = await dbGet('SELECT * FROM messages WHERE id = $1 AND user_id = $2', [messageId, req.session.userId]);
+        // sent = 0 — не реплика пользователя: ответ бота или системное «вошёл в
+        // чат», где автором записан вошедший. Иначе он мог бы стереть или
+        // переписать строку о своём входе.
+        const message = await dbGet('SELECT * FROM messages WHERE id = $1 AND user_id = $2 AND sent <> 0', [messageId, req.session.userId]);
         if (!message) return res.json({ success: false, message: 'Сообщение не найдено' });
         // Правка шла бы открытым текстом: этот эндпоинт кладёт новый текст в
         // messages.text и рассылает его всем. Для зашифрованного сообщения
@@ -2450,7 +2453,10 @@ app.delete('/api/messages/:messageId', async (req, res) => {
     if (!req.session.userId) return res.json({ success: false, message: 'Не авторизован' });
     const { messageId } = req.params;
     try {
-        const message = await dbGet('SELECT * FROM messages WHERE id = $1 AND user_id = $2', [messageId, req.session.userId]);
+        // sent = 0 — не реплика пользователя: ответ бота или системное «вошёл в
+        // чат», где автором записан вошедший. Иначе он мог бы стереть или
+        // переписать строку о своём входе.
+        const message = await dbGet('SELECT * FROM messages WHERE id = $1 AND user_id = $2 AND sent <> 0', [messageId, req.session.userId]);
         if (!message) return res.json({ success: false, message: 'Сообщение не найдено' });
         await dbRun('UPDATE messages SET deleted = 1 WHERE id = $1', [messageId]);
         await purgeMessageContent(message.id);
@@ -2734,8 +2740,10 @@ app.post('/api/messages/:messageId/set-expiry', async (req, res) => {
 
     try {
         // Проверка доступа к сообщению
-        const message = await dbGet('SELECT user_id FROM messages WHERE id = $1', [messageId]);
-        if (!message || message.user_id !== req.session.userId) {
+        const message = await dbGet('SELECT user_id, sent FROM messages WHERE id = $1', [messageId]);
+        // Системному «вошёл в чат» срок не поставить: исчезнув, оно скрыло
+        // бы вход (см. PUT и DELETE сообщения).
+        if (!message || message.user_id !== req.session.userId || Number(message.sent) === 0) {
             return res.json({ success: false, message: 'Сообщение не найдено или нет доступа' });
         }
 

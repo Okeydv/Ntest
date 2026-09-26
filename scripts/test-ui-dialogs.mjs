@@ -223,6 +223,25 @@ check('и то и другое видно в переписке', await page.eva
     return lines.some(t => t.includes('сменил(а) код')) && lines.some(t => t.includes('отключил(а) приглашение'));
 }));
 
+/* ------------------------- цитата ответа ------------------------- */
+
+const quoteOf = (p, text) => p.evaluate(t => {
+    const m = [...document.querySelectorAll('#chat-messages .message')].find(x => x.querySelector('.message-text')?.textContent === t);
+    return m ? m.querySelector('.reply-to-text')?.textContent ?? null : null;
+}, text);
+const bobsBubble = page.locator('#chat-messages .message', { hasText: 'от Боба' });
+const bobsBox = await bobsBubble.boundingBox();
+await page.mouse.click(bobsBox.x + 20, bobsBox.y + 10, { button: 'right' });
+await page.click('#reply-message-btn');
+await send(page, 'отвечаю Бобу');
+check('цитата зашифрованного сообщения видна у отправителя', await quoteOf(page, 'отвечаю Бобу') === 'от Боба',
+    String(await quoteOf(page, 'отвечаю Бобу')));
+await bob.page.waitForTimeout(800);
+check('и у получателя — сразу, по сокету', await quoteOf(bob.page, 'отвечаю Бобу') === 'от Боба',
+    String(await quoteOf(bob.page, 'отвечаю Бобу')));
+await openRoom(bob.page);
+check('и после перезагрузки', await quoteOf(bob.page, 'отвечаю Бобу') === 'от Боба', String(await quoteOf(bob.page, 'отвечаю Бобу')));
+
 /* ------------------------- удаление с отменой ------------------------- */
 
 const idOf = text => page.evaluate(t => [...document.querySelectorAll('#chat-messages .message')]
@@ -373,6 +392,27 @@ await page.keyboard.press('Escape');
 
 check('на телефоне приложение занимает видимую высоту', await phonePage.evaluate(() =>
     Math.abs(document.querySelector('.app').getBoundingClientRect().height - innerHeight) < 1));
+
+/* ------------------------- бот ------------------------- */
+
+await page.reload({ waitUntil: 'networkidle' });
+await page.waitForTimeout(1200);
+await page.locator('.chat-item', { hasText: 'Бот' }).click();
+await page.waitForTimeout(800);
+await send(page, 'привет, бот');
+await page.waitForTimeout(2000);
+const botBubbles = await page.evaluate(() => [...document.querySelectorAll('#chat-messages .message')]
+    .map(m => ({ sent: m.classList.contains('sent'), text: m.querySelector('.message-text')?.textContent })));
+check('ответы бота — слева, как чужие, а своё — справа',
+    botBubbles.length >= 3 && botBubbles.filter(b => b.text === 'привет, бот').every(b => b.sent)
+    && botBubbles.filter(b => b.text !== 'привет, бот').every(b => !b.sent), JSON.stringify(botBubbles));
+const botReply = page.locator('#chat-messages .message.received').last();
+const botBox = await botReply.boundingBox();
+await page.mouse.click(botBox.x + 20, botBox.y + 10, { button: 'right' });
+const botMenu = await page.evaluate(() =>
+    [...document.querySelectorAll('#message-menu .menu-item')].filter(b => b.offsetParent !== null).map(b => b.id));
+check('у ответа бота нет «Редактировать» и «Удалить»', JSON.stringify(botMenu) === '["reply-message-btn"]', JSON.stringify(botMenu));
+await page.keyboard.press('Escape');
 
 check('ошибок на страницах нет', errors.length === 0, errors.join('; '));
 await browser.close();
