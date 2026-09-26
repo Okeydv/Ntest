@@ -30,7 +30,14 @@ export const ISO_BMFF_TYPES = new Set(['video/mp4', 'video/quicktime', 'video/3g
 
 const HEIF_BRANDS = new Set(['heic', 'heix', 'hevc', 'hevx', 'heim', 'heis', 'hevm', 'hevs', 'mif1', 'msf1']);
 const AVIF_BRANDS = new Set(['avif', 'avis']);
-const AUDIO_BRANDS = new Set(['M4A ', 'M4B ', 'M4P ', 'F4A ', 'F4B ']);
+// Видео — только известные бренды. Раньше видео считалось всё, что
+// начинается с ftyp: и RAW-снимок Canon CR3 (бренд «crx », внутри EXIF с
+// координатами), и аудио M4A уходили «видео» мимо нужной очистки.
+const MP4_BRANDS = new Set([
+    'isom', 'iso2', 'iso3', 'iso4', 'iso5', 'iso6', 'iso8', 'iso9',
+    'mp41', 'mp42', 'avc1', 'dash', 'mmp4', 'MSNV', 'XAVC', 'f4v ',
+    'M4V ', 'M4VH', 'M4VP',
+]);
 
 const ascii = (b, from, len) => String.fromCharCode(...b.subarray(from, from + len));
 const startsWith = (b, sig) => b.length >= sig.length && sig.every((x, i) => x === b[i]);
@@ -62,14 +69,18 @@ export function detectType(input) {
         const brand = ascii(b, 8, 4);
         if (HEIF_BRANDS.has(brand)) return 'image/heic';
         if (AVIF_BRANDS.has(brand)) return 'image/avif';
-        if (AUDIO_BRANDS.has(brand)) return null;
         if (brand === 'qt  ') return 'video/quicktime';
         if (brand.startsWith('3g')) return 'video/3gpp';
-        return 'video/mp4';
+        if (MP4_BRANDS.has(brand)) return 'video/mp4';
+        return null;
     }
     if (isPlainText(b)) return 'text/plain';
     return null;
 }
+
+// Невидимые символы направления текста. С ними «report‮fdp.exe» выглядит
+// как «reportexe.pdf»: U+202E разворачивает хвост имени задом наперёд.
+const BIDI_CONTROLS = /[\u200e\u200f\u061c\u202a-\u202e\u2066-\u2069]/g;
 
 /**
  * Имя, под которым файл уходит собеседнику.
@@ -77,11 +88,20 @@ export function detectType(input) {
  * Имя фото и видео выдаёт дату, время и приложение
  * (IMG_20260925_185512.jpg, Screenshot_…_com.whatsapp.jpg), поэтому оно
  * заменяется нейтральным, с расширением по фактическому типу. Имя документа
- * человек выбирал сам, и получателю оно нужно — оно остаётся.
+ * человек выбирал сам, и получателю оно нужно — оно остаётся, но
+ * расширение и у него по фактическому типу: текст, названный run.bat,
+ * update.hta или install.ps1, уходит как run.txt и двойным щелчком не
+ * выполнится. Тип вне списка — .bin.
  */
 export function attachmentName(mime, originalName) {
     const spec = ATTACHMENT_TYPES[mime];
     if (spec && spec.neutral) return spec.neutral + spec.ext;
-    const name = String(originalName || '').replace(/[\\/\u0000-\u001f]/g, '').trim().slice(0, 255);
-    return name || `file${spec ? spec.ext : ''}`;
+    const ext = spec ? spec.ext : '.bin';
+    const clean = String(originalName || '')
+        .replace(BIDI_CONTROLS, '')
+        .replace(/[\\/\u0000-\u001f\u007f]/g, '')
+        .trim();
+    const dot = clean.lastIndexOf('.');
+    const base = (dot > 0 ? clean.slice(0, dot) : clean).replace(/[.\s]+$/, '').slice(0, 255 - ext.length);
+    return (base || 'file') + ext;
 }

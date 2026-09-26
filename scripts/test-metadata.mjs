@@ -8,6 +8,7 @@ import { createRequire } from 'node:module';
 import sharp from 'sharp';
 import { cleanIsoBmff, cleanJpeg, cleanPdf } from '../public/crypto/metadata.js';
 import { syntheticMp4, boxes, GPS, MODEL, SHOT_AT } from './lib/mp4-fixtures.mjs';
+import { detectType, attachmentName } from '../public/crypto/filetypes.js';
 
 const require = createRequire(import.meta.url);
 const pdfLib = require('pdf-lib');
@@ -130,6 +131,23 @@ const reopened = await PDFDocument.load(cleaned, { updateMetadata: false });
 check('документ открывается, страница на месте', reopened.getPageCount() === 1);
 check('ссылки на удалённый XMP со страницы не осталось', !reopened.getPage(0).node.get(PDFName.of('Metadata')));
 await throws('не PDF — отказ', () => cleanPdf(Buffer.from('%PDF garbage'), pdfLib));
+
+/* ------------------------- типы и имена ------------------------- */
+
+const ftyp = brand => Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftyp' + brand), Buffer.alloc(12)]);
+check('MP4 с известным брендом — видео', detectType(ftyp('isom')) === 'video/mp4' && detectType(ftyp('mp42')) === 'video/mp4');
+check('RAW Canon CR3 (бренд «crx ») — не видео, не уходит', detectType(ftyp('crx ')) === null);
+check('аудио M4A — тоже', detectType(ftyp('M4A ')) === null);
+check('незнакомый бренд — отказ, а не «видео»', detectType(ftyp('abcd')) === null);
+check('3GP и QuickTime узнаются', detectType(ftyp('3gp4')) === 'video/3gpp' && detectType(ftyp('qt  ')) === 'video/quicktime');
+
+check('текст под именем .bat уходит как .txt', attachmentName('text/plain', 'run.bat') === 'run.txt');
+check('и .hta, .ps1, .js — тоже', ['update.hta', 'install.ps1', 'x.js'].every(n => attachmentName('text/plain', n).endsWith('.txt')));
+check('PDF с чужим расширением — .pdf', attachmentName('application/pdf', 'invoice.exe') === 'invoice.pdf');
+check('символы направления текста вычищены', attachmentName('application/pdf', 'report\u202efdp.exe') === 'reportfdp.pdf'
+    && !/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(attachmentName('text/plain', '\u2066a\u2069b\u200f.txt')));
+check('тип вне списка — .bin', attachmentName('application/x-msdownload', 'setup.exe') === 'setup.bin');
+check('имя фото — нейтральное', attachmentName('image/jpeg', 'IMG_20260925_185512.jpg') === 'photo.jpg');
 
 console.log(fails ? `\n${fails} проверок провалено` : '\nвсе проверки пройдены');
 process.exit(fails ? 1 : 0);

@@ -378,11 +378,79 @@ check('JPEG под видом .txt распознан по содержимом�
 
 const gpPath = path.join(tmp, 'VID_0005.3gp');
 fs.writeFileSync(gpPath, syntheticMp4({ brand: '3gp4' }).bytes);
+const videosBefore = await bob.page.evaluate(() => document.querySelectorAll('#chat-messages video').length);
 await sendFile(gpPath);
-await bob.page.waitForSelector('#chat-messages a[download="video.3gp"]', { timeout: 8000 }).catch(() => {});
-const gpBytes = await receivedBytes(bob.page, '#chat-messages a[download="video.3gp"]');
+// 3GP теперь в списке видео клиента: показывается плеером, а не ссылкой.
+await bob.page.waitForFunction(n => document.querySelectorAll('#chat-messages video').length > n,
+    videosBefore, { timeout: 8000 }).catch(() => {});
+const gpBytes = await receivedBytes(bob.page, '#chat-messages video');
+const gpPayload = await payloadOf(bob.page, '#chat-messages video');
 check('3GP уходит без координат и модели, под нейтральным именем',
-    gpBytes && !gpBytes.includes(GPS) && !gpBytes.includes(MODEL));
+    gpBytes && !gpBytes.includes(GPS) && !gpBytes.includes(MODEL) && gpPayload?.name === 'video.3gp', JSON.stringify(gpPayload));
+check('и показывается как видео', gpPayload?.mime === 'video/3gpp');
+
+/* ------------------------- без перекодирования ------------------------- */
+
+const imageCount = page => page.evaluate(() => document.querySelectorAll('#chat-messages img.message-image').length);
+async function sendAndReceive(filePath) {
+    const before = await imageCount(bob.page);
+    await alice.page.setInputFiles('#file-input', filePath);
+    await bob.page.waitForFunction(n => document.querySelectorAll('#chat-messages img.message-image').length > n,
+        before, { timeout: 8000 }).catch(() => {});
+    await bob.page.waitForTimeout(500);
+    return receivedBytes(bob.page, '#chat-messages img.message-image');
+}
+
+// Фото без поворота уходит теми же пикселями: без EXIF, но и без потери
+// качества на перекодировании.
+const grain = Buffer.from(Array.from({ length: 64 * 48 * 3 }, (_, i) => (i * 7919) % 251));
+const straightPath = path.join(tmp, 'IMG_0005.jpg');
+fs.writeFileSync(straightPath, await sharp(grain, { raw: { width: 64, height: 48, channels: 3 } }).jpeg({ quality: 80 })
+    .withExifMerge({ IFD0: { Copyright: AUTHOR, Model: 'EOS R5' } }).toBuffer());
+const straight = await sendAndReceive(straightPath);
+check('фото без поворота не перекодировано: пиксели те же', straight
+    && (await sharp(straight).raw().toBuffer()).equals(await sharp(straightPath).raw().toBuffer()));
+check('и EXIF в нём нет', straight && !straight.includes(AUTHOR) && !straight.includes('EOS R5'));
+
+// GIF из двух кадров с комментарием: анимация доходит, комментарий — нет.
+const frame = color => sharp({ create: { width: 24, height: 16, channels: 3, background: color } }).png().toBuffer();
+let gifBytes = await sharp([await frame('#ff0000'), await frame('#0000ff')], { join: { animated: true } })
+    .gif({ loop: 0 }).toBuffer();
+const comment = Buffer.from(`shot by ${AUTHOR}`);
+gifBytes = Buffer.concat([gifBytes.subarray(0, -1), Buffer.from([0x21, 0xfe, comment.length]), comment, Buffer.from([0, 0x3b])]);
+const gifPath = path.join(tmp, 'funny.gif');
+fs.writeFileSync(gifPath, gifBytes);
+check('GIF-исходник: два кадра и комментарий', (await sharp(gifBytes, { animated: true }).metadata()).pages === 2 && gifBytes.includes(comment));
+const gotGif = await sendAndReceive(gifPath);
+check('GIF доходит анимированным', gotGif && (await sharp(gotGif, { animated: true }).metadata()).pages === 2);
+check('а комментарий — нет', gotGif && !gotGif.includes(AUTHOR));
+
+// WebM, как его пишет браузер (MediaRecorder): программа-автор в заголовке
+// вычищается тем же путём, что и перед отправкой.
+const webmCheck = await alice.page.evaluate(async () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 32; canvas.height = 24;
+    const ctx = canvas.getContext('2d');
+    const recorder = new MediaRecorder(canvas.captureStream(10), { mimeType: 'video/webm' });
+    const chunks = [];
+    recorder.ondataavailable = e => chunks.push(e.data);
+    const done = new Promise(r => { recorder.onstop = r; });
+    recorder.start();
+    for (let i = 0; i < 6; i++) {
+        ctx.fillStyle = i % 2 ? '#f00' : '#00f';
+        ctx.fillRect(0, 0, 32, 24);
+        await new Promise(r => setTimeout(r, 100));
+    }
+    recorder.stop();
+    await done;
+    const original = new Uint8Array(await new Blob(chunks).arrayBuffer());
+    const prepared = await window.NyxoCrypto.prepareAttachment(new File([original], 'screen-2026-09-25.webm'));
+    const cleaned = new Uint8Array(await prepared.blob.arrayBuffer());
+    const text = bytes => Array.from(bytes, b => String.fromCharCode(b)).join('');
+    return { had: text(original).includes('Chrome'), left: text(cleaned).includes('Chrome'), mime: prepared.mime, name: prepared.name };
+});
+check('WebM из браузера: имя программы-автора вычищено', webmCheck.had && !webmCheck.left
+    && webmCheck.mime === 'video/webm' && webmCheck.name === 'video.webm', JSON.stringify(webmCheck));
 
 /* ------------------------- история после перезагрузки ------------------------- */
 

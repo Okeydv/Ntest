@@ -2505,7 +2505,7 @@ app.post('/api/messages/file', upload.single('file'), async (req, res) => {
         // файл не отправляется: молча раздать фото с координатами хуже,
         // чем не отправить его вовсе.
         if (file.mimetype.startsWith('image/') || file.mimetype === 'application/pdf'
-            || fileTypes.ISO_BMFF_TYPES.has(file.mimetype)) {
+            || file.mimetype === 'video/webm' || fileTypes.ISO_BMFF_TYPES.has(file.mimetype)) {
             try {
                 await stripMetadataFromFile(uploadedFilePath, file.mimetype);
             } catch (stripErr) {
