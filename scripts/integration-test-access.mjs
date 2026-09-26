@@ -129,6 +129,30 @@ const ownReply = await bob.req('POST', '/api/messages', { chatId: secret.chats[b
 check('ответ внутри своего чата проходит', ownReply.json?.success === true && ownReply.json.message.reply_to_id === secretId,
     ownReply.json?.message?.reply_to_id);
 
+/* ------------------------- история страницами ------------------------- */
+
+const pageChat = eveRoom.chats[eve.userId];
+const sentIds = [];
+for (let i = 1; i <= 7; i++) sentIds.push((await eve.req('POST', '/api/messages', { chatId: pageChat, text: `номер ${i}` })).json.message.id);
+const lastPage = (await eve.req('GET', `/api/messages/${pageChat}?limit=3`)).json;
+const olderPage = (await eve.req('GET', `/api/messages/${pageChat}?limit=3&before=${lastPage.messages[0].id}`)).json;
+check('история страницами: последние по возрастанию, перед ними следующие',
+    JSON.stringify(lastPage.messages.map(m => m.id)) === JSON.stringify(sentIds.slice(4)) && lastPage.hasMore
+    && JSON.stringify(olderPage.messages.map(m => m.id)) === JSON.stringify(sentIds.slice(1, 4)) && olderPage.hasMore,
+    JSON.stringify([lastPage.messages.map(m => m.id), olderPage.messages.map(m => m.id), sentIds]));
+const badBefore = await eve.req('GET', `/api/messages/${pageChat}?before=abc`);
+const hugeLimit = (await eve.req('GET', `/api/messages/${pageChat}?limit=100000`)).json;
+check('кривой before — 400, а limit не больше 200', badBefore.status === 400 && hugeLimit.success === true);
+
+await eve.req('DELETE', `/api/messages/${sentIds[0]}`);
+const existing = await eve.req('POST', `/api/messages/${pageChat}/existing`, { ids: [sentIds[0], sentIds[1], secretId] });
+check('«что ещё есть»: удалённого и чужого нет, живое есть',
+    JSON.stringify(existing.json?.ids) === JSON.stringify([sentIds[1]]), JSON.stringify(existing.json));
+const foreignCheck = await eve.req('POST', `/api/messages/${secret.chats[alice.userId]}/existing`, { ids: [secretId] });
+const tooMany = await eve.req('POST', `/api/messages/${pageChat}/existing`, { ids: Array.from({ length: 1001 }, (_, i) => i + 1) });
+check('про чужой чат не спросить, и не больше 1000 id за раз', foreignCheck.status === 404 && tooMany.status === 400,
+    `${foreignCheck.status} / ${tooMany.status}`);
+
 /* ------------------------- вышедший из чата не слышит его ------------------------- */
 
 const bobSock = await bob.socket(`room:${secret.roomId}`);

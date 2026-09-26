@@ -277,20 +277,23 @@ function applyDecryptedContent(message, content) {
  * Расшифровать и дорисовать сообщение в открытый чат. fresh — сообщение
  * пришло только что (анимируется), а не из истории.
  */
-async function appendMessageDecrypted(message, { fresh = false } = {}) {
+// container — куда складывать: для страницы старой истории это отдельный
+// блок, который потом целиком встаёт в начало переписки. Превью в списке
+// чатов старые сообщения не трогают.
+async function appendMessageDecrypted(message, { fresh = false, container = null } = {}) {
     await resolveReplyQuote(message);
     if (message.encrypted) {
         const raw = await resolveMessageText(message);
         const content = raw === null ? null : e2ee.decodePayload(raw);
         applyDecryptedContent(message, content);
         message.deviceTrust = await e2ee.senderDeviceTrust(message.user_id, message.sender_device_id);
-        if (content) {
+        if (content && !container) {
             const preview = e2ee.payloadPreview(content);
             await e2ee.rememberPreview(message, preview);
             updateChatPreviewInList(message, preview);
         }
     }
-    appendMessage(message, { fresh });
+    appendMessage(message, { fresh, container: container || elements.chatMessages });
 }
 
 /**
@@ -1330,6 +1333,7 @@ function setupEventListeners() {
 
     setupMessageMenu();
     setupMessageKeyboard();
+    setupHistoryPaging();
     setupMobileScreens();
     // Не дожидаемся таймера отмены, если страницу закрывают.
     window.addEventListener('pagehide', flushPendingDeletes);
@@ -1550,24 +1554,100 @@ async function openChat(chatId, roomId, name, avatar, online, isBot) {
     // Что из этого чата лежит у нас расшифрованным — до запроса истории:
     // сообщение, пришедшее, пока она грузится, не должно попасть под чистку.
     const known = e2ee && e2ee.isReady() ? await e2ee.knownMessages({ id: chatId, room_id: roomId }) : [];
-    const data = await api(`/api/messages/${chatId}`);
-    if (!data.success) return;
+    historyPaging.chatId = chatId;
+    historyPaging.hasMore = false;
+    historyPaging.oldestId = null;
+    const data = await api(`/api/messages/${chatId}?limit=${historyPageSize}`);
+    if (!data.success || currentChatId !== chatId) return;
+    const page = data.messages || [];
+    historyPaging.hasMore = Boolean(data.hasMore);
+    historyPaging.oldestId = page.length ? page[0].id : null;
     // Удалённое и исчезнувшее, пока устройство было не в сети, стираем и
     // отсюда: в истории его уже нет.
-    if (e2ee && data.messages) await e2ee.forgetMissing({ id: chatId, room_id: roomId }, known, data.messages.map(m => m.id));
+    if (e2ee) await e2ee.forgetMissing({ id: chatId, room_id: roomId }, known, await liveMessageIds(chatId, known, page));
 
-    if (data.messages) {
-        // Последовательно, а не Promise.all: у Double Ratchet состояние
-        // сессии меняется на каждом сообщении, и параллельная расшифровка
-        // двух сообщений одной сессии затирала бы состояние друг друга.
-        // Ключи групп — до сообщений: без них групповые не расшифровать.
-        if (e2ee && data.keyEnvelopes) await e2ee.processKeyEnvelopes(data.keyEnvelopes);
-        for (const msg of data.messages) await appendMessageDecrypted(msg);
-        scrollToBottom();
-    }
+    // Последовательно, а не Promise.all: у Double Ratchet состояние
+    // сессии меняется на каждом сообщении, и параллельная расшифровка
+    // двух сообщений одной сессии затирала бы состояние друг друга.
+    // Ключи групп — до сообщений: без них групповые не расшифровать.
+    if (e2ee && data.keyEnvelopes) await e2ee.processKeyEnvelopes(data.keyEnvelopes);
+    for (const msg of page) await appendMessageDecrypted(msg);
+    scrollToBottom();
+    await fillScreenWithHistory();
 
     const roomKey = roomId ? `room:${roomId}` : `chat:${chatId}`;
     socket.emit('joinChat', roomKey);
+}
+
+/* --- История страницами ---------------------------------------------------
+   Чат открывается с последних historyPageSize сообщений, старые
+   подгружаются, когда долистали до верха. Раньше история приходила вся
+   сразу — и в долгом чате каждый раз расшифровывалась целиком. */
+
+let historyPageSize = 50;
+const historyPaging = { chatId: null, oldestId: null, hasMore: false, loading: false };
+
+/*
+ * Какие из сообщений, что лежат у нас расшифрованными, ещё есть на
+ * сервере. Про новые скажет сама страница истории, про те, что старше
+ * неё, спрашиваем отдельно. Не получилось спросить — считаем, что есть:
+ * стереть по ошибке хуже, чем стереть позже.
+ */
+async function liveMessageIds(chatId, known, page) {
+    const live = page.map(m => m.id);
+    if (!historyPaging.hasMore) return live;
+    const oldest = historyPaging.oldestId;
+    const older = known.map(Number).filter(id => id < oldest);
+    for (let i = 0; i < older.length; i += 1000) {
+        const chunk = older.slice(i, i + 1000);
+        const data = await api(`/api/messages/${chatId}/existing`, { method: 'POST', body: JSON.stringify({ ids: chunk }) })
+            .catch(() => null);
+        live.push(...(data && data.success ? data.ids : chunk));
+    }
+    return live;
+}
+
+async function loadOlderMessages() {
+    const chatId = currentChatId;
+    if (historyPaging.loading || !historyPaging.hasMore || historyPaging.chatId !== chatId) return;
+    historyPaging.loading = true;
+    elements.chatMessages.setAttribute('aria-busy', 'true');
+    try {
+        const data = await api(`/api/messages/${chatId}?limit=${historyPageSize}&before=${historyPaging.oldestId}`);
+        if (!data.success || currentChatId !== chatId) return;
+        const page = data.messages || [];
+        if (e2ee && data.keyEnvelopes) await e2ee.processKeyEnvelopes(data.keyEnvelopes);
+        const batch = document.createElement('div');
+        for (const msg of page) await appendMessageDecrypted(msg, { container: batch });
+        if (currentChatId !== chatId) return;
+        // Экран не должен прыгать: то, что было перед глазами, остаётся на месте.
+        const list = elements.chatMessages;
+        const fromBottom = list.scrollHeight - list.scrollTop;
+        prependMessages(batch);
+        list.scrollTop = list.scrollHeight - fromBottom;
+        historyPaging.hasMore = Boolean(data.hasMore);
+        if (page.length) historyPaging.oldestId = page[0].id;
+    } finally {
+        historyPaging.loading = false;
+        elements.chatMessages.removeAttribute('aria-busy');
+    }
+}
+
+// Первая страница может не заполнить высокий экран — тогда прокрутки нет
+// и листать вверх нечем. Догружаем, пока не появится прокрутка.
+async function fillScreenWithHistory() {
+    const list = elements.chatMessages;
+    while (historyPaging.hasMore && list.scrollHeight <= list.clientHeight + 1) {
+        const before = historyPaging.oldestId;
+        await loadOlderMessages();
+        if (historyPaging.oldestId === before) break;
+    }
+}
+
+function setupHistoryPaging() {
+    elements.chatMessages.addEventListener('scroll', () => {
+        if (elements.chatMessages.scrollTop < 300) loadOlderMessages();
+    }, { passive: true });
 }
 
 /* --- Время и дни ----------------------------------------------------------
@@ -1604,9 +1684,9 @@ function dayLabel(date) {
  * сообщениями в одном списке, при прокрутке они прилипали все разом и
  * наезжали друг на друга.
  */
-function dayGroup(date) {
+function dayGroup(date, container = elements.chatMessages) {
     const day = date ? dayKey(date) : '';
-    const last = elements.chatMessages.lastElementChild;
+    const last = container.lastElementChild;
     // Сообщение без даты (своё, ещё не дошедшее) идёт в текущий день.
     if (last && (!date || last.dataset.day === day)) return last;
     const group = document.createElement('div');
@@ -1621,14 +1701,33 @@ function dayGroup(date) {
         separator.appendChild(label);
         group.appendChild(separator);
     }
-    elements.chatMessages.appendChild(group);
+    container.appendChild(group);
     return group;
 }
 
-function appendMessage(message, { fresh = false } = {}) {
+function appendMessage(message, { fresh = false, container = elements.chatMessages } = {}) {
     const el = createMessageElement(message);
     if (fresh) el.classList.add('is-new');
-    dayGroup(messageDate(message)).appendChild(el);
+    dayGroup(messageDate(message), container).appendChild(el);
+    if (container === elements.chatMessages) refreshMessageTabStop();
+}
+
+/*
+ * Страница старой истории встаёт в начало переписки. Если она кончается
+ * тем же днём, с которого начинался экран, два блока этого дня сливаются
+ * в один — иначе разделитель дня стоял бы дважды.
+ */
+function prependMessages(batch) {
+    const list = elements.chatMessages;
+    const lastOld = batch.lastElementChild;
+    const firstShown = list.firstElementChild;
+    if (lastOld && firstShown && lastOld.dataset.day && lastOld.dataset.day === firstShown.dataset.day) {
+        for (const child of [...firstShown.children]) {
+            if (!child.classList.contains('day-separator')) lastOld.appendChild(child);
+        }
+        firstShown.remove();
+    }
+    list.prepend(...batch.children);
     refreshMessageTabStop();
 }
 

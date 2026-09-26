@@ -1825,9 +1825,47 @@ app.post('/api/sender-keys/ack', async (req, res) => {
     }
 });
 
+const HISTORY_PAGE = 50;
+const HISTORY_PAGE_MAX = 200;
+const EXISTING_CHECK_MAX = 1000;
+
+/*
+ * Какие из этих сообщений чата ещё есть. Клиент хранит расшифрованный
+ * текст всех сообщений, что видел, а история теперь приходит страницами:
+ * по одной странице не понять, удалено ли сообщение постарше или просто
+ * не загружено. Клиент спрашивает про такие id и стирает у себя те,
+ * которых больше нет.
+ */
+app.post('/api/messages/:chatId/existing', async (req, res) => {
+    if (!req.session.userId) return res.status(401).json({ success: false, message: 'Не авторизован' });
+    const ids = Array.isArray(req.body && req.body.ids) ? req.body.ids : null;
+    if (!ids || ids.length > EXISTING_CHECK_MAX || !ids.every(id => Number.isInteger(id) && id > 0 && id <= 2147483647)) {
+        return res.status(400).json({ success: false, message: `Нужен список id, не больше ${EXISTING_CHECK_MAX}` });
+    }
+    try {
+        const chat = await dbGet('SELECT id, room_id FROM chats WHERE id = $1 AND user_id = $2', [req.params.chatId, req.session.userId]);
+        if (!chat) return res.status(404).json({ success: false, message: 'Чат не найден' });
+        const rows = await dbAll(chat.room_id
+            ? 'SELECT id FROM messages WHERE id = ANY($1::int[]) AND room_id = $2 AND deleted = 0'
+            : 'SELECT id FROM messages WHERE id = ANY($1::int[]) AND chat_id = $2 AND room_id IS NULL AND deleted = 0',
+        [ids, chat.room_id || chat.id]);
+        res.json({ success: true, ids: rows.map(r => r.id) });
+    } catch (error) {
+        log.error({ err: error }, 'Existing messages error');
+        res.status(500).json({ success: false, message: 'Ошибка проверки сообщений' });
+    }
+});
+
 app.get('/api/messages/:chatId', async (req, res) => {
     if (!req.session.userId) return res.json({ success: false, message: 'Не авторизован' });
     const chatId = req.params.chatId;
+    // История страницами, от новых к старым: before — id самого старого из
+    // уже показанных. Без before — последние limit сообщений.
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || HISTORY_PAGE, 1), HISTORY_PAGE_MAX);
+    const before = req.query.before === undefined ? null : Number(req.query.before);
+    if (before !== null && !(Number.isInteger(before) && before > 0)) {
+        return res.status(400).json({ success: false, message: 'Некорректный before' });
+    }
     try {
         const chat = await dbGet('SELECT * FROM chats WHERE id = $1 AND user_id = $2', [chatId, req.session.userId]);
         if (!chat) return res.json({ success: false, message: 'Чат не найден' });
@@ -1840,25 +1878,33 @@ app.get('/api/messages/:chatId', async (req, res) => {
                LEFT JOIN users u ON m.user_id = u.id
                LEFT JOIN messages rt ON m.reply_to_id = rt.id AND rt.room_id = m.room_id
                LEFT JOIN users ru ON rt.user_id = ru.id
-               WHERE m.room_id = $1 AND m.deleted = 0
-               ORDER BY m.id ASC`
+               WHERE m.room_id = $1 AND m.deleted = 0 AND ($2::int IS NULL OR m.id < $2)
+               ORDER BY m.id DESC
+               LIMIT $3`
             : `SELECT m.*, u.username as sender_username, u.avatar as sender_avatar,
                       rt.id as reply_to_id, rt.text as reply_to_text, rt.deleted as reply_to_deleted, ru.username as reply_to_sender_username, ru.avatar as reply_to_sender_avatar
                FROM messages m
                LEFT JOIN users u ON m.user_id = u.id
                LEFT JOIN messages rt ON m.reply_to_id = rt.id AND rt.chat_id = m.chat_id AND rt.room_id IS NULL
                LEFT JOIN users ru ON rt.user_id = ru.id
-               WHERE m.chat_id = $1 AND m.deleted = 0
-               ORDER BY m.id ASC`;
+               WHERE m.chat_id = $1 AND m.deleted = 0 AND ($2::int IS NULL OR m.id < $2)
+               ORDER BY m.id DESC
+               LIMIT $3`;
 
-        let messages = await dbAll(selectQuery, [selectParam]);
+        // На одно больше: так видно, есть ли что-то ещё раньше.
+        let messages = await dbAll(selectQuery, [selectParam, before, limit + 1]);
+        const hasMore = messages.length > limit;
+        messages = messages.slice(0, limit).reverse();
+
+        // Прочитанным чат отмечается, когда открыли его конец, а не когда
+        // долистали до старых сообщений.
+        const markRead = () => before === null && dbRun(chat.room_id
+            ? 'UPDATE messages SET status = $1 WHERE room_id = $2 AND sent = 0'
+            : 'UPDATE messages SET status = $1 WHERE chat_id = $2 AND sent = 0', ['read', selectParam]);
 
         if (messages.length === 0) {
-            const updateQuery = chat.room_id
-                ? 'UPDATE messages SET status = $1 WHERE room_id = $2 AND sent = 0'
-                : 'UPDATE messages SET status = $1 WHERE chat_id = $2 AND sent = 0';
-            await dbRun(updateQuery, ['read', selectParam]);
-            return res.json({ success: true, messages: [], chat });
+            await markRead();
+            return res.json({ success: true, messages: [], hasMore: false, chat });
         }
 
         const messageIds = messages.map(m => m.id);
@@ -1942,12 +1988,9 @@ app.get('/api/messages/:chatId', async (req, res) => {
             reply_to: m.reply_to_id ? { id: m.reply_to_id, text: m.reply_to_text, deleted: Number(m.reply_to_deleted) === 1, sender_username: m.reply_to_sender_username, sender_avatar: m.reply_to_sender_avatar } : null
         }));
 
-        const updateQuery = chat.room_id
-            ? 'UPDATE messages SET status = $1 WHERE room_id = $2 AND sent = 0'
-            : 'UPDATE messages SET status = $1 WHERE chat_id = $2 AND sent = 0';
-        await dbRun(updateQuery, ['read', selectParam]);
+        await markRead();
 
-        res.json({ success: true, messages, chat, keyEnvelopes });
+        res.json({ success: true, messages, hasMore, chat, keyEnvelopes });
     } catch (error) {
         log.error({ err: error }, 'Get messages error');
         res.status(500).json({ success: false, message: 'Ошибка загрузки сообщений' });

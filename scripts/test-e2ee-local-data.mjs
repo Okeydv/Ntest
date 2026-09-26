@@ -9,6 +9,8 @@
 //   - при выходе из аккаунта — всё, и устройство отзывается на сервере;
 //     а если выйти, оставив устройство, — не стирается ничего, и после
 //     входа то же устройство читает старую переписку.
+// История приходит страницами: удалённое за пределами открытой страницы
+// тоже стирается, старые страницы догружаются по порядку и расшифровываются.
 // И что превью полученного сообщения в комнате лежит под этой комнатой
 // (раньше — под чатом отправителя, и после перезагрузки его не было).
 // И что о новом устройстве аккаунта узнают остальные — сразу или при
@@ -197,6 +199,50 @@ const ivyAgain = await loginOn(ivy, 'ivy');
 check('после входа — то же устройство', ivyAgain === ivyInfo.deviceId, `${ivyInfo.deviceId} → ${ivyAgain}`);
 await openRoom(ivy.page, ivyRoom.roomId);
 check('и старое сообщение читается', await waitText(ivy.page, 'прочитаю и после выхода'));
+
+/* ------------------------- история страницами ------------------------- */
+
+// Айви не в сети, пока Алиса пишет 12 сообщений и удаляет старое, которое
+// Айви уже прочитала. Потом Айви открывает чат страницами по 5.
+const oldReadId = (await db.query(
+    "SELECT id FROM messages WHERE room_id = $1 AND message_type <> 'system' ORDER BY id LIMIT 1", [ivyRoom.roomId])).rows[0].id;
+await ivy.page.goto('about:blank');
+for (let i = 1; i <= 12; i++) await send(alice.page, `страница ${i}`);
+await alice.page.evaluate(id => api(`/api/messages/${id}`, { method: 'DELETE' }), oldReadId);
+await sleep(500);
+
+const historyRequests = [];
+ivy.page.on('request', r => { if (/\/api\/messages\/\d+\?/.test(r.url())) historyRequests.push(new URL(r.url()).search); });
+await ivy.page.setViewportSize({ width: 1000, height: 420 });
+await ivy.page.goto(BASE, { waitUntil: 'networkidle' });
+await sleep(1200);
+await ivy.page.evaluate(() => { historyPageSize = 5; });
+await ivy.page.locator(`.chat-item[data-room-id="${ivyRoom.roomId}"]`).click();
+await waitText(ivy.page, 'страница 12');
+const firstLoad = await ivy.page.evaluate(() => document.querySelectorAll('#chat-messages .message').length);
+check('чат открывается с последней страницы, а не со всей истории',
+    historyRequests[0] === '?limit=5' && firstLoad < 12, `${historyRequests.join(' ')}; сообщений ${firstLoad}`);
+check('удалённое, пока устройства не было, стёрто и за пределами страницы',
+    !hasText(await local(ivy.page), 'прочитаю и после выхода'));
+
+for (let i = 0; i < 6 && await ivy.page.evaluate(() => historyPaging.hasMore); i++) {
+    await ivy.page.evaluate(() => { document.getElementById('chat-messages').scrollTop = 0; });
+    await sleep(900);
+}
+const shown = await ivy.page.evaluate(() => ({
+    texts: [...document.querySelectorAll('#chat-messages .message-text')].map(t => t.textContent),
+    separators: document.querySelectorAll('#chat-messages .day-separator').length,
+    more: historyPaging.hasMore,
+}));
+const expected = Array.from({ length: 12 }, (_, i) => `страница ${i + 1}`);
+check('листая вверх, догрузили всё: по порядку, без повторов, всё расшифровано',
+    !shown.more && JSON.stringify(shown.texts.filter(t => t.startsWith('страница'))) === JSON.stringify(expected)
+    && historyRequests.slice(1).every(q => /^\?limit=5&before=\d+$/.test(q)), JSON.stringify(shown));
+check('страницы одного дня — под одним разделителем', shown.separators === 1, String(shown.separators));
+const listPreview = await ivy.page.evaluate(id =>
+    document.querySelector(`.chat-item[data-room-id="${id}"] .chat-last`)?.textContent, ivyRoom.roomId);
+check('старые страницы не перебивают превью в списке чатов', listPreview === 'страница 12', listPreview);
+await ivy.page.setViewportSize({ width: 1280, height: 720 });
 
 /* ------------------------- новые устройства аккаунта ------------------------- */
 
