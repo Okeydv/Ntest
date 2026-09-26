@@ -22,7 +22,7 @@
 //
 // Запуск: TEST_DATABASE_URL=... node scripts/test-e2ee-files.mjs
 
-import { chromium } from 'playwright';
+import { launch, finish } from './lib/browser.mjs';
 import sharp from 'sharp';
 import pg from 'pg';
 import { execFileSync } from 'node:child_process';
@@ -69,7 +69,7 @@ check('исходное фото действительно несёт EXIF и �
 
 /* ------------------------- участники и чат ------------------------- */
 
-const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH });
+const browser = await launch();
 async function openApp(label) {
     const page = await (await browser.newContext()).newPage();
     const errors = [];
@@ -476,7 +476,7 @@ check('скачать удалённое вложение нельзя', gone ==
 const errors = [...alice.errors, ...bob.errors, ...carol.errors];
 check('ошибок на страницах нет', errors.length === 0, errors.slice(0, 3).join(' | '));
 
-await browser.close();
+await finish(browser, fails);
 await db.end();
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(fails ? `\n${fails} проверок провалено` : '\nвсе проверки пройдены');

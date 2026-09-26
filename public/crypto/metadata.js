@@ -734,6 +734,9 @@ export async function cleanPdf(bytes, pdfLib) {
         const encrypted = /encrypted/i.test(String(error && error.message)) || /\/Encrypt\b/.test(text);
         throw new PdfCleanError(encrypted ? 'encrypted' : 'broken', error);
     }
+    // pdf-lib разбирает снисходительно: у мусора с заголовком %PDF каталога
+    // нет вовсе, и дальше всё падало с TypeError вместо понятной причины.
+    if (!(doc.catalog instanceof PDFDict)) throw new PdfCleanError('broken');
     const context = doc.context;
     const name = n => PDFName.of(n);
     const dictOf = obj => obj instanceof PDFDict ? obj : (obj && obj.dict instanceof PDFDict ? obj.dict : null);

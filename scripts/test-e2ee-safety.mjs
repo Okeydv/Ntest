@@ -17,7 +17,7 @@
 //
 // Запуск: TEST_DATABASE_URL=... node scripts/test-e2ee-safety.mjs
 
-import { chromium } from 'playwright';
+import { launch, finish } from './lib/browser.mjs';
 import pg from 'pg';
 import crypto from 'node:crypto';
 
@@ -30,7 +30,7 @@ const check = (l, c, d = '') => {
     if (!c) fails++;
 };
 
-const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH });
+const browser = await launch();
 async function openApp(label) {
     const page = await (await browser.newContext()).newPage();
     const errors = [];
@@ -242,7 +242,7 @@ check('перезаписать identity своего устройства не�
 const errors = [alice, bob, bobPhone].flatMap(a => a.errors);
 check('ошибок на страницах нет', errors.length === 0, errors.join('; '));
 
-await browser.close();
+await finish(browser, fails);
 await db.end();
 console.log(fails ? `\n${fails} проверок провалено` : '\nвсе проверки пройдены');
 process.exit(fails ? 1 : 0);

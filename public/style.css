@@ -82,6 +82,8 @@
     /* --- Акцент -------------------------------------------------------------- */
     --accent: #6d5efc;
     --accent-strong: #5b49f0;
+    /* Низ своего пузыря: белое время на нём держит контраст 4,5+. */
+    --accent-deep: #4a38dc;
     --accent-2: #a86cf5;
     --accent-ink: #ffffff;
     --brand-from: #8b7bff;
@@ -580,6 +582,36 @@ input[type="password"] {
         box-shadow var(--dur-2) var(--ease);
 }
 
+/* Safari на iPhone увеличивает страницу, когда фокус попадает в поле со
+   шрифтом мельче 16px, и обратно сам не уменьшает. На тач-экранах и узких
+   окнах поля не мельче 16px. */
+@media (pointer: coarse), (max-width: 640px) {
+    input[type="text"]:not(.input-code),
+    input[type="email"],
+    input[type="password"] {
+        font-size: max(16px, var(--fs-body));
+    }
+}
+
+select.select {
+    width: 100%;
+    padding: 0.75rem 1rem;
+    border: 1px solid var(--border-2);
+    border-radius: var(--r-md);
+    background: var(--field);
+    color: var(--text);
+    font: inherit;
+    font-size: var(--fs-body);
+}
+select.select:focus-visible {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-ring);
+}
+@media (pointer: coarse), (max-width: 640px) {
+    select.select { font-size: max(16px, var(--fs-body)); }
+}
+
 input::placeholder { color: var(--text-3); }
 
 /* Фокус: сдвиг фона + акцентная рамка + кольцо. Видно и на тёмной, и на
@@ -1056,7 +1088,9 @@ input.is-invalid:focus {
     box-shadow: var(--sh-1);
 }
 
-.chat-details { min-width: 0; }
+/* Контейнер для запросов по ширине: подпись под названием подстраивается
+   под место, которое осталось между аватаркой и кнопками. */
+.chat-details { flex: 1; min-width: 0; container-type: inline-size; }
 
 .chat-details h3 {
     font-size: var(--fs-h3);
@@ -1090,6 +1124,15 @@ input.is-invalid:focus {
     font-weight: 500;
     letter-spacing: 0.01em;
     border-radius: var(--r-xs);
+    min-width: 0;
+}
+
+.encryption-badge .icon { flex: none; }
+
+.encryption-badge-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 /* В зашифрованном чате индикатор — вход в сверку ключей. */
@@ -1102,6 +1145,44 @@ input.is-invalid:focus {
 .encryption-badge.is-on { color: var(--ok); }
 .encryption-badge.is-off { color: var(--text-3); }
 .encryption-badge.is-warn { color: var(--danger); }
+
+/* Срок исчезающих сообщений в шапке: нажатие открывает меню чата. */
+.expiry-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3125rem;
+    min-width: 0;
+    white-space: nowrap;
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    font-size: var(--fs-xs);
+    font-weight: 500;
+    color: var(--text-2);
+    cursor: pointer;
+    border-radius: var(--r-xs);
+}
+@media (hover: hover) {
+    .expiry-badge:hover { text-decoration: underline; text-underline-offset: 0.2em; }
+}
+.expiry-badge .icon { flex: none; width: 0.8125rem; height: 0.8125rem; }
+.expiry-badge-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* Совсем мало места (узкий телефон): у шифрования и срока остаются
+   значки, текст — в подсказке, у диктора и в меню чата. На ширине
+   побольше надпись о шифровании обрезается многоточием. */
+@container (max-width: 13rem) {
+    .expiry-badge-text,
+    .encryption-badge-text {
+        /* Не display: none — экранный диктор текст по-прежнему читает. */
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+    }
+}
 
 .status {
     display: inline-flex;
@@ -1163,7 +1244,9 @@ input.is-invalid:focus {
     --bubble-inset-hover: rgba(0, 0, 0, 0.28);
     --bubble-rule: rgba(255, 255, 255, 0.5);
     align-self: flex-end;
-    background: linear-gradient(140deg, var(--accent) 0%, var(--accent-strong) 100%);
+    /* Темнее, чем у кнопок: на пузыре мелкий текст — время и отметки, — и
+       на светлом начале прежнего градиента он не дотягивал до 4,5:1. */
+    background: linear-gradient(140deg, var(--accent-strong) 0%, var(--accent-deep) 100%);
     color: var(--accent-ink);
     border-bottom-right-radius: var(--r-xs);
     box-shadow: var(--sh-accent);
@@ -1199,6 +1282,10 @@ input.is-invalid:focus {
     opacity: 0.66;
 }
 
+/* На своём пузыре белое время полупрозрачно лишь чуть-чуть: при 0,66 оно
+   давало около 3:1, а мелкому тексту нужно 4,5:1. */
+.message.sent .message-meta { opacity: 0.9; }
+
 .message-time { font-weight: 500; }
 
 /* Кнопка «⋯»: у мыши появляется при наведении и фокусе, чтобы не
@@ -1233,6 +1320,16 @@ input.is-invalid:focus {
     .message-more { opacity: 0.7; }
 }
 
+/* На тач-экране палец больше курсора: кнопка выглядит так же, но
+   нажимается в квадрате 44×44 вокруг неё. */
+@media (pointer: coarse) {
+    .message-more::before {
+        content: '';
+        position: absolute;
+        inset: calc((1.75rem - 44px) / 2);
+    }
+}
+
 /* Системное сообщение — кто вошёл, вышел, сменил код. Не пузырь: это
    событие чата, а не чья-то реплика, и отвечать на него нечего. */
 .message-system {
@@ -1245,9 +1342,17 @@ input.is-invalid:focus {
 }
 
 /* Разделитель дней. Подпись прилипает к верху, пока листаешь день, —
-   так всегда видно, к какому дню относятся сообщения на экране. Та же
+   так всегда видно, к какому дню относятся сообщения на экране. Каждый
+   день — отдельный блок, поэтому подпись уезжает вместе со своим днём, а
+   не копится стопкой под следующей. Та же
    капсула, что у разделителя «или» на входе, но без линий: в переписке
    они спорили бы с пузырями. */
+.day-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
 .day-separator {
     position: sticky;
     top: 0;
@@ -1266,6 +1371,9 @@ input.is-invalid:focus {
     font-weight: 600;
     color: var(--text-3);
 }
+
+.message-expiry { display: inline-flex; opacity: 0.85; }
+.message-expiry .icon { width: 0.75rem; height: 0.75rem; }
 
 .message-encrypted {
     display: inline-flex;
@@ -1725,6 +1833,63 @@ dialog.modal::backdrop {
 
 .invite-actions .btn { flex: 1 1 auto; }
 
+.link-body { text-align: center; }
+.link-body .logout-text { text-align: left; }
+.link-qr {
+    display: block;
+    width: min(16rem, 100%);
+    height: auto;
+    margin: 0 auto 0.75rem;
+    border-radius: var(--r-md);
+    image-rendering: pixelated;
+}
+.link-inline {
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    color: var(--accent);
+    text-decoration: underline;
+    cursor: pointer;
+}
+#link-device-btn { margin-top: 0.75rem; }
+#link-confirm-step .field-hint { margin-bottom: 1rem; }
+#error-report-btn { margin-top: 0.5rem; }
+
+.logout-text {
+    margin-bottom: 1rem;
+    font-size: var(--fs-sm);
+    color: var(--text-2);
+}
+
+.error-report-text {
+    display: block;
+    width: 100%;
+    margin-bottom: 1rem;
+    padding: 0.75rem;
+    border: 1px solid var(--border-2);
+    border-radius: var(--r-md);
+    background: var(--field);
+    color: var(--text);
+    font-family: var(--f-mono);
+    font-size: max(0.75rem, 12px);
+    line-height: 1.5;
+    resize: vertical;
+    white-space: pre;
+    overflow: auto;
+}
+
+@media (pointer: coarse), (max-width: 640px) {
+    /* Readonly, но фокус в него попадает — без 16px Safari увеличит страницу. */
+    .error-report-text { font-size: 16px; }
+}
+
+.logout-actions {
+    display: grid;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+}
+
 .invite-code-container {
     display: flex;
     align-items: center;
@@ -1918,6 +2083,16 @@ dialog.modal .toast { bottom: calc(1.75rem + env(safe-area-inset-bottom, 0px)); 
     .auth-logo .brand-word { font-size: var(--fs-h1); }
     .chat-header,
     .message-input-container { padding-inline: 1rem; }
+
+    /* Подпись под названием — в одну строку: «В сети» целиком, а длинная
+       надпись о шифровании обрезается многоточием, а не переносится и не
+       вылезает за шапку. */
+    .chat-subline { flex-wrap: nowrap; min-width: 0; overflow: hidden; gap: 0.25rem 0.5rem; }
+    .chat-subline .status { flex: none; }
+    /* Места мало: сначала до замка сжимается надпись о шифровании, и
+       только потом — срок исчезающих сообщений. */
+    .chat-subline .encryption-badge { flex: 0 100 auto; min-width: 0.8125rem; overflow: hidden; }
+    .chat-subline .expiry-badge { flex: none; }
     .modal-body,
     .modal-header { padding-inline: 1.25rem; }
     .sidebar-footer .btn-ghost { font-size: var(--fs-xs); }

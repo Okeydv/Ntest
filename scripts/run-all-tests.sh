@@ -22,12 +22,14 @@ cd "$(dirname "$0")/.."
 
 KEY_SERVER_BIN=${KEY_SERVER_BIN:-e2ee-key-server/target/debug/e2ee-key-server}
 SECRET=test-secret-at-least-32-chars-long-xx
-LOGS=$(mktemp -d)
+# Журналы наборов; в CI каталог задаётся, чтобы выложить его при провале.
+LOGS=${TEST_LOGS:-$(mktemp -d)}
+mkdir -p "$LOGS"
 
-OFFLINE="test-e2ee-crypto test-metadata test-media-cleaning test-pdf-cleaning test-e2ee-crypto-browser"
+OFFLINE="test-e2ee-crypto test-metadata test-file-sandbox test-media-cleaning test-pdf-cleaning test-e2ee-crypto-browser"
 ONLINE="integration-test-access integration-test-migrations integration-test-security integration-test-devices
 integration-test-envelopes integration-test-uploads test-e2ee-files test-e2ee-safety test-e2ee-groups
-test-e2ee-sessions test-e2ee-local-data test-e2ee-qr test-e2ee-ui test-ui-basics test-ui-dialogs"
+test-e2ee-sessions test-e2ee-local-data test-e2ee-qr test-device-link test-e2ee-ui test-ui-basics test-ui-dialogs"
 if [ $# -gt 0 ]; then
     SELECTED=" $* "
 else
@@ -89,10 +91,14 @@ failed=()
 run() {
     local name=$1
     printf '%-32s' "$name"
-    if timeout 900 node "scripts/$name.mjs" > "$LOGS/$name.log" 2>&1; then
+    # SERVER_LOG — журнал сервера для проверок, что в него пишется;
+    # TEST_ARTIFACTS — трассы и скриншоты браузерных тестов, если набор упал.
+    if SERVER_LOG="$LOGS/server.log" TEST_ARTIFACTS="$LOGS/$name" \
+        timeout 900 node "scripts/$name.mjs" > "$LOGS/$name.log" 2>&1; then
         echo ok
     else
         echo "FAIL — $LOGS/$name.log"
+        [ -d "$LOGS/$name" ] && echo "    трассы Playwright: $LOGS/$name (npx playwright show-trace <файл>)"
         failed+=("$name")
     fi
 }

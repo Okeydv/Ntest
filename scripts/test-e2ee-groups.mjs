@@ -14,7 +14,7 @@
 // Требует поднятых Postgres, key-server и server.js на 3006 и ЧИСТОЙ базы.
 // Запуск: TEST_DATABASE_URL=... node scripts/test-e2ee-groups.mjs
 
-import { chromium } from 'playwright';
+import { launch, finish } from './lib/browser.mjs';
 import pg from 'pg';
 import sharp from 'sharp';
 
@@ -27,7 +27,7 @@ const check = (l, c, d = '') => {
     if (!c) fails++;
 };
 
-const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH });
+const browser = await launch();
 const errors = [];
 async function openPage(context, label) {
     const page = await context.newPage();
@@ -216,7 +216,7 @@ check('после перезагрузки история группы на ме
 
 check('ошибок на страницах нет', errors.length === 0, errors.join('; '));
 
-await browser.close();
+await finish(browser, fails);
 await db.end();
 console.log(fails ? `\n${fails} проверок провалено` : '\nвсе проверки пройдены');
 process.exit(fails ? 1 : 0);

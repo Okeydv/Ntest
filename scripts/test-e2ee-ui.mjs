@@ -15,7 +15,7 @@
 //
 // Запуск: node scripts/test-e2ee-ui.mjs
 
-import { chromium } from 'playwright';
+import { launch, finish } from './lib/browser.mjs';
 
 const BASE = 'http://127.0.0.1:3006';
 let fails = 0;
@@ -24,7 +24,7 @@ const check = (l, c, d = '') => {
     if (!c) fails++;
 };
 
-const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH });
+const browser = await launch();
 
 /** Отдельный контекст = отдельный браузер = отдельное устройство. */
 async function openApp(label) {
@@ -151,6 +151,51 @@ check('после перезагрузки своё сообщение на ме
     JSON.stringify(afterReload).slice(0, 140));
 check('после перезагрузки чужое сообщение на месте (сессия из IndexedDB)', afterReload.includes(REPLY));
 
+/* ===================== исчезающие сообщения ===================== */
+
+await openFromList(bob);
+const expiryBadge = page => page.evaluate(() => {
+    const b = document.getElementById('chat-expiry');
+    return b.classList.contains('hidden') ? null : b.textContent.trim();
+});
+const lastBubbleTimer = page => page.evaluate(() => {
+    const bubbles = [...document.querySelectorAll('#chat-messages .message')];
+    return bubbles.at(-1)?.querySelector('.message-expiry')?.title || null;
+});
+const systemLines = page => page.evaluate(() =>
+    [...document.querySelectorAll('#chat-messages .message-system')].map(e => e.textContent));
+
+await alice.page.click('#chat-menu-btn');
+await alice.page.selectOption('#chat-expiry-select', '3600');
+await alice.page.waitForTimeout(1200);
+check('срок выбирается в меню чата и виден в шапке', await expiryBadge(alice.page) === '1 час', await expiryBadge(alice.page));
+await alice.page.keyboard.press('Escape');
+check('собеседник сразу видит срок в шапке', await expiryBadge(bob.page) === '1 час', await expiryBadge(bob.page));
+check('и системное сообщение, кто включил',
+    (await systemLines(bob.page)).some(t => t === 'alice включил(а) исчезающие сообщения: 1 час'),
+    JSON.stringify(await systemLines(bob.page)));
+
+await bob.page.fill('#message-input', 'исчезнет через час');
+await bob.page.click('#send-btn');
+await bob.page.waitForTimeout(1500);
+check('сообщение собеседника тоже исчезающее: таймер у обоих',
+    /^Исчезнет /.test(await lastBubbleTimer(bob.page) || '') && /^Исчезнет /.test(await lastBubbleTimer(alice.page) || ''),
+    `${await lastBubbleTimer(bob.page)} / ${await lastBubbleTimer(alice.page)}`);
+await openFromList(bob);
+check('после перезагрузки срок и таймер на месте',
+    await expiryBadge(bob.page) === '1 час' && /^Исчезнет /.test(await lastBubbleTimer(bob.page) || ''));
+
+await alice.page.click('#chat-menu-btn');
+await alice.page.selectOption('#chat-expiry-select', '0');
+await alice.page.waitForTimeout(1200);
+await alice.page.keyboard.press('Escape');
+await alice.page.fill('#message-input', 'а это останется');
+await alice.page.click('#send-btn');
+await alice.page.waitForTimeout(1500);
+check('выключили — у собеседника пропал срок, новое сообщение без таймера',
+    await expiryBadge(bob.page) === null && await lastBubbleTimer(bob.page) === null
+    && (await systemLines(bob.page)).includes('alice выключил(а) исчезающие сообщения'));
+
 /* ===================== новое устройство истории не видит ===================== */
 
 const alicePhone = await openApp('alice-phone');
@@ -180,6 +225,6 @@ const allErrors = [...alice.errors, ...bob.errors, ...alicePhone.errors]
     .filter(e => !/favicon|Failed to load resource/i.test(e));
 check('ошибок в консоли браузера нет', allErrors.length === 0, allErrors.slice(0, 3).join(' | '));
 
-await browser.close();
+await finish(browser, fails);
 console.log(fails ? `\n${fails} проверок провалено` : '\nвсе проверки пройдены');
 process.exit(fails ? 1 : 0);

@@ -89,6 +89,9 @@
         </symbol>
         <symbol id="i-close" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></symbol>
         <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 5.5L8.5 12l6.5 6.5"/></symbol>
+        <symbol id="i-timer" viewBox="0 0 24 24">
+            <circle cx="12" cy="13.5" r="7"/><path d="M12 10v3.5l2.5 1.5M9.5 3.5h5"/>
+        </symbol>
         <symbol id="i-lock" viewBox="0 0 24 24">
             <rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>
         </symbol>
@@ -149,6 +152,7 @@
                     Войти в приватном режиме
                 </button>
                 <p class="field-hint field-hint-center">Без email и пароля. Данные удалятся при выходе.</p>
+                <button id="link-login-btn" class="btn btn-ghost btn-block" type="button">Войти по QR-коду с другого устройства</button>
             </div>
 
             <div id="register-form" class="auth-form">
@@ -234,6 +238,8 @@
                             <!-- Кнопка, а не подпись: в зашифрованном чате отсюда открывается
                                  сверка ключей. В незашифрованном она disabled. -->
                             <button id="chat-encryption" class="encryption-badge hidden" type="button" disabled></button>
+                            <!-- Срок исчезающих сообщений; нажатие открывает меню чата, где он меняется. -->
+                            <button id="chat-expiry" class="expiry-badge hidden" type="button"></button>
                         </div>
                     </div>
                 </div>
@@ -333,6 +339,17 @@
                 </button>
             </div>
             <div class="modal-body">
+                <div class="field">
+                    <label class="field-label" for="chat-expiry-select">Исчезающие сообщения</label>
+                    <select id="chat-expiry-select" class="select">
+                        <option value="0">Выключены</option>
+                        <option value="300">Через 5 минут</option>
+                        <option value="3600">Через 1 час</option>
+                        <option value="86400">Через 1 день</option>
+                        <option value="604800">Через 1 неделю</option>
+                    </select>
+                    <p class="field-hint">Касается новых сообщений всех участников. Исчезнувшее стирается и с сервера, и с устройств, но собеседник мог успеть его сохранить.</p>
+                </div>
                 <button id="delete-chat-btn" class="btn btn-danger btn-block" type="button">
                     <svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg>
                     Удалить чат
@@ -378,11 +395,13 @@
                 <section id="devices-section" class="devices-section" aria-labelledby="devices-title">
                     <h4 id="devices-title" class="field-label">Устройства</h4>
                     <ul id="devices-list" class="devices-list"></ul>
+                    <button id="link-device-btn" class="btn btn-secondary btn-block" type="button">Подключить устройство по QR-коду</button>
                 </section>
                 <button id="change-password-btn" class="btn btn-secondary btn-block" type="button">
                     <svg class="icon" aria-hidden="true"><use href="#i-lock"/></svg>
                     Сменить пароль
                 </button>
+                <button id="error-report-btn" class="btn btn-ghost btn-block" type="button">Отчёт об ошибке</button>
             </div>
         </div>
     </dialog>
@@ -462,6 +481,111 @@
         </div>
     </dialog>
 
+    <!-- Новое устройство: показать код и ждать подтверждения. -->
+    <dialog id="link-login-modal" class="modal" aria-labelledby="link-login-title">
+        <div class="modal-content modal-content-sm">
+            <div class="modal-header">
+                <h3 id="link-login-title">Вход по QR-коду</h3>
+                <button class="icon-btn icon-btn-sm icon-btn-quiet close-modal" aria-label="Закрыть" type="button">
+                    <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
+                </button>
+            </div>
+            <div class="modal-body link-body">
+                <p class="logout-text">
+                    На устройстве, где вы уже вошли, откройте Профиль → Устройства →
+                    «Подключить устройство по QR-коду» и наведите камеру на этот код.
+                </p>
+                <canvas id="link-qr" class="link-qr" role="img" aria-label="QR-код для входа"></canvas>
+                <p id="link-status" class="field-hint field-hint-center" role="status"></p>
+            </div>
+        </div>
+    </dialog>
+
+    <!-- Старое устройство: отсканировать код нового и подтвердить. -->
+    <dialog id="link-scan-modal" class="modal" aria-labelledby="link-scan-title">
+        <div class="modal-content modal-content-sm">
+            <div class="modal-header">
+                <h3 id="link-scan-title">Подключить устройство</h3>
+                <button class="icon-btn icon-btn-sm icon-btn-quiet close-modal" aria-label="Закрыть" type="button">
+                    <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div id="link-scan-step">
+                    <p class="logout-text">
+                        На новом устройстве нажмите «Войти по QR-коду с другого
+                        устройства» и отсканируйте код, который оно покажет.
+                    </p>
+                    <div class="safety-qr-actions">
+                        <button id="link-scan-camera" class="btn btn-secondary" type="button">Сканировать камерой</button>
+                        <button id="link-scan-photo-btn" class="btn btn-ghost" type="button">Распознать с фото</button>
+                        <input id="link-scan-photo" type="file" accept="image/*" hidden>
+                    </div>
+                    <div id="link-scan-area" class="safety-scan" hidden></div>
+                </div>
+                <div id="link-confirm-step" hidden>
+                    <p class="logout-text"><strong id="link-confirm-label"></strong> получит доступ к вашему аккаунту и новым сообщениям.</p>
+                    <p class="field-hint">Подключайте только своё устройство, которое видите перед собой. Если код прислали или попросили отсканировать — это чужое устройство.</p>
+                    <div class="logout-actions">
+                        <button id="link-approve-btn" class="btn btn-primary btn-block" type="button">Подключить</button>
+                        <button id="link-cancel-btn" class="btn btn-ghost btn-block" type="button">Отмена</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </dialog>
+
+    <!-- Отчёт собирается только здесь, на экране, и никуда сам не уходит. -->
+    <dialog id="error-report-modal" class="modal" aria-labelledby="error-report-title">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="error-report-title">Отчёт об ошибке</h3>
+                <button class="icon-btn icon-btn-sm icon-btn-quiet close-modal" aria-label="Закрыть" type="button">
+                    <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <p class="logout-text">
+                    Здесь последние ошибки этой вкладки: без переписки, ключей и
+                    почты. Отчёт никуда не отправляется сам — скопируйте его и
+                    перешлите тому, кто поможет разобраться.
+                </p>
+                <textarea id="error-report-text" class="error-report-text" readonly rows="12" spellcheck="false" aria-label="Текст отчёта"></textarea>
+                <button id="copy-error-report-btn" class="btn btn-primary btn-block" type="button">Скопировать</button>
+            </div>
+        </div>
+    </dialog>
+
+    <!-- Выход: по умолчанию устройство стирается и отзывается, но на своём
+         компьютере это лишнее — собеседникам потом заново сверять ключи. -->
+    <dialog id="logout-modal" class="modal" aria-labelledby="logout-modal-title" aria-describedby="logout-modal-text">
+        <div class="modal-content modal-content-sm">
+            <div class="modal-header">
+                <h3 id="logout-modal-title">Выйти из аккаунта?</h3>
+                <button class="icon-btn icon-btn-sm icon-btn-quiet close-modal" aria-label="Закрыть" type="button">
+                    <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <p id="logout-modal-text" class="logout-text">
+                    Ключи и расшифрованная переписка сотрутся с этого устройства,
+                    а само устройство будет отозвано. Когда вы войдёте снова, для
+                    собеседников это будет новое устройство: тем, кто сверял с
+                    вами ключи, придётся сверить их заново.
+                </p>
+                <div class="logout-actions">
+                    <button id="logout-wipe-btn" class="btn btn-danger btn-block" type="button">Выйти и стереть с устройства</button>
+                    <button id="logout-keep-btn" class="btn btn-secondary btn-block" type="button">Выйти, оставив устройство</button>
+                </div>
+                <p class="field-hint">
+                    Если оставить устройство, ключи и переписка останутся в этом
+                    браузере. Так стоит делать только на своём компьютере или
+                    телефоне.
+                </p>
+            </div>
+        </div>
+    </dialog>
+
     <div id="message-menu" class="context-menu" role="menu" aria-label="Действия с сообщением" popover="manual">
         <button id="reply-message-btn" class="menu-item" role="menuitem" type="button">
             <svg class="icon" aria-hidden="true"><use href="#i-reply"/></svg>
@@ -480,6 +604,7 @@
     <!-- Тост — popover="manual": так он в верхнем слое и виден поверх открытого окна. -->
     <div id="toast" class="toast" role="status" aria-live="polite" popover="manual"></div>
 
+    <script src="error-log.js"></script>
     <script src="/socket.io/socket.io.js"></script>
     <script src="script.js"></script>
     <!-- Модульные скрипты всегда deferred, поэтому крипта поднимается

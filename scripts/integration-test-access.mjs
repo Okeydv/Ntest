@@ -22,6 +22,9 @@
 
 import { io as ioClient } from 'socket.io-client';
 import pg from 'pg';
+import { createRequire } from 'node:module';
+
+const bcrypt = createRequire(import.meta.url)('bcryptjs');
 
 const BASE = 'http://127.0.0.1:3006';
 const db = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL });
@@ -125,6 +128,30 @@ check('и старый такой ответ не открывает в исто
 const ownReply = await bob.req('POST', '/api/messages', { chatId: secret.chats[bob.userId], text: 'понял', replyToId: secretId });
 check('ответ внутри своего чата проходит', ownReply.json?.success === true && ownReply.json.message.reply_to_id === secretId,
     ownReply.json?.message?.reply_to_id);
+
+/* ------------------------- история страницами ------------------------- */
+
+const pageChat = eveRoom.chats[eve.userId];
+const sentIds = [];
+for (let i = 1; i <= 7; i++) sentIds.push((await eve.req('POST', '/api/messages', { chatId: pageChat, text: `номер ${i}` })).json.message.id);
+const lastPage = (await eve.req('GET', `/api/messages/${pageChat}?limit=3`)).json;
+const olderPage = (await eve.req('GET', `/api/messages/${pageChat}?limit=3&before=${lastPage.messages[0].id}`)).json;
+check('история страницами: последние по возрастанию, перед ними следующие',
+    JSON.stringify(lastPage.messages.map(m => m.id)) === JSON.stringify(sentIds.slice(4)) && lastPage.hasMore
+    && JSON.stringify(olderPage.messages.map(m => m.id)) === JSON.stringify(sentIds.slice(1, 4)) && olderPage.hasMore,
+    JSON.stringify([lastPage.messages.map(m => m.id), olderPage.messages.map(m => m.id), sentIds]));
+const badBefore = await eve.req('GET', `/api/messages/${pageChat}?before=abc`);
+const hugeLimit = (await eve.req('GET', `/api/messages/${pageChat}?limit=100000`)).json;
+check('кривой before — 400, а limit не больше 200', badBefore.status === 400 && hugeLimit.success === true);
+
+await eve.req('DELETE', `/api/messages/${sentIds[0]}`);
+const existing = await eve.req('POST', `/api/messages/${pageChat}/existing`, { ids: [sentIds[0], sentIds[1], secretId] });
+check('«что ещё есть»: удалённого и чужого нет, живое есть',
+    JSON.stringify(existing.json?.ids) === JSON.stringify([sentIds[1]]), JSON.stringify(existing.json));
+const foreignCheck = await eve.req('POST', `/api/messages/${secret.chats[alice.userId]}/existing`, { ids: [secretId] });
+const tooMany = await eve.req('POST', `/api/messages/${pageChat}/existing`, { ids: Array.from({ length: 1001 }, (_, i) => i + 1) });
+check('про чужой чат не спросить, и не больше 1000 id за раз', foreignCheck.status === 404 && tooMany.status === 400,
+    `${foreignCheck.status} / ${tooMany.status}`);
 
 /* ------------------------- вышедший из чата не слышит его ------------------------- */
 
@@ -270,6 +297,61 @@ for (let i = 0; i < 3; i++) {
     const joined = await honest.req('POST', '/api/chats/join', { code: r.json.code });
     if (i === 2) check('удачные входы в лимит не считаются', joined.json?.success === true);
 }
+
+/* ------------------------- анонимный участник уходит ------------------------- */
+
+const anonGuest = client();
+await anonGuest.req('POST', '/api/register/anonymous');
+const anonRoom = await host.req('POST', '/api/chats', { name: 'С анонимом' });
+const anonRoomChat = anonRoom.json.chat.id;
+const anonCode = (await host.req('GET', `/api/chats/invite/${anonRoomChat}`)).json.code;
+await anonGuest.req('POST', '/api/chats/join', { code: anonCode });
+const anonName = (await anonGuest.req('GET', '/api/auth')).json.user.username;
+await anonGuest.req('POST', '/api/logout');
+const afterAnon = (await host.req('GET', `/api/messages/${anonRoomChat}`)).json.messages
+    .filter(m => m.message_type === 'system').map(m => m.text);
+check('анонимный участник не уходит без следа: вход и выход видны после удаления аккаунта',
+    afterAnon.some(t => t.startsWith(`${anonName} вошёл`)) && afterAnon.some(t => t.startsWith(`${anonName} вышел`)),
+    JSON.stringify(afterAnon));
+
+/* ------------------------- пароли и вход ------------------------- */
+
+// bcrypt видит только 72 байта: два пароля с общим началом такой длины
+// раньше были одним и тем же паролем.
+const longA = 'пароль'.repeat(12) + 'А';
+const longB = 'пароль'.repeat(12) + 'Б';
+const longUser = client();
+await longUser.req('POST', '/api/register', { username: 'longpass', email: 'longpass@example.com', password: longA, confirmPassword: longA });
+const wrongTail = await client().req('POST', '/api/login', { email: 'longpass@example.com', password: longB });
+check('пароль учитывается целиком, а не первые 72 байта', wrongTail.json?.success === false, wrongTail.json?.message);
+const rightTail = await client().req('POST', '/api/login', { email: 'longpass@example.com', password: longA });
+check('верный длинный пароль подходит', rightTail.json?.success === true);
+
+// Старый хеш (bcrypt от самого пароля) подходит и при входе пересчитывается.
+const legacy = await register('legacy');
+await db.query('UPDATE users SET password = $1 WHERE id = $2', [bcrypt.hashSync('password123', 10), legacy.userId]);
+const legacyLogin = await client().req('POST', '/api/login', { email: 'legacy@example.com', password: 'password123' });
+const upgraded = (await db.query('SELECT password FROM users WHERE id = $1', [legacy.userId])).rows[0].password;
+check('старый хеш пароля подходит и переводится в новый формат',
+    legacyLogin.json?.success === true && upgraded.startsWith('sha256-bcrypt$'), upgraded.slice(0, 20));
+
+// Подбор пароля к одному email с разных адресов.
+let guessed;
+for (let i = 0; i < 21; i++) guessed = await client().req('POST', '/api/login', { email: 'legacy@example.com', password: `guess${i}` });
+check('подбор к одному email с разных адресов упирается в лимит', guessed.status === 429, `${guessed.status} ${guessed.json?.message}`);
+
+// Изменяющий запрос с чужого сайта.
+const csrfVictim = await login('bob');
+const crossSite = await fetch(BASE + '/api/chats', { method: 'POST',
+    headers: { Cookie: csrfVictim.header(), 'X-CSRF-Token': /csrf_token=([^;]+)/.exec(csrfVictim.header())[1],
+        'Content-Type': 'application/json', Origin: 'https://evil.example' },
+    body: JSON.stringify({ name: 'от чужого сайта' }) });
+check('изменяющий запрос с чужим Origin отклоняется, даже с токеном', crossSite.status === 403);
+const sameSite = await fetch(BASE + '/api/chats', { method: 'POST',
+    headers: { Cookie: csrfVictim.header(), 'X-CSRF-Token': /csrf_token=([^;]+)/.exec(csrfVictim.header())[1],
+        'Content-Type': 'application/json', Origin: BASE },
+    body: JSON.stringify({ name: 'со своего' }) });
+check('а со своего — проходит', sameSite.status === 200 && (await sameSite.json()).success === true);
 
 /* ------------------------- заголовки ------------------------- */
 

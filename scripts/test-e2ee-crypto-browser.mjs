@@ -7,7 +7,7 @@
 //   - состояние сессии переживает IndexedDB
 //
 // Запуск: node scripts/test-e2ee-crypto-browser.mjs
-import { chromium } from 'playwright';
+import { launch, finish } from './lib/browser.mjs';
 import http from 'node:http'; import fs from 'node:fs'; import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
@@ -21,7 +21,7 @@ const srv = http.createServer((q,r) => {
   r.end(fs.readFileSync(f));
 });
 await new Promise(r => srv.listen(4181, r));
-const b = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH });
+const b = await launch();
 const p = await (await b.newContext()).newPage();
 p.on('pageerror', e => console.error('PAGEERROR:', e.message));
 await p.goto('http://127.0.0.1:4181/');
@@ -84,4 +84,4 @@ const out = await p.evaluate(async () => {
 let fails = 0;
 for (const [l,c,d] of out) { console.log(`${c?'ok  ':'FAIL'}  ${l}${d?'  — '+d:''}`); if(!c) fails++; }
 console.log(fails ? `\n${fails} провалено` : '\nмодуль работает в браузере');
-await b.close(); srv.close(); process.exit(fails?1:0);
+await finish(b, fails); srv.close(); process.exit(fails?1:0);

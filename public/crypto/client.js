@@ -844,6 +844,21 @@ export function wipeDevice() {
     });
 }
 
+/**
+ * Выход без стирания: ключи и переписка остаются в браузере, устройство
+ * на сервере не отзывается. При следующем входе bootstrap привяжет то же
+ * устройство — если войдёт тот же человек. Чужой аккаунт привязать его не
+ * сможет, и тогда bootstrap сотрёт хранилище сам.
+ */
+export function detach() {
+    return serialized(async () => {
+        state.ready = false;
+        state.deviceId = null;
+        state.identity = null;
+        state.userId = null;
+    });
+}
+
 /* Превью последнего сообщения: сервер шифротекст прочитать не может. */
 export const rememberPreview = (message, text) =>
     store.previews.save(conversationKey(message), { text, messageId: message.id });

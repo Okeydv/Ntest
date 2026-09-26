@@ -1,0 +1,12 @@
+# В образ — только то, что нужно для запуска.
+.git
+.env
+.env.*
+!.env.example
+node_modules
+uploads
+encrypted-blobs
+e2ee-key-server/target
+scripts
+*.log
+*.pem

@@ -6,7 +6,11 @@
 //   - когда удалили, пока его не было, — при следующем открытии чата;
 //   - когда сообщение исчезло по сроку;
 //   - когда из чата вышли — всё по этому чату;
-//   - при выходе из аккаунта — всё, и устройство отзывается на сервере.
+//   - при выходе из аккаунта — всё, и устройство отзывается на сервере;
+//     а если выйти, оставив устройство, — не стирается ничего, и после
+//     входа то же устройство читает старую переписку.
+// История приходит страницами: удалённое за пределами открытой страницы
+// тоже стирается, старые страницы догружаются по порядку и расшифровываются.
 // И что превью полученного сообщения в комнате лежит под этой комнатой
 // (раньше — под чатом отправителя, и после перезагрузки его не было).
 // И что о новом устройстве аккаунта узнают остальные — сразу или при
@@ -15,7 +19,7 @@
 // Требует поднятых Postgres, key-server и server.js на 3006 и ЧИСТОЙ базы.
 // Запуск: TEST_DATABASE_URL=... node scripts/test-e2ee-local-data.mjs
 
-import { chromium } from 'playwright';
+import { launch, finish } from './lib/browser.mjs';
 import pg from 'pg';
 
 const BASE = 'http://127.0.0.1:3006';
@@ -25,7 +29,7 @@ let fails = 0;
 const check = (l, c, d = '') => { console.log(`${c ? 'ok  ' : 'FAIL'}  ${l}${d ? '  — ' + d : ''}`); if (!c) fails++; };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH });
+const browser = await launch();
 const errors = [];
 let nextIp = 10;
 async function openApp(label, context) {
@@ -150,8 +154,11 @@ check('после выхода из чата от него ничего не о�
 
 /* ------------------------- выход из аккаунта ------------------------- */
 
-bob.page.once('dialog', d => d.accept());
 await bob.page.click('#logout-btn');
+await bob.page.waitForFunction(() => document.getElementById('logout-modal').open);
+check('перед выходом предупреждают, что ключи придётся сверять заново',
+    /сверить их заново/.test(await bob.page.textContent('#logout-modal')));
+await bob.page.click('#logout-wipe-btn');
 await sleep(1500);
 dump = await local(bob.page);
 const leftovers = Object.entries(dump.counts).filter(([, n]) => n > 0);
@@ -159,14 +166,86 @@ check('после выхода IndexedDB пуст: ни ключей, ни пе�
 const revoked = await db.query('SELECT revoked_at FROM devices WHERE id = $1', [bobInfo.deviceId]);
 check('и устройство отозвано на сервере', revoked.rows[0]?.revoked_at !== null);
 
-/* ------------------------- новые устройства аккаунта ------------------------- */
-
+// Выйти, оставив устройство: ключи и переписка остаются, при следующем
+// входе привязывается то же устройство — собеседникам сверять нечего.
 const loginOn = async (app, u) => app.page.evaluate(async u => {
     const r = await api('/api/login', { method: 'POST', body: JSON.stringify({ email: `${u}@example.com`, password: 'password123' }) });
     if (!r.success) throw new Error(r.message);
     currentUser = r.user; showApp(); await setupE2EE(); await loadChats();
     return e2eeDeviceId;
 }, u);
+
+const ivy = await openApp('ivy');
+const ivyInfo = await register(ivy, 'ivy');
+const ivyRoom = await alice.page.evaluate(async () => {
+    const c = await api('/api/chats', { method: 'POST', body: JSON.stringify({ name: 'С Айви' }) });
+    return { roomId: c.chat.room_id, code: (await api(`/api/chats/invite/${c.chat.id}`)).code };
+});
+await ivy.page.evaluate(c => api('/api/chats/join', { method: 'POST', body: JSON.stringify({ code: c }) }), ivyRoom.code);
+await openRoom(alice.page, ivyRoom.roomId);
+await openRoom(ivy.page, ivyRoom.roomId);
+await send(alice.page, 'прочитаю и после выхода');
+check('до выхода сообщение у Айви', await waitText(ivy.page, 'прочитаю и после выхода'));
+await ivy.page.click('#logout-btn');
+await ivy.page.waitForFunction(() => document.getElementById('logout-modal').open);
+await ivy.page.click('#logout-keep-btn');
+await sleep(1500);
+check('«оставив устройство» — вышли, окно входа на экране',
+    await ivy.page.evaluate(() => !currentUser && !document.getElementById('logout-modal').open));
+check('и устройство не отозвано',
+    (await db.query('SELECT revoked_at FROM devices WHERE id = $1', [ivyInfo.deviceId])).rows[0]?.revoked_at === null);
+check('а переписка осталась в браузере', hasText(await local(ivy.page), 'прочитаю и после выхода'));
+const ivyAgain = await loginOn(ivy, 'ivy');
+check('после входа — то же устройство', ivyAgain === ivyInfo.deviceId, `${ivyInfo.deviceId} → ${ivyAgain}`);
+await openRoom(ivy.page, ivyRoom.roomId);
+check('и старое сообщение читается', await waitText(ivy.page, 'прочитаю и после выхода'));
+
+/* ------------------------- история страницами ------------------------- */
+
+// Айви не в сети, пока Алиса пишет 12 сообщений и удаляет старое, которое
+// Айви уже прочитала. Потом Айви открывает чат страницами по 5.
+const oldReadId = (await db.query(
+    "SELECT id FROM messages WHERE room_id = $1 AND message_type <> 'system' ORDER BY id LIMIT 1", [ivyRoom.roomId])).rows[0].id;
+await ivy.page.goto('about:blank');
+for (let i = 1; i <= 12; i++) await send(alice.page, `страница ${i}`);
+await alice.page.evaluate(id => api(`/api/messages/${id}`, { method: 'DELETE' }), oldReadId);
+await sleep(500);
+
+const historyRequests = [];
+ivy.page.on('request', r => { if (/\/api\/messages\/\d+\?/.test(r.url())) historyRequests.push(new URL(r.url()).search); });
+await ivy.page.setViewportSize({ width: 1000, height: 420 });
+await ivy.page.goto(BASE, { waitUntil: 'networkidle' });
+await sleep(1200);
+await ivy.page.evaluate(() => { historyPageSize = 5; });
+await ivy.page.locator(`.chat-item[data-room-id="${ivyRoom.roomId}"]`).click();
+await waitText(ivy.page, 'страница 12');
+const firstLoad = await ivy.page.evaluate(() => document.querySelectorAll('#chat-messages .message').length);
+check('чат открывается с последней страницы, а не со всей истории',
+    historyRequests[0] === '?limit=5' && firstLoad < 12, `${historyRequests.join(' ')}; сообщений ${firstLoad}`);
+check('удалённое, пока устройства не было, стёрто и за пределами страницы',
+    !hasText(await local(ivy.page), 'прочитаю и после выхода'));
+
+for (let i = 0; i < 6 && await ivy.page.evaluate(() => historyPaging.hasMore); i++) {
+    await ivy.page.evaluate(() => { document.getElementById('chat-messages').scrollTop = 0; });
+    await sleep(900);
+}
+const shown = await ivy.page.evaluate(() => ({
+    texts: [...document.querySelectorAll('#chat-messages .message-text')].map(t => t.textContent),
+    separators: document.querySelectorAll('#chat-messages .day-separator').length,
+    more: historyPaging.hasMore,
+}));
+const expected = Array.from({ length: 12 }, (_, i) => `страница ${i + 1}`);
+check('листая вверх, догрузили всё: по порядку, без повторов, всё расшифровано',
+    !shown.more && JSON.stringify(shown.texts.filter(t => t.startsWith('страница'))) === JSON.stringify(expected)
+    && historyRequests.slice(1).every(q => /^\?limit=5&before=\d+$/.test(q)), JSON.stringify(shown));
+check('страницы одного дня — под одним разделителем', shown.separators === 1, String(shown.separators));
+const listPreview = await ivy.page.evaluate(id =>
+    document.querySelector(`.chat-item[data-room-id="${id}"] .chat-last`)?.textContent, ivyRoom.roomId);
+check('старые страницы не перебивают превью в списке чатов', listPreview === 'страница 12', listPreview);
+await ivy.page.setViewportSize({ width: 1280, height: 720 });
+
+/* ------------------------- новые устройства аккаунта ------------------------- */
+
 const toastText = page => page.evaluate(() =>
     document.getElementById('toast').matches(':popover-open') ? document.getElementById('toast').textContent : '');
 
@@ -200,7 +279,7 @@ check('устройство отзывается из профиля', (await db
     && await laptop.page.evaluate(() => document.querySelectorAll('#devices-list .device-item').length) === 2);
 
 check('ошибок на страницах нет', errors.length === 0, errors.join('; '));
-await browser.close();
+await finish(browser, fails);
 await db.end();
 console.log(fails ? `\n${fails} проверок провалено` : '\nвсе проверки пройдены');
 process.exit(fails ? 1 : 0);
