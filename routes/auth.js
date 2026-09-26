@@ -391,4 +391,6 @@ module.exports = function registerAuthRoutes(app, ctx) {
             res.status(500).json({ success: false, message: 'Ошибка изменения пароля' });
         }
     });
+
+    return { startSession };
 };

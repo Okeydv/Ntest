@@ -365,6 +365,7 @@ Object.assign(ctx, require('./routes/auth')(app, ctx));
 Object.assign(ctx, require('./routes/chats')(app, ctx));
 Object.assign(ctx, require('./routes/messages')(app, ctx));
 Object.assign(ctx, require('./routes/files')(app, ctx));
+require('./routes/link')(app, ctx);
 
 // security.txt (RFC 9116): куда сообщать об уязвимостях. Адрес — из
 // SECURITY_CONTACT; не задан — файла нет.

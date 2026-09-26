@@ -1833,6 +1833,29 @@ dialog.modal::backdrop {
 
 .invite-actions .btn { flex: 1 1 auto; }
 
+.link-body { text-align: center; }
+.link-body .logout-text { text-align: left; }
+.link-qr {
+    display: block;
+    width: min(16rem, 100%);
+    height: auto;
+    margin: 0 auto 0.75rem;
+    border-radius: var(--r-md);
+    image-rendering: pixelated;
+}
+.link-inline {
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    color: var(--accent);
+    text-decoration: underline;
+    cursor: pointer;
+}
+#link-device-btn { margin-top: 0.75rem; }
+#link-confirm-step .field-hint { margin-bottom: 1rem; }
+#error-report-btn { margin-top: 0.5rem; }
+
 .logout-text {
     margin-bottom: 1rem;
     font-size: var(--fs-sm);

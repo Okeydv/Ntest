@@ -73,10 +73,14 @@ const insertOld = text => db.query(
 
 /* ------------------------- колонки ещё нет ------------------------- */
 
-// База из времён до версионных миграций: ни schema_migrations, ни
-// колонки created_at. Базовая миграция доводит её до нынешней схемы.
+// База из времён до версионных миграций: базовые миграции (001, 002) на
+// ней не прогонялись, колонки created_at нет. Базовая доводит её до
+// нынешней схемы. Более поздние миграции оставляем записанными: их
+// таблицы в тестовой базе уже есть, а в настоящей старой базе не было бы
+// и самих миграций.
+const forgetBaseline = () => db.query('DELETE FROM schema_migrations WHERE version <= 2');
 await db.query('ALTER TABLE messages DROP COLUMN created_at');
-await db.query('DROP TABLE schema_migrations');
+await forgetBaseline();
 const old1 = (await insertOld('давнее первое')).rows[0].id;
 const old2 = (await insertOld('давнее второе')).rows[0].id;
 
@@ -96,7 +100,7 @@ await server.stop();
 await db.query(`UPDATE messages SET created_at = '2026-03-01T11:03:00Z' WHERE id <> $1`, [fresh]);
 await db.query(`UPDATE messages SET created_at = '2026-03-02T08:00:00Z' WHERE id = $1`, [fresh]);
 await db.query(`DELETE FROM schema_flags WHERE name = 'messages_created_at_backfill_undone'`);
-await db.query('DROP TABLE schema_migrations');
+await forgetBaseline();
 const stamped = Number((await db.query(`SELECT count(*) FROM messages WHERE created_at = '2026-03-01T11:03:00Z'`)).rows[0].count);
 
 server = await startServer();

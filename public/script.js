@@ -16,6 +16,21 @@ const elements = {
     registerBtn: document.getElementById('register-btn'),
     anonymousLoginBtn: document.getElementById('anonymous-login-btn'),
     logoutBtn: document.getElementById('logout-btn'),
+    linkLoginBtn: document.getElementById('link-login-btn'),
+    linkLoginModal: document.getElementById('link-login-modal'),
+    linkQr: document.getElementById('link-qr'),
+    linkStatus: document.getElementById('link-status'),
+    linkDeviceBtn: document.getElementById('link-device-btn'),
+    linkScanModal: document.getElementById('link-scan-modal'),
+    linkScanStep: document.getElementById('link-scan-step'),
+    linkScanArea: document.getElementById('link-scan-area'),
+    linkScanCamera: document.getElementById('link-scan-camera'),
+    linkScanPhoto: document.getElementById('link-scan-photo'),
+    linkScanPhotoBtn: document.getElementById('link-scan-photo-btn'),
+    linkConfirmStep: document.getElementById('link-confirm-step'),
+    linkConfirmLabel: document.getElementById('link-confirm-label'),
+    linkApproveBtn: document.getElementById('link-approve-btn'),
+    linkCancelBtn: document.getElementById('link-cancel-btn'),
     chatExpiry: document.getElementById('chat-expiry'),
     chatExpirySelect: document.getElementById('chat-expiry-select'),
     logoutModal: document.getElementById('logout-modal'),
@@ -421,11 +436,15 @@ function loadVendor(src, globalName) {
     return vendorScripts.get(src);
 }
 
-async function drawSafetyQr(canvas, safetyNumber) {
+function drawSafetyQr(canvas, safetyNumber) {
+    return drawQr(canvas, [[SAFETY_QR_PREFIX, 'Alphanumeric'], [safetyNumber, 'Numeric']]);
+}
+
+// segments — [[данные, режим]]: режим qrcode-generator (Numeric, Alphanumeric).
+async function drawQr(canvas, segments) {
     const qrcode = await loadVendor('/vendor/qrcode.js', 'qrcode');
     const qr = qrcode(0, 'M');
-    qr.addData(SAFETY_QR_PREFIX, 'Alphanumeric');
-    qr.addData(safetyNumber, 'Numeric');
+    for (const [data, mode] of segments) qr.addData(data, mode);
     qr.make();
     const count = qr.getModuleCount();
     const cell = 6;
@@ -1215,9 +1234,11 @@ function setupEventListeners() {
             if (data.user.email === null || data.user.email === undefined) {
                 elements.profileAnonBadge.classList.remove('hidden');
                 elements.changePasswordBtn.classList.add('hidden');
+                elements.linkDeviceBtn.hidden = true;
             } else {
                 elements.profileAnonBadge.classList.add('hidden');
                 elements.changePasswordBtn.classList.remove('hidden');
+                elements.linkDeviceBtn.hidden = false;
             }
             await renderDevices();
             openModal(elements.profileModal);
@@ -1356,6 +1377,7 @@ function setupEventListeners() {
     setupMessageMenu();
     setupMessageKeyboard();
     setupHistoryPaging();
+    setupDeviceLinking();
     setupMobileScreens();
     // Не дожидаемся таймера отмены, если страницу закрывают.
     window.addEventListener('pagehide', flushPendingDeletes);
@@ -1605,6 +1627,119 @@ async function openChat(chatId, roomId, name, avatar, online, isBot) {
 
     const roomKey = roomId ? `room:${roomId}` : `chat:${chatId}`;
     socket.emit('joinChat', roomKey);
+}
+
+/* --- Привязка устройства по QR ---------------------------------------------
+   Новое устройство показывает одноразовый код и ждёт, устройство, где уже
+   вошли, сканирует его и подтверждает. Пароль на новом устройстве не
+   вводится. Код живёт 5 минут; забрать вход по нему может только браузер,
+   который его показал (см. routes/link.js). */
+
+const LINK_QR_PREFIX = 'NYXOLINK1:';
+let linkPollTimer = null;
+
+async function startLinkLogin() {
+    clearTimeout(linkPollTimer);
+    elements.linkStatus.textContent = 'Готовим код…';
+    elements.linkQr.hidden = true;
+    const data = await api('/api/link/start', { method: 'POST', body: JSON.stringify({ label: deviceLabel() }) });
+    if (!data.success) {
+        elements.linkStatus.textContent = data.message;
+        return;
+    }
+    await drawQr(elements.linkQr, [[LINK_QR_PREFIX + data.token, 'Alphanumeric']]);
+    elements.linkQr.hidden = false;
+    elements.linkStatus.textContent = 'Код действует 5 минут. Ждём подтверждения…';
+    pollLinkLogin();
+}
+
+function pollLinkLogin() {
+    linkPollTimer = setTimeout(async () => {
+        if (!elements.linkLoginModal.open) return;
+        const data = await api('/api/link/status').catch(() => null);
+        if (!elements.linkLoginModal.open) return;
+        if (!data || !data.success || data.status === 'pending') return pollLinkLogin();
+        if (data.status === 'expired') {
+            elements.linkQr.hidden = true;
+            elements.linkStatus.replaceChildren('Код устарел. ');
+            const again = document.createElement('button');
+            again.type = 'button';
+            again.className = 'link-inline';
+            again.textContent = 'Показать новый';
+            again.addEventListener('click', startLinkLogin);
+            elements.linkStatus.appendChild(again);
+            return;
+        }
+        closeModal(elements.linkLoginModal);
+        currentUser = data.user;
+        showToast(`Вы вошли как ${data.user.username}`, 'success');
+        showApp();
+        await setupE2EE();
+        loadChats();
+    }, 2000);
+}
+
+let pendingLinkToken = null;
+
+function resetLinkScan() {
+    pendingLinkToken = null;
+    elements.linkScanStep.hidden = false;
+    elements.linkConfirmStep.hidden = true;
+}
+
+async function inspectLinkCode(value) {
+    if (value === null) return;
+    if (!value || !value.startsWith(LINK_QR_PREFIX)) {
+        showToast('Это не код подключения Nyxo', 'error');
+        return;
+    }
+    const token = value.slice(LINK_QR_PREFIX.length);
+    const data = await api('/api/link/inspect', { method: 'POST', body: JSON.stringify({ token }) });
+    if (!data.success) {
+        showToast(data.message, 'error');
+        return;
+    }
+    pendingLinkToken = token;
+    elements.linkConfirmLabel.textContent = `«${data.label}»`;
+    elements.linkScanStep.hidden = true;
+    elements.linkConfirmStep.hidden = false;
+    elements.linkApproveBtn.focus();
+}
+
+function setupDeviceLinking() {
+    elements.linkLoginBtn.addEventListener('click', () => {
+        openModal(elements.linkLoginModal);
+        startLinkLogin();
+    });
+    elements.linkLoginModal.addEventListener('close', () => clearTimeout(linkPollTimer));
+
+    elements.linkDeviceBtn.addEventListener('click', () => {
+        resetLinkScan();
+        closeModal(elements.profileModal);
+        openModal(elements.linkScanModal);
+    });
+    if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) elements.linkScanCamera.hidden = true;
+    elements.linkScanCamera.addEventListener('click', async () => {
+        try {
+            await inspectLinkCode(await scanWithCamera(elements.linkScanArea));
+        } catch {
+            showToast('Камера недоступна — распознайте код с фото', 'error');
+        }
+    });
+    elements.linkScanPhotoBtn.addEventListener('click', () => elements.linkScanPhoto.click());
+    elements.linkScanPhoto.addEventListener('change', async () => {
+        const file = elements.linkScanPhoto.files[0];
+        elements.linkScanPhoto.value = '';
+        if (!file) return;
+        await inspectLinkCode(await decodeQrFromFile(file).catch(() => '') || '');
+    });
+    elements.linkCancelBtn.addEventListener('click', () => closeModal(elements.linkScanModal));
+    elements.linkApproveBtn.addEventListener('click', () => withBusy(elements.linkApproveBtn, async () => {
+        const data = await api('/api/link/approve', { method: 'POST', body: JSON.stringify({ token: pendingLinkToken }) });
+        if (!data.success) return showToast(data.message, 'error');
+        closeModal(elements.linkScanModal);
+        showToast('Устройство подключено', 'success');
+    }));
 }
 
 /* --- Исчезающие сообщения ---------------------------------------------------
