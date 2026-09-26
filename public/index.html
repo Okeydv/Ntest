@@ -256,6 +256,11 @@
             </div>
 
             <div id="chat-messages" class="chat-messages"></div>
+            <!-- Новое, пока читаешь историю: не прокручиваем, а показываем кнопку. -->
+            <button id="jump-down" class="jump-down" type="button" aria-label="К новым сообщениям" hidden>
+                <svg class="icon" aria-hidden="true"><use href="#i-back"/></svg>
+                <span id="jump-down-count" class="jump-down-count"></span>
+            </button>
             <!-- Обрыв сокета: пока его нет, новые сообщения не приходят — это должно быть видно. -->
             <div id="connection-status" class="connection-status" role="status" hidden>
                 <span class="connection-dot" aria-hidden="true"></span>
@@ -620,6 +625,13 @@
             <svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg>
             Удалить
         </button>
+        <div id="reaction-row" class="reaction-row" role="group" aria-label="Реакция">
+            <button class="menu-item reaction-choice" role="menuitem" type="button" data-emoji="👍" aria-label="Реакция 👍">👍</button>
+            <button class="menu-item reaction-choice" role="menuitem" type="button" data-emoji="❤️" aria-label="Реакция ❤️">❤️</button>
+            <button class="menu-item reaction-choice" role="menuitem" type="button" data-emoji="😂" aria-label="Реакция 😂">😂</button>
+            <button class="menu-item reaction-choice" role="menuitem" type="button" data-emoji="😢" aria-label="Реакция 😢">😢</button>
+            <button class="menu-item reaction-choice" role="menuitem" type="button" data-emoji="🔥" aria-label="Реакция 🔥">🔥</button>
+        </div>
     </div>
 
     <!-- Тост — popover="manual": так он в верхнем слое и виден поверх открытого окна. -->

@@ -748,6 +748,17 @@ module.exports = function registerMessageRoutes(app, ctx) {
     // эмодзи из этого списка.
     const ALLOWED_REACTION_EMOJIS = new Set(['👍', '❤️', '😂', '😢', '🔥']);
 
+    // Реакции сообщения — всем в его чате: раньше они менялись только у
+    // поставившего и то после перезагрузки.
+    async function broadcastReactions(messageId) {
+        const message = await dbGet('SELECT chat_id, room_id FROM messages WHERE id = $1', [messageId]);
+        if (!message) return;
+        const rows = await dbAll('SELECT DISTINCT emoji FROM reactions WHERE message_id = $1', [messageId]);
+        io.to(getSocketRoomKey(message.chat_id, message.room_id)).emit('reactionsChanged', {
+            id: Number(messageId), chat_id: message.chat_id, room_id: message.room_id, reactions: rows.map(r => r.emoji),
+        });
+    }
+
     app.post('/api/reactions', async (req, res) => {
         if (!req.session.userId) return res.json({ success: false, message: 'Не авторизован' });
         const { messageId, emoji } = req.body;
@@ -760,6 +771,7 @@ module.exports = function registerMessageRoutes(app, ctx) {
             }
             await pool.query('INSERT INTO reactions (message_id, user_id, emoji) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING', [messageId, req.session.userId, emoji]);
             res.json({ success: true });
+            await broadcastReactions(messageId);
         } catch (error) {
             log.error({ err: error }, 'Add reaction error');
             res.status(500).json({ success: false, message: 'Ошибка добавления реакции' });
@@ -778,11 +790,12 @@ module.exports = function registerMessageRoutes(app, ctx) {
             if (!(await userCanAccessMessage(req.session.userId, messageId))) {
                 return res.json({ success: false, message: 'Сообщение недоступно' });
             }
-            await dbRun(
+            const removed = await dbRun(
                 'DELETE FROM reactions WHERE message_id = $1 AND user_id = $2 AND emoji = $3',
                 [messageId, req.session.userId, emoji]
             );
-            res.json({ success: true });
+            res.json({ success: true, removed: removed.rowCount > 0 });
+            if (removed.rowCount > 0) await broadcastReactions(messageId);
         } catch (error) {
             log.error({ err: error }, 'Remove reaction error');
             res.status(500).json({ success: false, message: 'Ошибка удаления реакции' });

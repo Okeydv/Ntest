@@ -201,7 +201,7 @@ check('правый клик открывает меню у точки клик�
     await menuOpen() && Math.abs(menuBox.x - (box.x + 20)) < 16 && Math.abs(menuBox.y - (box.y + 10)) < 16,
     JSON.stringify(menuBox));
 const visibleItems = await page.evaluate(() =>
-    [...document.querySelectorAll('#message-menu .menu-item')].filter(b => b.offsetParent !== null).map(b => b.id));
+    [...document.querySelectorAll('#message-menu .menu-item[id]')].filter(b => b.offsetParent !== null).map(b => b.id));
 check('у чужого сообщения нет «Редактировать» и «Удалить»', JSON.stringify(visibleItems) === '["reply-message-btn"]',
     JSON.stringify(visibleItems));
 await page.mouse.click(5, 300);
@@ -441,7 +441,7 @@ const botReply = page.locator('#chat-messages .message.received').last();
 const botBox = await botReply.boundingBox();
 await page.mouse.click(botBox.x + 20, botBox.y + 10, { button: 'right' });
 const botMenu = await page.evaluate(() =>
-    [...document.querySelectorAll('#message-menu .menu-item')].filter(b => b.offsetParent !== null).map(b => b.id));
+    [...document.querySelectorAll('#message-menu .menu-item[id]')].filter(b => b.offsetParent !== null).map(b => b.id));
 check('у ответа бота нет «Редактировать» и «Удалить»', JSON.stringify(botMenu) === '["reply-message-btn"]', JSON.stringify(botMenu));
 await page.keyboard.press('Escape');
 

@@ -16,6 +16,9 @@ const elements = {
     registerBtn: document.getElementById('register-btn'),
     anonymousLoginBtn: document.getElementById('anonymous-login-btn'),
     logoutBtn: document.getElementById('logout-btn'),
+    jumpDown: document.getElementById('jump-down'),
+    jumpDownCount: document.getElementById('jump-down-count'),
+    reactionRow: document.getElementById('reaction-row'),
     securitySection: document.getElementById('security-section'),
     securityList: document.getElementById('security-list'),
     connectionStatus: document.getElementById('connection-status'),
@@ -1168,6 +1171,11 @@ function setupEventListeners() {
         currentUser = null;
         currentChatId = null;
         currentRoomId = null;
+        // Черновики — чужому, кто войдёт следом, они ни к чему.
+        chatViews.clear();
+        elements.messageInput.value = '';
+        clearReply();
+        editingMessageId = null;
         showToast('Вы вышли из аккаунта', 'info');
         showAuth();
     };
@@ -1366,6 +1374,17 @@ function setupEventListeners() {
     // клавиатур), не должен отправлять недописанное сообщение: isComposing,
     // а keyCode 229 — для Safari, где isComposing на этом Enter уже false.
     elements.messageInput.addEventListener('keydown', (e) => {
+        // Esc отменяет правку, а если её нет — ответ.
+        if (e.key === 'Escape' && (editingMessageId || replyToMessageId)) {
+            e.preventDefault();
+            if (editingMessageId) {
+                editingMessageId = null;
+                elements.messageInput.value = '';
+            } else {
+                clearReply();
+            }
+            return;
+        }
         if (e.key !== 'Enter' || e.isComposing || e.keyCode === 229) return;
         e.preventDefault();
         sendMessage();
@@ -1394,6 +1413,13 @@ function setupEventListeners() {
     elements.deleteMessageBtn.addEventListener('click', () => {
         hideMessageMenu();
         scheduleDelete(elements.messageMenu.dataset.forMessage);
+    });
+
+    elements.reactionRow.addEventListener('click', event => {
+        const choice = event.target.closest('.reaction-choice');
+        if (!choice) return;
+        hideMessageMenu();
+        toggleReaction(elements.messageMenu.dataset.forMessage, choice.dataset.emoji);
     });
 
     let searchTimeout;
@@ -1440,6 +1466,7 @@ function setupEventListeners() {
     setupMessageKeyboard();
     setupHistoryPaging();
     setupReadMarks();
+    setupFeed();
     setupConnectionStatus();
     setupDeviceLinking();
     setupMobileScreens();
@@ -1580,7 +1607,10 @@ async function loadChats() {
 
     // for...of, а не forEach: превью зашифрованных чатов лежит в IndexedDB,
     // и его чтение асинхронно.
+    chatsMeta.clear();
     for (const chat of data.chats) {
+        chatsMeta.set(chat.id, chat);
+        for (const id of chat.peer_ids || []) peerOnline.set(Number(id), (chat.online_ids || []).includes(id));
         // Открытый чат, который сейчас на экране, — прочитан, даже если
         // отметка ещё в пути.
         if (chat.id === currentChatId && document.visibilityState === 'visible') chat.unread = 0;
@@ -1646,6 +1676,8 @@ function backToChatList() {
 let lastOpenChat = null;
 
 async function openChat(chatId, roomId, name, avatar, online, isBot) {
+    const reopening = currentChatId === chatId;
+    if (!reopening) rememberChatView();
     lastOpenChat = [chatId, roomId, name, avatar, online, isBot];
     // В комнату сокета — до загрузки истории: пришедшее, пока она
     // грузится, иначе потерялось бы (дубли отсекает appendMessage).
@@ -1664,15 +1696,19 @@ async function openChat(chatId, roomId, name, avatar, online, isBot) {
         item.classList.toggle('active', item.dataset.id === String(chatId));
     });
     elements.chatName.textContent = name;
-    elements.chatStatus.textContent = isBot ? 'Бот' : (online ? 'В сети' : 'Не в сети');
-    elements.chatStatus.className = 'status ' + (online ? 'online' : 'offline');
+    renderChatStatus(isBot, online);
     elements.chatAvatar.textContent = name.charAt(0).toUpperCase();
     elements.chatAvatar.style.background = /^#[0-9a-f]{3,8}$/i.test(avatar || '') ? avatar : DEFAULT_AVATAR;
     elements.chatHeader.classList.remove('hidden');
     elements.messageInputContainer.classList.remove('hidden');
     elements.emptyState.classList.add('hidden');
+    const view = reopening ? captureChatView() : chatViews.get(chatId);
     elements.chatMessages.innerHTML = '';
+    resetNewBelow();
+    if (!reopening) restoreDraft(chatId);
     showChatExpiry(null);
+    // Скелетон — только если история грузится заметно долго.
+    const skeletonTimer = setTimeout(renderMessagesSkeleton, 150);
 
     // Что из этого чата лежит у нас расшифрованным — до запроса истории:
     // сообщение, пришедшее, пока она грузится, не должно попасть под чистку.
@@ -1680,8 +1716,11 @@ async function openChat(chatId, roomId, name, avatar, online, isBot) {
     historyPaging.chatId = chatId;
     historyPaging.hasMore = false;
     historyPaging.oldestId = null;
-    const data = await api(`/api/messages/${chatId}?limit=${historyPageSize}`);
-    if (!data.success || currentChatId !== chatId) return;
+    const data = await api(`/api/messages/${chatId}?limit=${historyPageSize}`).finally(() => clearTimeout(skeletonTimer));
+    if (currentChatId !== chatId) return;
+    elements.chatMessages.querySelectorAll('.message-skeleton').forEach(el => el.remove());
+    elements.chatMessages.removeAttribute('aria-busy');
+    if (!data.success) return;
     const page = data.messages || [];
     showChatExpiry(data.expirySeconds);
     historyPaging.hasMore = Boolean(data.hasMore);
@@ -1696,9 +1735,72 @@ async function openChat(chatId, roomId, name, avatar, online, isBot) {
     // Ключи групп — до сообщений: без них групповые не расшифровать.
     if (e2ee && data.keyEnvelopes) await e2ee.processKeyEnvelopes(data.keyEnvelopes);
     for (const msg of page) await appendMessageDecrypted(msg);
-    scrollToBottom();
+    if (currentChatId !== chatId) return;
     await fillScreenWithHistory();
+    // Куда встать: туда, где были (возврат в чат), к «Непрочитанным» или вниз.
+    const separator = reopening ? null : placeUnreadSeparator(Number(data.chat && data.chat.last_read_id) || 0);
+    if (!restoreChatView(view)) {
+        if (separator) {
+            const list = elements.chatMessages;
+            list.scrollTop += separator.getBoundingClientRect().top - list.getBoundingClientRect().top - 16;
+        }
+        else scrollToBottom();
+    }
     scheduleReadMark();
+}
+
+/* --- Черновик и место в каждом чате ----------------------------------------
+   Недописанное сообщение и место, где читали, остаются за чатом: вернулся —
+   всё как было. Держится только в памяти вкладки: текст черновика не
+   пишется ни на диск, ни на сервер. */
+
+const chatViews = new Map();
+
+// Место в ленте — сообщение у верхнего края и его сдвиг: высота ленты после
+// перезагрузки истории другая, а сообщение то же.
+function captureChatView() {
+    const list = elements.chatMessages;
+    if (atChatBottom()) return { bottom: true };
+    const top = list.getBoundingClientRect().top;
+    const anchor = visibleMessages().find(el => el.getBoundingClientRect().bottom > top);
+    return anchor ? { id: anchor.dataset.messageId, offset: anchor.getBoundingClientRect().top - top } : { bottom: true };
+}
+
+function rememberChatView() {
+    if (!currentChatId) return;
+    chatViews.set(currentChatId, {
+        ...captureChatView(),
+        draft: editingMessageId ? '' : elements.messageInput.value,
+    });
+    // Правка и ответ относятся к сообщению этого чата — в другой не переносятся.
+    editingMessageId = null;
+    clearReply();
+}
+
+function restoreDraft(chatId) {
+    const saved = chatViews.get(chatId);
+    elements.messageInput.value = saved ? saved.draft || '' : '';
+}
+
+function restoreChatView(view) {
+    if (!view || view.bottom) return false;
+    const anchor = elements.chatMessages.querySelector(`.message[data-message-id="${view.id}"]`);
+    if (!anchor) return false;
+    const list = elements.chatMessages;
+    list.scrollTop += anchor.getBoundingClientRect().top - list.getBoundingClientRect().top - view.offset;
+    return true;
+}
+
+function renderMessagesSkeleton() {
+    if (elements.chatMessages.querySelector('.message, .message-skeleton')) return;
+    elements.chatMessages.setAttribute('aria-busy', 'true');
+    for (const [side, width] of [['received', 60], ['received', 35], ['sent', 50], ['received', 70], ['sent', 30]]) {
+        const bubble = document.createElement('div');
+        bubble.className = `message-skeleton ${side}`;
+        bubble.style.setProperty('--w', `${width}%`);
+        bubble.setAttribute('aria-hidden', 'true');
+        elements.chatMessages.appendChild(bubble);
+    }
 }
 
 /* --- Привязка устройства по QR ---------------------------------------------
@@ -1813,6 +1915,178 @@ function setupDeviceLinking() {
     }));
 }
 
+/* --- Лента: «↓», непрочитанные, группировка, цитаты -------------------------
+   Новое, пока читаешь историю, не выдёргивает вниз — появляется «↓» со
+   счётчиком. При открытии чата лента встаёт на разделитель
+   «Непрочитанные». Подряд идущие сообщения одного автора (в пределах
+   5 минут) собираются в группу. Цитата ведёт к исходному сообщению. */
+
+let newBelow = 0;
+
+function noteNewBelow() {
+    newBelow++;
+    elements.jumpDownCount.textContent = newBelow > 99 ? '99+' : String(newBelow);
+    elements.jumpDown.hidden = false;
+}
+
+function resetNewBelow() {
+    newBelow = 0;
+    elements.jumpDown.hidden = true;
+    elements.jumpDownCount.textContent = '';
+}
+
+function setupFeed() {
+    elements.jumpDown.addEventListener('click', () => {
+        scrollToBottom({ smooth: true });
+        resetNewBelow();
+    });
+    elements.chatMessages.addEventListener('scroll', () => {
+        if (atChatBottom()) resetNewBelow();
+        else if (!newBelow) elements.jumpDown.hidden = elements.chatMessages.scrollHeight - elements.chatMessages.scrollTop
+            - elements.chatMessages.clientHeight < 600;
+    }, { passive: true });
+    elements.chatMessages.addEventListener('click', event => {
+        const quote = event.target.closest('.reply-to[data-reply-id]');
+        if (quote) goToMessage(Number(quote.dataset.replyId));
+        const chip = event.target.closest('.reaction[data-emoji]');
+        const bubble = chip && chip.closest('.message[data-message-id]');
+        if (bubble && !currentChatIsBot) toggleReaction(bubble.dataset.messageId, chip.dataset.emoji);
+    });
+    elements.chatMessages.addEventListener('keydown', event => {
+        const quote = event.target.closest && event.target.closest('.reply-to[data-reply-id]');
+        if (quote && (event.key === 'Enter' || event.key === ' ')) {
+            event.preventDefault();
+            goToMessage(Number(quote.dataset.replyId));
+        }
+    });
+    socket.on('presence', ({ user_id, online }) => {
+        peerOnline.set(Number(user_id), Boolean(online));
+        const chat = currentChatMeta();
+        if (chat && (chat.peer_ids || []).map(Number).includes(Number(user_id))) renderChatStatus(chat.is_bot);
+    });
+    socket.on('reactionsChanged', ({ id, reactions }) => {
+        const bubble = elements.chatMessages.querySelector(`.message[data-message-id="${id}"]`);
+        if (bubble) renderReactions(bubble, reactions);
+    });
+}
+
+// «В сети», если в сети хоть кто-то из собеседников. В группе — ещё и
+// сколько в ней участников.
+const chatsMeta = new Map();
+const peerOnline = new Map();
+const currentChatMeta = () => chatsMeta.get(currentChatId) || null;
+
+function renderChatStatus(isBot, online = false) {
+    const chat = currentChatMeta();
+    const status = elements.chatStatus;
+    if (chat) online = (chat.peer_ids || []).some(id => peerOnline.get(Number(id)));
+    if (isBot) {
+        status.textContent = 'Бот';
+        status.className = 'status online';
+        return;
+    }
+    if (chat && chat.room_id && !chat.peer_count) {
+        status.textContent = 'Пока никого';
+        status.className = 'status offline';
+        return;
+    }
+    const members = chat ? chat.peer_count + 1 : 0;
+    const group = members > 2 ? `${members} ${['участник', 'участника', 'участников'][pluralForm(members)]} · ` : '';
+    status.textContent = group + (online ? 'в сети' : 'не в сети');
+    if (!group) status.textContent = online ? 'В сети' : 'Не в сети';
+    status.className = 'status ' + (online ? 'online' : 'offline');
+}
+
+async function goToMessage(id) {
+    let bubble = elements.chatMessages.querySelector(`.message[data-message-id="${id}"]`);
+    // Исходное сообщение старше загруженного — догружаем страницы.
+    for (let i = 0; !bubble && historyPaging.hasMore && i < 20; i++) {
+        await loadOlderMessages();
+        bubble = elements.chatMessages.querySelector(`.message[data-message-id="${id}"]`);
+    }
+    if (!bubble || bubble.hidden) {
+        showToast('Исходное сообщение не найдено — возможно, его удалили', 'info');
+        return;
+    }
+    bubble.scrollIntoView({ block: 'center', behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
+    bubble.classList.remove('is-highlighted');
+    bubble.getBoundingClientRect();
+    bubble.classList.add('is-highlighted');
+    setTimeout(() => bubble.classList.remove('is-highlighted'), 1600);
+    bubble.focus({ preventScroll: true });
+}
+
+const prefersReducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+// Подряд идущие сообщения одного автора в пределах 5 минут — группа:
+// меньше отступ, без повторного имени.
+const GROUP_GAP_MS = 5 * 60 * 1000;
+function regroupMessages() {
+    let prev = null;
+    for (const el of elements.chatMessages.querySelectorAll('.message, .message-system, .unread-separator, .day-separator')) {
+        const bubble = el.classList.contains('message') && !el.hidden ? el : null;
+        const same = bubble && prev && prev.dataset.senderKey === bubble.dataset.senderKey
+            && Math.abs(Number(bubble.dataset.at) - Number(prev.dataset.at)) < GROUP_GAP_MS;
+        if (bubble) bubble.classList.toggle('is-continuation', Boolean(same));
+        if (!el.hidden) prev = bubble;
+    }
+}
+
+// Разделитель «Непрочитанные» — перед первым чужим сообщением после
+// прочитанного. Возвращает его или null.
+function placeUnreadSeparator(lastReadId) {
+    elements.chatMessages.querySelector('.unread-separator')?.remove();
+    const first = [...elements.chatMessages.querySelectorAll('.message.received[data-message-id]')]
+        .find(el => Number(el.dataset.messageId) > lastReadId);
+    if (!first) return null;
+    const separator = document.createElement('div');
+    separator.className = 'unread-separator';
+    separator.setAttribute('role', 'separator');
+    const label = document.createElement('span');
+    label.textContent = 'Непрочитанные';
+    separator.appendChild(label);
+    first.before(separator);
+    regroupMessages();
+    return separator;
+}
+
+// Реакции пузыря: новые появляются с лёгким увеличением.
+function renderReactions(bubble, reactions) {
+    const content = bubble.querySelector('.message-content');
+    if (!content) return;
+    let box = content.querySelector('.reactions');
+    const before = new Set(box ? [...box.children].map(c => c.dataset.emoji) : []);
+    if (!reactions.length) {
+        box?.remove();
+        return;
+    }
+    if (!box) {
+        box = document.createElement('div');
+        box.className = 'reactions';
+        content.appendChild(box);
+    }
+    box.replaceChildren(...reactions.map(emoji => reactionChip(emoji, !before.has(emoji))));
+}
+
+function reactionChip(emoji, fresh = false) {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'reaction' + (fresh ? ' is-new' : '');
+    chip.dataset.emoji = emoji;
+    chip.textContent = emoji;
+    chip.setAttribute('aria-label', `Реакция ${emoji}: нажмите, чтобы поставить или снять`);
+    chip.tabIndex = -1;
+    return chip;
+}
+
+// Поставить реакцию или снять свою.
+async function toggleReaction(messageId, emoji) {
+    const removed = await api(`/api/reactions/${messageId}/${encodeURIComponent(emoji)}`, { method: 'DELETE' });
+    if (removed && removed.success && removed.removed) return;
+    const added = await api('/api/reactions', { method: 'POST', body: JSON.stringify({ messageId: Number(messageId), emoji }) });
+    if (!added.success) showToast(added.message, 'error');
+}
+
 /* --- Соединение -------------------------------------------------------------
    Сокет рвётся (сон ноутбука, смена сети, перезапуск сервера) и сам
    переподключается. Пока его нет, новое не приходит — это видно плашкой.
@@ -1888,8 +2162,12 @@ const STATUS_RANK = { sent: 0, delivered: 1, read: 2 };
 
 function setMessageStatus(span, status) {
     const [mark, label] = STATUS_VIEW[status] || STATUS_VIEW.sent;
+    const changed = span.isConnected && span.textContent && span.textContent !== mark;
     span.dataset.status = status in STATUS_VIEW ? status : 'sent';
     span.textContent = mark;
+    // ✓ → ✓✓ не скачком: новая отметка проявляется. Только прозрачность —
+    // её оставляем и при «уменьшить движение».
+    if (changed && span.animate) span.animate([{ opacity: 0.2 }, { opacity: 1 }], { duration: 200, easing: 'ease-out' });
     span.title = label;
     span.setAttribute('aria-label', label);
 }
@@ -2146,7 +2424,10 @@ function appendMessage(message, { fresh = false, container = elements.chatMessag
     const el = createMessageElement(message);
     if (fresh) el.classList.add('is-new');
     dayGroup(messageDate(message), container).appendChild(el);
-    if (container === elements.chatMessages) refreshMessageTabStop();
+    if (container === elements.chatMessages) {
+        refreshMessageTabStop();
+        regroupMessages();
+    }
 }
 
 /*
@@ -2166,6 +2447,7 @@ function prependMessages(batch) {
     }
     list.prepend(...batch.children);
     refreshMessageTabStop();
+    regroupMessages();
 }
 
 /**
@@ -2178,6 +2460,7 @@ function removeMessageElement(el) {
     el.remove();
     if (group && !group.querySelector('.message, .message-system')) group.remove();
     refreshMessageTabStop();
+    regroupMessages();
 }
 
 /* --- Клавиатура в переписке ----------------------------------------------
@@ -2394,6 +2677,9 @@ function createMessageElement(message) {
     div.className = `message ${isMine ? 'sent' : 'received'}`;
     div.dataset.messageId = message.id;
     if (message.sender_username) div.dataset.sender = message.sender_username;
+    div.dataset.senderKey = `${isOwnMessage(message) ? 'me' : message.user_id}:${message.sent}`;
+    const at = messageDate(message);
+    div.dataset.at = String(at ? at.getTime() : 0);
     div.tabIndex = -1;
 
     const contentDiv = document.createElement('div');
@@ -2421,6 +2707,13 @@ function createMessageElement(message) {
         if (message.reply_to) {
             const replyDiv = document.createElement('div');
             replyDiv.className = 'reply-to';
+            // Нажатие ведёт к исходному сообщению (setupFeed).
+            if (message.reply_to.id && !message.reply_to.deleted) {
+                replyDiv.dataset.replyId = message.reply_to.id;
+                replyDiv.setAttribute('role', 'link');
+                replyDiv.tabIndex = -1;
+                replyDiv.title = 'Показать исходное сообщение';
+            }
             const author = document.createElement('span');
             author.className = 'reply-to-author';
             author.textContent = message.reply_to.sender_username || 'Неизвестно';
@@ -2463,12 +2756,7 @@ function createMessageElement(message) {
         if (message.reactions && message.reactions.length > 0) {
             const reactionsDiv = document.createElement('div');
             reactionsDiv.className = 'reactions';
-            message.reactions.forEach(r => {
-                const span = document.createElement('span');
-                span.className = 'reaction';
-                span.textContent = r;
-                reactionsDiv.appendChild(span);
-            });
+            reactionsDiv.append(...message.reactions.map(r => reactionChip(r)));
             contentDiv.appendChild(reactionsDiv);
         }
     }
@@ -2597,6 +2885,8 @@ function showMessageMenu(x, y, message, trigger = null) {
     // поэтому её нет вовсе — удалить и отправить заново можно.
     elements.editMessageBtn.hidden = !(isMine && !message.encrypted);
     elements.deleteMessageBtn.hidden = !isMine;
+    // С ботом реакции ни к чему: ответить некому.
+    elements.reactionRow.hidden = currentChatIsBot;
 
     menuTrigger = trigger;
     if (menu.matches(':popover-open')) menu.hidePopover();
@@ -2677,6 +2967,7 @@ function collapseMessage(el) {
         el.classList.remove('is-collapsing');
         el.style.height = '';
         refreshMessageTabStop();
+        regroupMessages();
     }, COLLAPSE_MS);
 }
 
@@ -2686,6 +2977,7 @@ function expandMessage(el) {
     el.style.height = '';
     el.hidden = false;
     refreshMessageTabStop();
+    regroupMessages();
 }
 
 function scheduleDelete(messageId) {
@@ -2737,8 +3029,12 @@ function flushPendingDeletes() {
 
 async function handleNewMessage(message) {
     if (message.chat_id == currentChatId || message.room_id == currentRoomId) {
+        // Читают историю — не выдёргиваем вниз, а показываем «↓» со
+        // счётчиком. У конца переписки — прокручиваем, как раньше.
+        const wasAtBottom = atChatBottom();
         await appendMessageDecrypted(message, { fresh: true });
-        scrollToBottom();
+        if (wasAtBottom || isOwnMessage(message)) scrollToBottom();
+        else noteNewBelow();
         scheduleReadMark();
     } else {
         // Чужой чат: расшифровываем ради превью в списке, рисовать
@@ -3060,6 +3356,8 @@ async function deleteChat() {
         if (e2ee) await e2ee.forgetConversation(leaving);
         showToast('Чат удалён', 'success');
         closeModal(elements.chatMenuModal);
+        chatViews.delete(currentChatId);
+        elements.messageInput.value = '';
         currentChatId = null;
         currentRoomId = null;
         elements.chatHeader.classList.add('hidden');
@@ -3125,8 +3423,10 @@ function chatItemElement(chat, previewText) {
     return div;
 }
 
-function scrollToBottom() {
-    elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
+function scrollToBottom({ smooth = false } = {}) {
+    const list = elements.chatMessages;
+    if (smooth && !prefersReducedMotion()) list.scrollTo({ top: list.scrollHeight, behavior: 'smooth' });
+    else list.scrollTop = list.scrollHeight;
 }
 
 

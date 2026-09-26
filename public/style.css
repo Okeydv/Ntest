@@ -1492,6 +1492,113 @@ input.is-invalid:focus {
     line-height: 1.4;
 }
 
+/* Цитата ведёт к исходному сообщению. */
+.reply-to[data-reply-id] { cursor: pointer; }
+@media (hover: hover) {
+    .reply-to[data-reply-id]:hover { background: var(--bubble-inset-hover); }
+}
+
+/* Новая реакция чуть вырастает — 120 мс, без пружины. */
+.reaction.is-new { animation: reactionIn 120ms var(--ease) both; }
+@keyframes reactionIn {
+    from { opacity: 0; transform: scale(0.9); }
+    to { opacity: 1; transform: none; }
+}
+
+/* Подряд идущие сообщения одного автора — группа: ближе друг к другу,
+   углы со стороны автора скруглены меньше. */
+.message.is-continuation { margin-top: -0.5rem; }
+.message.sent.is-continuation { border-top-right-radius: var(--r-xs); }
+.message.received.is-continuation { border-top-left-radius: var(--r-xs); }
+
+/* Переход по цитате: исходное сообщение коротко подсвечивается. */
+.message.is-highlighted { animation: highlight 1.6s var(--ease); }
+@keyframes highlight {
+    0%, 40% { box-shadow: 0 0 0 3px var(--accent); }
+    100% { box-shadow: 0 0 0 3px transparent; }
+}
+
+.unread-separator {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    color: var(--accent);
+}
+.unread-separator::before,
+.unread-separator::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: currentColor;
+    opacity: 0.4;
+}
+
+/* «↓» к новым: висит над лентой у поля ввода и места в раскладке не
+   занимает (отрицательный отступ сверху равен его высоте с зазором). */
+.jump-down {
+    position: relative;
+    z-index: 2;
+    flex: none;
+    align-self: flex-end;
+    display: grid;
+    place-items: center;
+    width: 2.75rem;
+    height: 2.75rem;
+    margin: -3.5rem 1.25rem 0.75rem 0;
+    border: 1px solid var(--border);
+    border-radius: 50%;
+    background: var(--layer-3);
+    color: var(--text);
+    box-shadow: var(--sh-1);
+    cursor: pointer;
+    animation: fadeIn var(--dur-2) var(--ease) both;
+}
+.jump-down .icon { width: 1.25rem; height: 1.25rem; transform: rotate(-90deg); }
+.jump-down-count {
+    position: absolute;
+    top: -0.375rem;
+    right: -0.25rem;
+    min-width: 1.25rem;
+    padding: 0 0.3rem;
+    border-radius: var(--r-pill);
+    background: var(--accent-strong);
+    color: var(--accent-ink);
+    font-size: 0.6875rem;
+    font-weight: 700;
+    line-height: 1.25rem;
+    text-align: center;
+}
+.jump-down-count:empty { display: none; }
+
+/* Скелетон ленты, пока грузится история. */
+.message-skeleton {
+    width: var(--w, 50%);
+    max-width: min(70%, 34rem);
+    height: 2.75rem;
+    border-radius: var(--r-xl);
+    background: var(--skeleton-base);
+}
+.message-skeleton.received { align-self: flex-start; }
+.message-skeleton.sent { align-self: flex-end; }
+
+/* Реакции в меню сообщения — одной строкой под пунктами. */
+.reaction-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.125rem;
+    margin-top: 0.25rem;
+    padding-top: 0.25rem;
+    border-top: 1px solid var(--border);
+}
+.reaction-row .reaction-choice {
+    justify-content: center;
+    width: auto;
+    padding: 0.375rem 0.5rem;
+    font-size: 1.125rem;
+}
+
 .reply-to-author {
     display: block;
     font-size: 0.6875rem;
@@ -2188,18 +2295,43 @@ dialog.modal .toast { top: calc(1rem + env(safe-area-inset-top, 0px)); bottom: a
    14. НАСТРОЙКИ ДВИЖЕНИЯ
    ========================================================================= */
 
+/* «Уменьшить движение» убирает движение, а не плавность: сдвиги,
+   увеличения и прокрутка пропадают, а появление и исчезание остаются
+   короткими затуханиями — без них всё менялось бы скачком. */
 @media (prefers-reduced-motion: reduce) {
     *,
     *::before,
     *::after {
-        animation-duration: 0.01ms !important;
         animation-iteration-count: 1 !important;
-        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
     }
 
-    /* Блик скелетона — единственная анимация, которая несёт смысл
-       («данные грузятся»), поэтому вместо бега он просто гаснет. */
+    .message.is-new,
+    .reaction.is-new,
+    .auth-container,
+    .modal-content,
+    .context-menu,
+    .toast {
+        animation-name: fadeIn !important;
+        animation-duration: var(--dur-1) !important;
+    }
+
+    /* Нажатия и наведения больше не увеличивают и не сдвигают. */
+    .btn, .icon-btn, .message-image, .color-option, .reaction { transform: none !important; }
+    .message.is-highlighted { animation-duration: 1s; }
+
+    /* Блик скелетона — вместо бега он просто гаснет. */
     .skeleton::after { display: none; }
+}
+
+/* На телефоне список не уезжает вбок, а гаснет. */
+@media (prefers-reduced-motion: reduce) and (max-width: 640px) {
+    .sidebar { transition: opacity var(--dur-2) var(--ease), visibility 0s; }
+    .sidebar.hidden-mobile {
+        transform: none;
+        opacity: 0;
+        transition: opacity var(--dur-2) var(--ease), visibility 0s var(--dur-2);
+    }
 }
 
 /* ============================================================================

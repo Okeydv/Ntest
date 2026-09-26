@@ -8,6 +8,7 @@ const { normalizeExpiry, expiryLabel } = require('../lib/disappearing-messages')
 const { joinLimiter } = require('../lib/rate-limits');
 const { onlyStrings, BAD_FIELDS, getCurrentTime, generateInviteCodeAsync } = require('../lib/helpers');
 const { SCOPE, UNREAD_COUNT_SQL, broadcastReceipts } = require('../lib/read-state');
+const { isOnline } = require('../lib/presence');
 
 
 module.exports = function registerChatRoutes(app, ctx) {
@@ -17,7 +18,9 @@ module.exports = function registerChatRoutes(app, ctx) {
         if (!req.session.userId) return res.json({ success: false, message: 'Не авторизован' });
         try {
             const chats = await dbAll(`
-                SELECT c.id, c.name, c.avatar, c.online, c.is_bot, c.room_id, r.code as invite_code,
+                SELECT c.id, c.name, c.avatar, c.is_bot, c.room_id, r.code as invite_code,
+                       (SELECT array_agg(rp.user_id) FROM room_participants rp
+                        WHERE rp.room_id = c.room_id AND rp.user_id <> c.user_id) AS peers,
                        (SELECT text FROM messages WHERE ((c.room_id IS NOT NULL AND room_id = c.room_id) OR (c.room_id IS NULL AND chat_id = c.id)) AND deleted = 0 ORDER BY id DESC LIMIT 1) as last_message,
                        (SELECT created_at FROM messages WHERE ((c.room_id IS NOT NULL AND room_id = c.room_id) OR (c.room_id IS NULL AND chat_id = c.id)) AND deleted = 0 ORDER BY id DESC LIMIT 1) as last_at,
                        ${UNREAD_COUNT_SQL} as unread, c.last_read_id
@@ -26,7 +29,17 @@ module.exports = function registerChatRoutes(app, ctx) {
                 WHERE c.user_id = $1
                 ORDER BY (SELECT MAX(id) FROM messages WHERE ((c.room_id IS NOT NULL AND room_id = c.room_id) OR (c.room_id IS NULL AND chat_id = c.id))) DESC NULLS LAST
             `, [req.session.userId]);
-            res.json({ success: true, chats: chats.map(c => ({ ...c, unread: Number(c.unread) })) });
+            // «В сети» — если в сети хоть кто-то из собеседников; сколько их
+            // всего — для подписи группы. Кто из них в сети сейчас — чтобы
+            // клиент дальше вёл статус по событиям presence.
+            res.json({ success: true, chats: chats.map(({ peers, ...c }) => ({
+                ...c,
+                unread: Number(c.unread),
+                peer_count: (peers || []).length,
+                online: (peers || []).some(isOnline) ? 1 : 0,
+                peer_ids: peers || [],
+                online_ids: (peers || []).filter(isOnline),
+            })) });
 
             // Список чатов с превью на экране — значит, сообщения до этого
             // устройства дошли: «доставлено» у собеседников.
