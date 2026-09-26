@@ -595,7 +595,35 @@ async function initDatabase() {
     // Момент отправки с часовым поясом. Колонка time — строка «ЧЧ:ММ» в поясе
     // СЕРВЕРА: у собеседника в другом поясе время было неверным, а дня не
     // было вовсе. Форматирует теперь клиент, в своём поясе.
-    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();`);
+    //
+    // Колонка добавляется БЕЗ значения по умолчанию, и только потом ей
+    // ставится DEFAULT now(): ADD COLUMN ... DEFAULT now() записал бы всем
+    // старым сообщениям время самой миграции — вся прежняя история
+    // оказалась бы отправленной «сегодня в 14:03». Настоящей даты у старых
+    // сообщений нет (была только строка «ЧЧ:ММ»), поэтому у них NULL, и
+    // клиент показывает прежнюю строку без дня.
+    await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ;`);
+    await pool.query(`ALTER TABLE messages ALTER COLUMN created_at DROP NOT NULL;`);
+    await pool.query(`ALTER TABLE messages ALTER COLUMN created_at SET DEFAULT now();`);
+    // Базам, где прежняя миграция уже прошла, возвращаем NULL тем, кому она
+    // проставила своё время. Их легко узнать: now() в одной команде одно на
+    // все строки, так что у них одинаковое и самое раннее значение, а
+    // обычные сообщения вставляются по одному и так не совпадают. Один раз.
+    await pool.query(`CREATE TABLE IF NOT EXISTS schema_flags (
+        name TEXT PRIMARY KEY,
+        done_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );`);
+    const repair = await pool.query(
+        `INSERT INTO schema_flags (name) VALUES ('messages_created_at_backfill_undone')
+         ON CONFLICT DO NOTHING RETURNING name`);
+    if (repair.rowCount) {
+        const undone = await pool.query(
+            `WITH first AS (SELECT min(created_at) AS t FROM messages)
+             UPDATE messages SET created_at = NULL
+             WHERE created_at = (SELECT t FROM first)
+               AND (SELECT count(*) FROM messages WHERE created_at = (SELECT t FROM first)) > 1`);
+        if (undone.rowCount) console.log(`[migrate] created_at: снято время миграции у ${undone.rowCount} старых сообщений`);
+    }
 
     // Миграция: если таблицы chats/messages были созданы ДО появления комнат,
     // CREATE TABLE IF NOT EXISTS их не тронет и колонки room_id не будет.
@@ -2424,10 +2452,11 @@ app.post('/api/messages/file', upload.single('file'), async (req, res) => {
         const messageText = text ? String(text).trim() : sanitizedFileName;
 
         const result = await pool.query(
-            'INSERT INTO messages (chat_id, room_id, user_id, text, file_url, file_name, file_type, message_type, sent, time, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id',
+            'INSERT INTO messages (chat_id, room_id, user_id, text, file_url, file_name, file_type, message_type, sent, time, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id, created_at',
             [chatId, roomId, req.session.userId, messageText, fileUrl, sanitizedFileName, fileType, messageType, 1, time, 'sent']
         );
         const messageId = result.rows[0].id;
+        const createdAt = result.rows[0].created_at;
 
         const senderUser = await dbGet('SELECT username, avatar FROM users WHERE id = $1', [req.session.userId]);
         const senderUsername = senderUser ? senderUser.username : '';
@@ -2440,7 +2469,9 @@ app.post('/api/messages/file', upload.single('file'), async (req, res) => {
             id: messageId, chat_id: Number(chatId), room_id: roomId, user_id: req.session.userId,
             sender_username: senderUsername, sender_avatar: senderAvatar,
             text: messageText, file_url: fileUrl, file_name: sanitizedFileName,
-            file_type: fileType, message_type: messageType, sent: true, time, status: 'sent'
+            file_type: fileType, message_type: messageType, sent: true, time, status: 'sent',
+            // Без него получатель не знал дня и показывал время сервера.
+            created_at: createdAt,
         };
         io.to(socketRoomKey).emit('newMessage', fileMessage);
         res.json({ success: true, message: fileMessage });

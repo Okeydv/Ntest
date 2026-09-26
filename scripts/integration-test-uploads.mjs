@@ -127,6 +127,9 @@ check('исходный PDF цел и несёт автора', xrefProblems(pdf
 const up = await upload(A, chatIdA, 'plan.pdf', 'application/pdf', pdf);
 check('PDF загружен', up.json?.success === true, JSON.stringify(up.json)?.slice(0, 100));
 const pdfUrl = up.json.message.file_url;
+const sentAt = new Date(up.json.message.created_at);
+check('сообщение о файле несёт момент отправки (created_at)', !Number.isNaN(sentAt.getTime())
+    && Math.abs(Date.now() - sentAt.getTime()) < 60000, up.json.message.created_at);
 const gotPdf = await download(B, pdfUrl);
 const text = gotPdf.bytes.toString('latin1');
 check('полученный PDF цел: xref указывает на объекты', xrefProblems(gotPdf.bytes).length === 0,
