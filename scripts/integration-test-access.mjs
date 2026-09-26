@@ -220,6 +220,48 @@ check('брошенный анонимный аккаунт удалён убо�
 const liveLeft = await db.query('SELECT id FROM users WHERE id = $1', [liveReg.json.user.id]);
 check('а тот, чья сессия жива, — на месте', liveLeft.rows.length === 1);
 
+/* ------------------------- вход по коду приглашения ------------------------- */
+
+const host = await register('host');
+const guest = await register('guest');
+const room = await host.req('POST', '/api/chats', { name: 'По приглашению' });
+const hostChat = room.json.chat.id;
+const firstCode = (await host.req('GET', `/api/chats/invite/${hostChat}`)).json.code;
+await guest.req('POST', '/api/chats/join', { code: firstCode });
+const systemLines = async () => (await host.req('GET', `/api/messages/${hostChat}`)).json.messages
+    .filter(m => m.message_type === 'system').map(m => m.text);
+check('вошедший по коду виден всем: системное сообщение', (await systemLines()).some(t => t.startsWith('guest вошёл')),
+    JSON.stringify(await systemLines()));
+
+const reset = await host.req('POST', `/api/chats/${hostChat}/invite`, { action: 'reset' });
+check('код можно сменить', reset.json?.success === true && reset.json.code && reset.json.code !== firstCode);
+const late = await register('late');
+const byOld = await late.req('POST', '/api/chats/join', { code: firstCode });
+check('по старому коду больше не войти', byOld.json?.success === false, byOld.json?.message);
+const byNew = await late.req('POST', '/api/chats/join', { code: reset.json.code });
+check('по новому — можно', byNew.json?.success === true);
+check('смена кода видна в переписке', (await systemLines()).some(t => t.includes('сменил(а) код')));
+
+const disabled = await host.req('POST', `/api/chats/${hostChat}/invite`, { action: 'disable' });
+check('приглашение можно отключить', disabled.json?.success === true && disabled.json.code === null);
+const shown = await host.req('GET', `/api/chats/invite/${hostChat}`);
+check('отключённое показывается как отсутствие кода', shown.json?.success === true && shown.json.code === null);
+const lateChats = (await late.req('GET', '/api/chats')).json.chats;
+await late.req('DELETE', `/api/chats/${lateChats.find(c => c.room_id === room.json.chat.room_id).id}`);
+check('выход из чата тоже виден', (await systemLines()).some(t => t.startsWith('late вышел')));
+
+// Перебор кода: после десяти неудачных попыток — стоп.
+const guesser = await register('guesser');
+let lastGuess;
+for (let i = 0; i < 11; i++) lastGuess = await guesser.req('POST', '/api/chats/join', { code: `ZZZZZ${i}` });
+check('перебор кода упирается в лимит', lastGuess.status === 429, `${lastGuess.status} ${lastGuess.json?.message}`);
+const honest = await register('honest');
+for (let i = 0; i < 3; i++) {
+    const r = await host.req('POST', `/api/chats/${hostChat}/invite`, { action: 'reset' });
+    const joined = await honest.req('POST', '/api/chats/join', { code: r.json.code });
+    if (i === 2) check('удачные входы в лимит не считаются', joined.json?.success === true);
+}
+
 /* ------------------------- заголовки ------------------------- */
 
 const plain = await fetch(BASE + '/');

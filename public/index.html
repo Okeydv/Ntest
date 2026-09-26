@@ -419,12 +419,18 @@
                 </button>
             </div>
             <div class="modal-body">
-                <p class="invite-text">Поделитесь этим кодом с друзьями:</p>
-                <div class="invite-code-container">
+                <p id="invite-text" class="invite-text">Поделитесь этим кодом с друзьями:</p>
+                <div id="invite-code-box" class="invite-code-container">
                     <code id="invite-code-display"></code>
                     <button id="copy-invite-btn" class="icon-btn icon-btn-sm" title="Скопировать" aria-label="Скопировать код" type="button">
                         <svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg>
                     </button>
+                </div>
+                <!-- Утёкший код иначе действовал бы вечно. Кто вошёл по коду и кто
+                     его сменил, видно в переписке. -->
+                <div class="invite-actions">
+                    <button id="reset-invite-btn" class="btn btn-secondary" type="button">Сменить код</button>
+                    <button id="disable-invite-btn" class="btn btn-ghost" type="button">Отключить приглашение</button>
                 </div>
             </div>
         </div>

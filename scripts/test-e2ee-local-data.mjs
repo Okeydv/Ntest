@@ -55,7 +55,7 @@ const waitText = (page, text) => page.waitForFunction(t =>
     [...document.querySelectorAll('#chat-messages .message-text')].some(el => el.textContent === t), text, { timeout: 8000 })
     .then(() => true, () => false);
 const idOf = async (roomId, n) => (await db.query(
-    'SELECT id FROM messages WHERE room_id = $1 ORDER BY id LIMIT 1 OFFSET $2', [roomId, n])).rows[0].id;
+    "SELECT id FROM messages WHERE room_id = $1 AND message_type <> 'system' ORDER BY id LIMIT 1 OFFSET $2", [roomId, n])).rows[0].id;
 
 // Всё, что лежит в IndexedDB: тексты сообщений и служебные записи.
 const local = page => page.evaluate(async () => {

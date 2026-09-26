@@ -201,6 +201,28 @@ check('у чужого сообщения нет «Редактировать» 
 await page.mouse.click(5, 300);
 check('клик мимо закрывает меню', !(await menuOpen()));
 
+/* ------------------------- приглашение ------------------------- */
+
+check('вход по коду виден в переписке строкой, не пузырём', await page.evaluate(() =>
+    [...document.querySelectorAll('#chat-messages .message-system')].some(el => el.textContent.startsWith('bob вошёл'))));
+await page.click('#get-chat-code-btn');
+await page.waitForFunction(() => document.getElementById('invite-modal').open);
+const shownCode = await page.textContent('#invite-code-display');
+await page.click('#reset-invite-btn');
+await page.waitForTimeout(700);
+const newCode = await page.textContent('#invite-code-display');
+check('«Сменить код» показывает новый код', /^[A-Z0-9]{6}$/.test(newCode) && newCode !== shownCode, `${shownCode} → ${newCode}`);
+await page.click('#disable-invite-btn');
+await page.waitForTimeout(700);
+check('«Отключить приглашение» прячет код и объясняет', await page.evaluate(() =>
+    document.getElementById('invite-code-box').hidden && document.getElementById('invite-text').textContent.includes('отключено')));
+await page.keyboard.press('Escape');
+await page.waitForTimeout(300);
+check('и то и другое видно в переписке', await page.evaluate(() => {
+    const lines = [...document.querySelectorAll('#chat-messages .message-system')].map(el => el.textContent);
+    return lines.some(t => t.includes('сменил(а) код')) && lines.some(t => t.includes('отключил(а) приглашение'));
+}));
+
 /* ------------------------- удаление с отменой ------------------------- */
 
 const idOf = text => page.evaluate(t => [...document.querySelectorAll('#chat-messages .message')]
@@ -247,9 +269,15 @@ const other = await bob.page.evaluate(async () => {
 });
 await page.goto(BASE, { waitUntil: 'networkidle' });
 await page.evaluate(c => api('/api/chats/join', { method: 'POST', body: JSON.stringify({ code: c }) }), other.code);
-await openRoom(page);
+// Первый — чат «Меню», а не верхний в списке: вверху теперь «Второй», где
+// только что появилось системное «вошёл в чат».
+await page.reload({ waitUntil: 'networkidle' });
+await page.waitForTimeout(1200);
+await page.locator('.chat-item', { hasText: 'Меню' }).click();
+await page.waitForTimeout(900);
 const firstRoom = await page.evaluate(() => currentRoomId);
-const count = async roomId => Number((await db.query('SELECT count(*) FROM messages WHERE room_id = $1 AND deleted = 0', [roomId])).rows[0].count);
+const count = async roomId => Number((await db.query(
+    "SELECT count(*) FROM messages WHERE room_id = $1 AND deleted = 0 AND message_type <> 'system'", [roomId])).rows[0].count);
 const beforeFirst = await count(firstRoom);
 const beforeSecond = await count(other.roomId);
 // Сервер один раз отказывает — отправка падает с ошибкой.

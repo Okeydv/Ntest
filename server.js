@@ -218,6 +218,20 @@ const passwordLimiter = rateLimit({
     message: { success: false, message: 'Слишком много попыток смены пароля. Попробуйте позже.' }
 });
 
+// Код приглашения — 6 знаков из 32: перебором его не подобрать, только если
+// попыток мало. Считаются только неудачные: вошедший по верному коду в
+// лимит не упирается.
+const joinLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: req => `${req.session?.userId || 'guest'}:${rateLimitKeyGenerator(req)}`,
+    skipSuccessfulRequests: true,
+    requestWasSuccessful: (req, res) => res.locals.joined === true,
+    message: { success: false, message: 'Слишком много попыток ввести код. Попробуйте позже.' }
+});
+
 const apiLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 300,
@@ -602,6 +616,9 @@ async function initDatabase() {
     // оказалась бы отправленной «сегодня в 14:03». Настоящей даты у старых
     // сообщений нет (была только строка «ЧЧ:ММ»), поэтому у них NULL, и
     // клиент показывает прежнюю строку без дня.
+    // Приглашение можно отключить — тогда кода нет вовсе (UNIQUE допускает
+    // сколько угодно NULL).
+    await pool.query(`ALTER TABLE rooms ALTER COLUMN code DROP NOT NULL;`);
     await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ;`);
     await pool.query(`ALTER TABLE messages ALTER COLUMN created_at DROP NOT NULL;`);
     await pool.query(`ALTER TABLE messages ALTER COLUMN created_at SET DEFAULT now();`);
@@ -2222,6 +2239,26 @@ app.post('/api/chats', async (req, res) => {
     }
 });
 
+/**
+ * Системное сообщение в комнате: кто вошёл, кто вышел, кто сменил код.
+ * Раньше человек с кодом входил молча, и участники не знали, что их
+ * читает ещё кто-то: его устройства получали ключи автоматически.
+ * Шифровать тут нечего — сервер эти события и так знает.
+ */
+async function postSystemMessage({ roomId, chatId, userId, text }) {
+    const inserted = await pool.query(
+        `INSERT INTO messages (chat_id, room_id, user_id, text, message_type, sent, time, status)
+         VALUES ($1, $2, $3, $4, 'system', 0, $5, 'read') RETURNING id`,
+        [chatId, roomId, userId, text, getCurrentTime()]
+    );
+    const message = await dbGet(
+        `SELECT m.*, u.username AS sender_username, u.avatar AS sender_avatar
+         FROM messages m JOIN users u ON u.id = m.user_id WHERE m.id = $1`,
+        [inserted.rows[0].id]
+    );
+    io.to(`room:${roomId}`).emit('newMessage', message);
+}
+
 app.get('/api/chats/invite/:chatId', async (req, res) => {
     if (!req.session.userId) return res.json({ success: false, message: 'Не авторизован' });
     const chatId = req.params.chatId;
@@ -2231,13 +2268,42 @@ app.get('/api/chats/invite/:chatId', async (req, res) => {
         if (!chat.room_id) return res.json({ success: false, message: 'У этого чата нет кода приглашения' });
         const room = await dbGet('SELECT code FROM rooms WHERE id = $1', [chat.room_id]);
         if (!room) return res.json({ success: false, message: 'Код не найден' });
+        // code: null — приглашение отключено.
         res.json({ success: true, code: room.code });
     } catch (error) {
         res.json({ success: false, message: 'Ошибка получения кода' });
     }
 });
 
-app.post('/api/chats/join', async (req, res) => {
+/**
+ * Сменить код приглашения ({ action: 'reset' }) или отключить приглашение
+ * ({ action: 'disable' }). Утёкший код иначе действовал бы вечно. Может
+ * любой участник — ролей в комнате нет, — и все видят, кто это сделал.
+ */
+app.post('/api/chats/:chatId/invite', async (req, res) => {
+    if (!req.session.userId) return res.json({ success: false, message: 'Не авторизован' });
+    const action = req.body && req.body.action;
+    if (action !== 'reset' && action !== 'disable') {
+        return res.status(400).json({ success: false, message: 'Неизвестное действие' });
+    }
+    try {
+        const chat = await dbGet('SELECT id, room_id FROM chats WHERE id = $1 AND user_id = $2', [req.params.chatId, req.session.userId]);
+        if (!chat || !chat.room_id) return res.json({ success: false, message: 'Чат не найден' });
+        const code = action === 'reset' ? await generateInviteCodeAsync() : null;
+        await dbRun('UPDATE rooms SET code = $1 WHERE id = $2', [code, chat.room_id]);
+        const user = await dbGet('SELECT username FROM users WHERE id = $1', [req.session.userId]);
+        await postSystemMessage({
+            roomId: chat.room_id, chatId: chat.id, userId: req.session.userId,
+            text: `${user.username} ${code ? 'сменил(а) код приглашения' : 'отключил(а) приглашение'}`,
+        });
+        res.json({ success: true, code });
+    } catch (error) {
+        console.error('Invite update error:', error);
+        res.json({ success: false, message: 'Не удалось изменить приглашение' });
+    }
+});
+
+app.post('/api/chats/join', joinLimiter, async (req, res) => {
     if (!req.session.userId) return res.json({ success: false, message: 'Не авторизован' });
     // Код вводят руками и копируют из переписки: регистр, пробелы и дефисы
     // («k7q2 mx», «K7Q-2MX») не должны мешать.
@@ -2250,6 +2316,7 @@ app.post('/api/chats/join', async (req, res) => {
 
         const participant = await dbGet('SELECT id FROM room_participants WHERE room_id = $1 AND user_id = $2', [room.id, req.session.userId]);
         if (participant) {
+            res.locals.joined = true;
             const chat = await dbGet('SELECT id FROM chats WHERE room_id = $1 AND user_id = $2', [room.id, req.session.userId]);
             if (!chat) return res.json({ success: false, message: 'Чат уже добавлен' });
             return res.json({ success: true, chat: { id: chat.id } });
@@ -2264,6 +2331,12 @@ app.post('/api/chats/join', async (req, res) => {
             'INSERT INTO chats (user_id, room_id, name, avatar, online, is_bot) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
             [req.session.userId, room.id, chatName, avatar, 0, 0]
         );
+        res.locals.joined = true;
+        const me = await dbGet('SELECT username FROM users WHERE id = $1', [req.session.userId]);
+        await postSystemMessage({
+            roomId: room.id, chatId: chatResult.rows[0].id, userId: req.session.userId,
+            text: `${me.username} вошёл(ла) в чат по коду приглашения`,
+        });
         res.json({ success: true, chat: { id: chatResult.rows[0].id, name: chatName, avatar, online: 0, is_bot: 0, room_id: room.id, invite_code: room.code } });
     } catch (error) {
         console.error('Join chat error:', error);
@@ -2289,6 +2362,13 @@ app.delete('/api/chats/:chatId', async (req, res) => {
                 [chat.room_id, req.session.userId]
             );
             const remaining = await dbGet('SELECT COUNT(*) as cnt FROM room_participants WHERE room_id = $1', [chat.room_id]);
+            if (remaining && Number(remaining.cnt) > 0) {
+                const me = await dbGet('SELECT username FROM users WHERE id = $1', [req.session.userId]);
+                await postSystemMessage({
+                    roomId: chat.room_id, chatId: null, userId: req.session.userId,
+                    text: `${me.username} вышел(ла) из чата`,
+                });
+            }
             await dbRun('DELETE FROM unread WHERE chat_id = $1', [chatId]);
             await dbRun('DELETE FROM chats WHERE id = $1 AND user_id = $2', [chatId, req.session.userId]);
             if (!remaining || Number(remaining.cnt) === 0) {

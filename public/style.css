@@ -1197,6 +1197,17 @@ input.is-invalid:focus {
     .message-more { opacity: 0.7; }
 }
 
+/* Системное сообщение — кто вошёл, вышел, сменил код. Не пузырь: это
+   событие чата, а не чья-то реплика, и отвечать на него нечего. */
+.message-system {
+    align-self: center;
+    max-width: 80%;
+    padding: 0.25rem 0.75rem;
+    font-size: var(--fs-xs);
+    color: var(--text-3);
+    text-align: center;
+}
+
 /* Разделитель дней. Подпись прилипает к верху, пока листаешь день, —
    так всегда видно, к какому дню относятся сообщения на экране. Та же
    капсула, что у разделителя «или» на входе, но без линий: в переписке
@@ -1580,6 +1591,15 @@ dialog.modal::backdrop {
     font-size: var(--fs-sm);
     color: var(--text-2);
 }
+
+.invite-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-top: 1rem;
+}
+
+.invite-actions .btn { flex: 1 1 auto; }
 
 .invite-code-container {
     display: flex;

@@ -108,9 +108,10 @@ await send(alice, 'второе сегодня');
 check('второе сообщение того же дня разделителя не добавляет', (await separators(alice)).length === 1);
 
 const room = (await db.query("SELECT id FROM rooms ORDER BY id DESC LIMIT 1")).rows[0].id;
-const ids = (await db.query('SELECT id FROM messages WHERE room_id = $1 ORDER BY id', [room])).rows.map(r => r.id);
+const ids = (await db.query("SELECT id FROM messages WHERE room_id = $1 AND message_type <> 'system' ORDER BY id", [room])).rows.map(r => r.id);
 // Первое — «год назад», второе — «вчера». Новое сообщение будет сегодня.
-await db.query("UPDATE messages SET created_at = now() - interval '400 days' WHERE id = $1", [ids[0]]);
+// Системное «вошёл в чат» — туда же, «год назад»: оно было раньше всех.
+await db.query("UPDATE messages SET created_at = now() - interval '400 days' WHERE id = $1 OR (room_id = $2 AND message_type = 'system')", [ids[0], room]);
 await db.query("UPDATE messages SET created_at = now() - interval '1 day' WHERE id = $1", [ids[1]]);
 await send(alice, 'снова сегодня');
 await openRoom(bob);

@@ -79,7 +79,7 @@ await openRoom(bob.page, pair.roomId);
 await db.query('DELETE FROM one_time_prekeys WHERE user_id = $1', [bobInfo.userId]);
 await send(alice.page, 'первое');
 check('Боб прочитал первое сообщение', await waitText(bob.page, 'первое'));
-const firstId = (await db.query('SELECT min(id) AS id FROM messages WHERE room_id = $1', [pair.roomId])).rows[0].id;
+const firstId = (await db.query("SELECT min(id) AS id FROM messages WHERE room_id = $1 AND message_type <> 'system'", [pair.roomId])).rows[0].id;
 const firstType = (await db.query('SELECT envelope_type FROM message_envelopes WHERE message_id = $1', [firstId])).rows[0].envelope_type;
 check('первое сообщение — prekey', Number(firstType) === 1, firstType);
 

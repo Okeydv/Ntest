@@ -50,6 +50,10 @@ const elements = {
     changePasswordBtn: document.getElementById('change-password-btn'),
     savePasswordBtn: document.getElementById('save-password-btn'),
     inviteCodeDisplay: document.getElementById('invite-code-display'),
+    inviteText: document.getElementById('invite-text'),
+    inviteCodeBox: document.getElementById('invite-code-box'),
+    resetInviteBtn: document.getElementById('reset-invite-btn'),
+    disableInviteBtn: document.getElementById('disable-invite-btn'),
     copyInviteBtn: document.getElementById('copy-invite-btn'),
     messageMenu: document.getElementById('message-menu'),
     replyMessageBtn: document.getElementById('reply-message-btn'),
@@ -731,12 +735,21 @@ function setupEventListeners() {
         if (!currentChatId) return;
         const data = await api(`/api/chats/invite/${currentChatId}`);
         if (data.success) {
-            elements.inviteCodeDisplay.textContent = data.code;
+            showInviteCode(data.code);
             openModal(elements.inviteModal);
         } else {
             showToast(data.message, 'error');
         }
     });
+
+    const updateInvite = action => withBusy(action === 'reset' ? elements.resetInviteBtn : elements.disableInviteBtn, async () => {
+        const data = await api(`/api/chats/${currentChatId}/invite`, { method: 'POST', body: JSON.stringify({ action }) });
+        if (!data.success) return showToast(data.message, 'error');
+        showInviteCode(data.code);
+        showToast(data.code ? 'Код сменён, старый больше не действует' : 'Приглашение отключено', 'success');
+    });
+    elements.resetInviteBtn.addEventListener('click', () => updateInvite('reset'));
+    elements.disableInviteBtn.addEventListener('click', () => updateInvite('disable'));
 
     elements.copyInviteBtn.addEventListener('click', () => {
         navigator.clipboard.writeText(elements.inviteCodeDisplay.textContent);
@@ -1364,7 +1377,26 @@ function createFileAttachmentElement(message) {
     return wrapper;
 }
 
+/** Код приглашения в окне; null — приглашение отключено. */
+function showInviteCode(code) {
+    elements.inviteCodeBox.hidden = !code;
+    elements.inviteCodeDisplay.textContent = code || '';
+    elements.inviteText.textContent = code
+        ? 'Поделитесь этим кодом с друзьями:'
+        : 'Приглашение отключено: по старому коду войти нельзя.';
+    elements.resetInviteBtn.textContent = code ? 'Сменить код' : 'Включить с новым кодом';
+    elements.disableInviteBtn.hidden = !code;
+}
+
 function createMessageElement(message) {
+    // Событие чата (вошёл, вышел, сменил код) — строкой, без меню.
+    if (message.message_type === 'system') {
+        const line = document.createElement('div');
+        line.className = 'message-system';
+        line.dataset.messageId = message.id;
+        line.textContent = message.text || '';
+        return line;
+    }
     const isMine = message.user_id === (currentUser ? currentUser.id : 0);
     const div = document.createElement('div');
     div.className = `message ${isMine ? 'sent' : 'received'}`;
