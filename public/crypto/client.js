@@ -61,7 +61,11 @@ async function createOneTimePrekeys(count) {
  * знает, сколько осталось, а локально они лежат до фактического
  * использования.
  */
-export async function replenishOneTimePrekeys() {
+export function replenishOneTimePrekeys() {
+    return serialized(replenishOneTimePrekeysNow);
+}
+
+async function replenishOneTimePrekeysNow() {
     if (!state.ready) return null;
     try {
         const info = await state.api('/api/keys/one-time-prekeys/count');
@@ -105,8 +109,16 @@ async function pruneRetiredSignedPrekeys(now) {
  * публикуется и только потом становится текущим: не удалась публикация —
  * остаётся прежний, и собеседники продолжают получать рабочий bundle.
  */
-export async function rotateSignedPrekeyIfDue(now = Date.now()) {
+export function rotateSignedPrekeyIfDue(now = Date.now()) {
+    return serialized(() => rotateSignedPrekeyIfDueNow(now));
+}
+
+async function rotateSignedPrekeyIfDueNow(now) {
     if (!state.ready) return false;
+    // Другая вкладка могла уже сменить ключ — берём текущий из базы.
+    const currentId = await store.meta.get('signedPrekeyId');
+    const current = currentId ? await store.signedPrekeys.load(currentId) : null;
+    if (current) state.signedPrekey = current;
     await pruneRetiredSignedPrekeys(now);
     // У устройств, заведённых до ротации, даты нет — их ключ меняем сразу.
     const createdAt = (await store.meta.get('signedPrekeyCreatedAt')) || 0;
@@ -164,7 +176,13 @@ async function registerFreshDevice(deviceName) {
  * устройство). Отсутствие E2EE не должно ломать приложение — вызывающий
  * просто остаётся на открытом пути.
  */
-export async function bootstrap({ api, userId, deviceName = 'Браузер' }) {
+export function bootstrap(options) {
+    // Под блокировкой устройства: две вкладки, открытые разом на новом
+    // профиле, иначе зарегистрировали бы два устройства.
+    return serialized(() => bootstrapNow(options));
+}
+
+async function bootstrapNow({ api, userId, deviceName = 'Браузер' }) {
     state.api = api;
     state.userId = userId;
     state.ready = false;
@@ -295,9 +313,27 @@ async function assertVerifiedTargets(targets) {
 // версию, и второй затёр бы сохранённое первым — сессия разошлась бы с
 // собеседником. Поэтому всё, что меняет это состояние, идёт строго по
 // одному, в порядке вызова.
+/*
+ * Всё, что читает и меняет состояние шифрования, идёт по очереди. Очередь
+ * внутри вкладки мало: две вкладки одного браузера делят одну IndexedDB,
+ * и обе брали бы из неё одно и то же состояние цепочки — один и тот же
+ * ключ сообщения и IV для AES-GCM, а это раскрывает текст обоих
+ * сообщений. Поэтому поверх очереди — блокировка Web Locks на всё
+ * устройство: пока одна вкладка шифрует или расшифровывает, другая ждёт и
+ * потом читает из базы уже сдвинутое состояние.
+ */
+const DEVICE_LOCK = 'nyxo-e2ee-device';
+function withDeviceLock(fn) {
+    if (typeof navigator !== 'undefined' && navigator.locks && navigator.locks.request) {
+        return navigator.locks.request(DEVICE_LOCK, () => fn());
+    }
+    // Без Web Locks (очень старый браузер) остаётся очередь вкладки.
+    return fn();
+}
+
 let queue = Promise.resolve();
 function serialized(fn) {
-    const run = queue.then(fn);
+    const run = queue.then(() => withDeviceLock(fn));
     queue = run.catch(() => {});
     return run;
 }
@@ -713,6 +749,10 @@ export function decryptIncoming(message) {
 
 async function decryptIncomingNow(message) {
     if (!state.ready || !message) return null;
+    // Пока эта вкладка ждала блокировку, сообщение могла расшифровать
+    // другая: ключ сообщения одноразовый, второй раз не выйдет.
+    const already = await store.plaintext.load(message.id);
+    if (already != null) return already;
     const senderUserId = message.user_id;
 
     // По сокету конверт с ключом приходит вместе с сообщением. Он первым:
@@ -760,6 +800,7 @@ const conversationOfChat = chat => (chat.room_id ? `room:${chat.room_id}` : `cha
 
 async function rememberPlaintext(message, text) {
     await store.plaintext.save(message.id, text);
+    if (message.expires_at) await rememberExpiry(message);
     const key = conversationKey(message);
     const ids = await store.conversations.load(key);
     if (!ids.includes(message.id)) {
@@ -770,11 +811,49 @@ async function rememberPlaintext(message, text) {
 
 async function forgetNow(message) {
     await store.plaintext.drop(message.id);
+    const expiries = await store.meta.get(EXPIRIES_KEY);
+    if (expiries && expiries[message.id]) {
+        delete expiries[message.id];
+        await store.meta.set(EXPIRIES_KEY, expiries);
+    }
     const key = conversationKey(message);
     const ids = await store.conversations.load(key);
     if (ids.includes(message.id)) await store.conversations.save(key, ids.filter(id => id !== message.id));
     const preview = await store.previews.load(key);
     if (preview && preview.messageId === message.id) await store.previews.drop(key);
+}
+
+/*
+ * Исчезающие сообщения на устройстве. Сервер стирает сообщение в срок и
+ * сообщает об этом сокетом, но событие приходит только в открытый чат —
+ * в остальных расшифрованный текст и превью лежали бы в IndexedDB, пока
+ * чат не откроют. Поэтому срок хранится рядом с текстом, и устройство
+ * стирает истёкшее само: при запуске и по таймеру (sweepExpired).
+ */
+const EXPIRIES_KEY = 'expiries';
+
+async function rememberExpiry(message) {
+    const at = Date.parse(message.expires_at);
+    if (!Number.isFinite(at)) return;
+    const expiries = (await store.meta.get(EXPIRIES_KEY)) || {};
+    expiries[message.id] = { at, room_id: message.room_id || null, chat_id: message.chat_id || null };
+    await store.meta.set(EXPIRIES_KEY, expiries);
+}
+
+/** Стереть всё, у чего вышел срок. Возвращает id стёртых сообщений. */
+export function sweepExpired(now = Date.now()) {
+    return serialized(async () => {
+        const expiries = (await store.meta.get(EXPIRIES_KEY)) || {};
+        const gone = [];
+        for (const [id, entry] of Object.entries(expiries)) {
+            if (entry.at > now) continue;
+            await forgetNow({ id: Number(id), room_id: entry.room_id, chat_id: entry.chat_id });
+            delete expiries[id];
+            gone.push(Number(id));
+        }
+        if (gone.length) await store.meta.set(EXPIRIES_KEY, expiries);
+        return gone;
+    });
 }
 
 /** Своё отправленное: конверт себе не шлётся, текст кладём сами. */

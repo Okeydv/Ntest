@@ -12,13 +12,17 @@
 // Код одноразовый и привязан к сессии браузера, который его показал:
 // подсмотревший код войти по нему не может. Главный риск — обратный: код
 // покажет злоумышленник и попросит «отсканировать». Поэтому перед
-// подтверждением видно, какой браузер подключается, и прямо сказано, что
-// он получит доступ к аккаунту; а остальные устройства узнают о новом.
+// подтверждением видно, какой браузер подключается (по User-Agent, из
+// короткого списка — своё название клиент не пришлёт) и сколько времени
+// назад показан код, и прямо сказано, что он получит доступ к аккаунту;
+// а остальные устройства узнают о новом. Распознавания с фото нет: это
+// ровно сценарий «пришли мне скриншот кода».
 
 const crypto = require('crypto');
 const { log } = require('../lib/log');
 const { dbGet, dbRun } = require('../lib/db');
 const { linkStartLimiter, joinLimiter } = require('../lib/rate-limits');
+const { deviceLabelFromUa } = require('../lib/helpers');
 
 const LINK_TTL_SECONDS = 5 * 60;
 const TOKEN_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
@@ -29,11 +33,6 @@ const hashToken = token => crypto.createHash('sha256').update(token).digest('hex
 
 function newToken() {
     return Array.from(crypto.randomBytes(26), b => TOKEN_ALPHABET[b & 31]).join('');
-}
-
-function cleanLabel(value) {
-    const label = String(value || '').replace(/[\u0000-\u001f\u007f‪-‮⁦-⁩]/g, '').trim().slice(0, 64);
-    return label || 'Браузер';
 }
 
 module.exports = function registerLinkRoutes(app, ctx) {
@@ -52,7 +51,7 @@ module.exports = function registerLinkRoutes(app, ctx) {
             await dbRun(
                 `INSERT INTO device_links (token_hash, session_id, label, expires_at)
                  VALUES ($1, $2, $3, now() + make_interval(secs => $4))`,
-                [req.session.linkTokenHash, req.sessionID, cleanLabel(req.body && req.body.label), LINK_TTL_SECONDS]
+                [req.session.linkTokenHash, req.sessionID, deviceLabelFromUa(req.headers['user-agent']), LINK_TTL_SECONDS]
             );
             res.json({ success: true, token, expiresIn: LINK_TTL_SECONDS });
         } catch (error) {
@@ -104,7 +103,8 @@ module.exports = function registerLinkRoutes(app, ctx) {
         }
         const token = String((req.body && req.body.token) || '');
         const link = TOKEN_RE.test(token) && await dbGet(
-            'SELECT token_hash, label, expires_at FROM device_links WHERE token_hash = $1 AND user_id IS NULL AND expires_at > now()',
+            `SELECT token_hash, label, expires_at, EXTRACT(EPOCH FROM now() - created_at)::int AS age_seconds
+             FROM device_links WHERE token_hash = $1 AND user_id IS NULL AND expires_at > now()`,
             [hashToken(token)]
         );
         if (!link) {
@@ -118,7 +118,7 @@ module.exports = function registerLinkRoutes(app, ctx) {
         try {
             const link = await pendingLink(req, res);
             if (!link) return;
-            res.json({ success: true, label: link.label, expiresAt: link.expires_at });
+            res.json({ success: true, label: link.label, ageSeconds: link.age_seconds, expiresAt: link.expires_at });
         } catch (error) {
             log.error({ err: error }, 'Link inspect error');
             res.status(500).json({ success: false, message: 'Не удалось проверить код' });

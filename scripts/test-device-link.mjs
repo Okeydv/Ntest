@@ -1,8 +1,9 @@
 // Сквозной тест входа на новом устройстве по QR-коду со старого.
 //
-//   - новое устройство показывает QR, старое распознаёт его (с фото),
-//     видит, какой браузер подключается, и подтверждает — новое входит без
-//     пароля, поднимает шифрование, старое узнаёт о новом устройстве;
+//   - новое устройство показывает QR, старое сканирует его камерой (с фото
+//     нельзя), видит, какой браузер подключается (по мнению сервера, а не
+//     клиента) и когда показан код, фокус на «Отмене»; после подтверждения
+//     новое входит без пароля, поднимает шифрование, старое узнаёт о нём;
 //   - забрать вход может только браузер, который показал код: у чужой
 //     сессии тот же код не срабатывает;
 //   - код одноразовый и через 5 минут устаревает;
@@ -14,6 +15,7 @@
 
 import { launch, finish } from './lib/browser.mjs';
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -45,13 +47,6 @@ const status = page => page.evaluate(async () => (await api('/api/link/status'))
 
 /* ------------------------- через интерфейс ------------------------- */
 
-const laptop = await openApp('laptop');
-await laptop.evaluate(async () => {
-    const r = await api('/api/register', { method: 'POST',
-        body: JSON.stringify({ username: 'hank', email: 'hank@example.com', password: 'password123', confirmPassword: 'password123' }) });
-    currentUser = r.user; showApp(); await setupE2EE(); await loadChats();
-});
-
 const tablet = await openApp('tablet');
 await tablet.click('#link-login-btn');
 await tablet.waitForFunction(() => !document.getElementById('link-qr').hidden, null, { timeout: 8000 });
@@ -69,18 +64,37 @@ const stranger = await openApp('stranger');
 check('чужая сессия по коду не входит', await status(stranger) === 'expired'
     && await stranger.evaluate(() => api('/api/auth').then(r => !r.authenticated)));
 
-const photo = path.join(tmp, 'link.png');
-await sharp({ create: { width: 900, height: 700, channels: 3, background: '#e6e2d8' } })
-    .composite([{ input: await sharp(qrPng).resize(420).toBuffer(), left: 240, top: 140 }]).png().toFile(photo);
+// Старое устройство сканирует код камерой: поддельная камера показывает
+// экран планшета.
+const png = path.join(tmp, 'link.png');
+fs.writeFileSync(png, qrPng);
+const video = path.join(tmp, 'camera.y4m');
+execFileSync('ffmpeg', ['-v', 'error', '-y', '-loop', '1', '-i', png,
+    '-vf', 'scale=480:480,pad=640:480:80:0:white,format=yuv420p', '-t', '3', '-r', '10', video]);
+const camBrowser = await launch({ args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream',
+    `--use-file-for-fake-video-capture=${video}`] });
+const laptopContext = await camBrowser.newContext({ extraHTTPHeaders: { 'X-Forwarded-For': '10.0.11.200' } });
+const laptop = await laptopContext.newPage();
+laptop.on('pageerror', e => errors.push(`laptop: ${e.message}`));
+await laptop.goto(BASE, { waitUntil: 'networkidle' });
+await laptop.evaluate(async () => {
+    const r = await api('/api/register', { method: 'POST',
+        body: JSON.stringify({ username: 'hank', email: 'hank@example.com', password: 'password123', confirmPassword: 'password123' }) });
+    currentUser = r.user; showApp(); await setupE2EE(); await loadChats();
+});
 await laptop.click('#profile-btn');
 await laptop.click('#link-device-btn');
 await laptop.waitForFunction(() => document.getElementById('link-scan-modal').open);
-await laptop.setInputFiles('#link-scan-photo', photo);
-await laptop.waitForFunction(() => !document.getElementById('link-confirm-step').hidden, null, { timeout: 8000 }).catch(() => {});
+check('распознать код с фото нельзя — только камерой',
+    await laptop.evaluate(() => !document.querySelector('#link-scan-modal input[type=file]')
+        && ![...document.querySelectorAll('#link-scan-modal button')].some(b => /фото/i.test(b.textContent))));
+await laptop.click('#link-scan-camera');
+await laptop.waitForFunction(() => !document.getElementById('link-confirm-step').hidden, null, { timeout: 15000 }).catch(() => {});
 const confirmText = await laptop.textContent('#link-confirm-step');
-check('старое устройство видит, какой браузер подключается, и предупреждение',
-    /«Chrome, Linux»/.test(confirmText) && /получит доступ к вашему аккаунту/.test(confirmText) && /чужое устройство/.test(confirmText),
-    confirmText.replace(/\s+/g, ' ').slice(0, 160));
+check('старое устройство видит, какой браузер подключается, когда показан код, и предупреждение',
+    /«Chrome, Linux»/.test(confirmText) && /Код показан \d+ с назад/.test(confirmText)
+    && /получит доступ к вашему аккаунту/.test(confirmText), confirmText.replace(/\s+/g, ' ').slice(0, 200));
+check('фокус — на «Отмене», а не на «Подключить»', await laptop.evaluate(() => document.activeElement.id) === 'link-cancel-btn');
 await laptop.click('#link-approve-btn');
 
 await tablet.waitForFunction(() => currentUser && currentUser.username === 'hank' && e2eeDeviceId, null, { timeout: 10000 }).catch(() => {});
@@ -103,6 +117,12 @@ check('подтверждённый код не забрать из чужой �
 check('а показавший его — входит', await status(other) === 'approved'
     && await other.evaluate(() => api('/api/auth').then(r => r.authenticated === true)));
 
+const spoofer = await openApp('spoofer');
+const spoofToken = await spoofer.evaluate(async () =>
+    (await api('/api/link/start', { method: 'POST', body: JSON.stringify({ label: 'iPhone Ивана' }) })).token);
+const spoofInfo = await laptop.evaluate(t => api('/api/link/inspect', { method: 'POST', body: JSON.stringify({ token: t }) }), spoofToken);
+check('название браузера определяет сервер, прислать своё нельзя', spoofInfo.label === 'Chrome, Linux', spoofInfo.label);
+
 /* ------------------------- срок и приватный режим ------------------------- */
 
 const late = await openApp('late');
@@ -120,6 +140,7 @@ const anonTry = await anon.evaluate(async t => {
 check('из приватного режима подтверждать нельзя', anonTry.success === false && /приватном режиме/.test(anonTry.message), anonTry.message);
 
 check('ошибок на страницах нет', errors.length === 0, errors.join('; '));
+await finish(camBrowser, fails);
 await finish(browser, fails);
 await db.end();
 fs.rmSync(tmp, { recursive: true, force: true });

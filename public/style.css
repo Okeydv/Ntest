@@ -1834,7 +1834,43 @@ dialog.modal::backdrop {
 .invite-actions .btn { flex: 1 1 auto; }
 
 .link-body { text-align: center; }
-.link-body .logout-text { text-align: left; }
+.link-body .toggle-row {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    font-size: var(--fs-body);
+    cursor: pointer;
+}
+.toggle-row input { width: 1.125rem; height: 1.125rem; accent-color: var(--accent); flex: none; }
+
+.connection-status {
+    position: fixed;
+    top: calc(0.75rem + env(safe-area-inset-top, 0px));
+    left: 50%;
+    z-index: 60;
+    transform: translateX(-50%);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.875rem;
+    border-radius: var(--r-pill);
+    background: var(--text);
+    color: var(--layer-1);
+    font-size: var(--fs-sm);
+    font-weight: 500;
+    box-shadow: var(--sh-2, 0 6px 18px rgba(0, 0, 0, 0.25));
+}
+.connection-status[hidden] { display: none; }
+.connection-dot {
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 50%;
+    background: var(--warn, #f5a524);
+    animation: connectionPulse 1.2s ease-in-out infinite;
+}
+@keyframes connectionPulse { 50% { opacity: 0.3; } }
+
+.logout-text { text-align: left; }
 .link-qr {
     display: block;
     width: min(16rem, 100%);

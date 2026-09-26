@@ -3,12 +3,13 @@
 // Регистрация, вход, приватный режим, выход, профиль и смена пароля.
 
 const { log } = require('../lib/log');
+const { broadcastReceipts } = require('../lib/read-state');
 const { pool, dbGet, dbAll, dbRun } = require('../lib/db');
 const { secureCookieFor } = require('../lib/cookie-security');
 const { addRandomDelay, generateSecureToken } = require('../lib/privacy');
 const e2eeProxy = require('../lib/e2ee-proxy');
 const { hashPassword, checkPassword, DUMMY_PASSWORD_HASH, PASSWORD_PREFIX } = require('../lib/passwords');
-const { loginLimiter, loginEmailLimiter, registerLimiter, passwordLimiter } = require('../lib/rate-limits');
+const { loginLimiter, loginEmailSlowdown, registerLimiter, passwordLimiter } = require('../lib/rate-limits');
 const {
     getCurrentTime, normalizeAvatarColor, generateUniqueCodeAsync, generateAnonymousUsernameAsync,
 } = require('../lib/helpers');
@@ -77,10 +78,13 @@ module.exports = function registerAuthRoutes(app, ctx) {
                     [userId, 'Бот Помощник', 'Б', 1, 1]
                 );
                 const botChatId = botResult.rows[0].id;
-                await client.query(
-                    'INSERT INTO messages (chat_id, user_id, text, sent, time, status) VALUES ($1, $2, $3, $4, $5, $6)',
+                const greeting = await client.query(
+                    'INSERT INTO messages (chat_id, user_id, text, sent, time, status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
                     [botChatId, userId, 'Привет! Я бот-помощник. Чем могу помочь?', 0, getCurrentTime(), 'read']
                 );
+                // Приветствие не должно висеть непрочитанным.
+                await client.query('UPDATE chats SET last_read_id = $1, last_delivered_id = $1 WHERE id = $2',
+                    [greeting.rows[0].id, botChatId]);
                 await client.query('COMMIT');
             } catch (txErr) {
                 await client.query('ROLLBACK');
@@ -123,10 +127,13 @@ module.exports = function registerAuthRoutes(app, ctx) {
                     [userId, 'Бот Помощник', 'Б', 1, 1]
                 );
                 const botChatId = botResult.rows[0].id;
-                await client.query(
-                    'INSERT INTO messages (chat_id, user_id, text, sent, time, status) VALUES ($1, $2, $3, $4, $5, $6)',
+                const greeting = await client.query(
+                    'INSERT INTO messages (chat_id, user_id, text, sent, time, status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
                     [botChatId, userId, '🔒 Приватный режим активирован!\n\nВаши данные:\n• Хранятся только в этой сессии\n• Будут удалены при выходе\n• Не связаны с email или телефоном\n\nДля максимальной анонимности:\n• Используйте Tor Browser\n• Не делитесь личной информацией\n• Включите disappearing messages', 0, getCurrentTime(), 'read']
                 );
+                // Приветствие не должно висеть непрочитанным.
+                await client.query('UPDATE chats SET last_read_id = $1, last_delivered_id = $1 WHERE id = $2',
+                    [greeting.rows[0].id, botChatId]);
                 await client.query('COMMIT');
             } catch (txErr) {
                 await client.query('ROLLBACK');
@@ -161,7 +168,7 @@ module.exports = function registerAuthRoutes(app, ctx) {
         }
     });
 
-    app.post('/api/login', loginLimiter, loginEmailLimiter, async (req, res) => {
+    app.post('/api/login', loginLimiter, loginEmailSlowdown, async (req, res) => {
         const { email, password } = req.body;
         if (!email || !password) return res.json({ success: false, message: 'Введите email и пароль' });
         if (email.length > 254 || password.length > 128) return res.json({ success: false, message: 'Неверный email или пароль' });
@@ -335,9 +342,9 @@ module.exports = function registerAuthRoutes(app, ctx) {
     app.get('/api/user', async (req, res) => {
         if (!req.session.userId) return res.json({ success: false });
         try {
-            const user = await dbGet('SELECT id, unique_code, username, email, avatar, created_at FROM users WHERE id = $1', [req.session.userId]);
+            const user = await dbGet('SELECT id, unique_code, username, email, avatar, created_at, send_read_receipts FROM users WHERE id = $1', [req.session.userId]);
             if (!user) return res.json({ success: false });
-            res.json({ success: true, user: { id: user.id, uniqueCode: user.unique_code, username: user.username, avatar: user.avatar || '', email: user.email, createdAt: user.created_at } });
+            res.json({ success: true, user: { id: user.id, uniqueCode: user.unique_code, username: user.username, avatar: user.avatar || '', email: user.email, createdAt: user.created_at, sendReadReceipts: user.send_read_receipts } });
         } catch (error) {
             res.json({ success: false });
         }
@@ -353,6 +360,24 @@ module.exports = function registerAuthRoutes(app, ctx) {
         } catch (error) {
             log.error({ err: error }, 'Avatar update error');
             res.status(500).json({ success: false, message: 'Ошибка обновления цвета аватара' });
+        }
+    });
+
+    // Отправлять ли собеседникам отметки о прочтении. Выключивший их и сам
+    // не видит, прочитали ли его.
+    app.post('/api/user/read-receipts', async (req, res) => {
+        if (!req.session.userId) return res.status(401).json({ success: false, message: 'Не авторизован' });
+        if (typeof (req.body && req.body.enabled) !== 'boolean') {
+            return res.status(400).json({ success: false, message: 'Нужно enabled: true или false' });
+        }
+        try {
+            await dbRun('UPDATE users SET send_read_receipts = $1 WHERE id = $2', [req.body.enabled, req.session.userId]);
+            res.json({ success: true, enabled: req.body.enabled });
+            const rooms = await dbAll('SELECT room_id FROM chats WHERE user_id = $1 AND room_id IS NOT NULL', [req.session.userId]);
+            for (const { room_id: roomId } of rooms) await broadcastReceipts(io, roomId);
+        } catch (error) {
+            log.error({ err: error }, 'Read receipts setting error');
+            if (!res.headersSent) res.status(500).json({ success: false, message: 'Не удалось сохранить' });
         }
     });
 

@@ -14,6 +14,9 @@
 //   - сообщение со сроком жизни в месяц не исчезает сразу (setTimeout не
 //     умеет ждать дольше 24,8 суток), недопустимый срок отклоняется
 //   - брошенный анонимный аккаунт (сессии нет) удаляется уборкой
+//   - через Tor (у всех 127.0.0.1) лимиты регистраций и сокетов — по
+//     браузеру и пользователю, а подставленный Host .onion от них не уводит;
+//     подбор пароля к одному email замедляется, но владельца не запирает
 //   - CSP не пускает соединения на чужие адреса; HSTS — только по HTTPS
 //
 // Требует поднятых Postgres, key-server и server.js на 3006, запущенного с
@@ -22,6 +25,7 @@
 
 import { io as ioClient } from 'socket.io-client';
 import pg from 'pg';
+import http from 'node:http';
 import { createRequire } from 'node:module';
 
 const bcrypt = createRequire(import.meta.url)('bcryptjs');
@@ -335,10 +339,19 @@ const upgraded = (await db.query('SELECT password FROM users WHERE id = $1', [le
 check('старый хеш пароля подходит и переводится в новый формат',
     legacyLogin.json?.success === true && upgraded.startsWith('sha256-bcrypt$'), upgraded.slice(0, 20));
 
-// Подбор пароля к одному email с разных адресов.
-let guessed;
-for (let i = 0; i < 21; i++) guessed = await client().req('POST', '/api/login', { email: 'legacy@example.com', password: `guess${i}` });
-check('подбор к одному email с разных адресов упирается в лимит', guessed.status === 429, `${guessed.status} ${guessed.json?.message}`);
+// Подбор пароля к одному email с разных адресов: после 10 неудач каждая
+// попытка ждёт дольше, но владельца это не запирает.
+for (let i = 0; i < 11; i++) await client().req('POST', '/api/login', { email: 'legacy@example.com', password: `guess${i}` });
+let started = Date.now();
+const slowed = await client().req('POST', '/api/login', { email: 'legacy@example.com', password: 'guess-more' });
+const slowMs = Date.now() - started;
+check('подбор к одному email с разных адресов замедляется', slowed.json?.success === false && slowMs >= 1900, `${slowMs} мс`);
+started = Date.now();
+const owner = await client().req('POST', '/api/login', { email: 'legacy@example.com', password: 'password123' });
+check('а владелец с верным паролем входит — не заперт', owner.json?.success === true, `${owner.status} ${owner.json?.message}`);
+const afterOwner = Date.now();
+await client().req('POST', '/api/login', { email: 'legacy@example.com', password: 'guess-again' });
+check('удачный вход сбрасывает замедление', Date.now() - afterOwner < 1500, `${Date.now() - afterOwner} мс`);
 
 // Изменяющий запрос с чужого сайта.
 const csrfVictim = await login('bob');
@@ -352,6 +365,76 @@ const sameSite = await fetch(BASE + '/api/chats', { method: 'POST',
         'Content-Type': 'application/json', Origin: BASE },
     body: JSON.stringify({ name: 'со своего' }) });
 check('а со своего — проходит', sameSite.status === 200 && (await sameSite.json()).success === true);
+
+/* ------------------------- через Tor ------------------------- */
+
+// Tor-демон подключается с этой же машины: у всех пользователей .onion
+// адрес 127.0.0.1. Запрос через .onion — Host *.onion и без
+// X-Forwarded-For (адрес — локальный).
+function onionClient({ forwardedFor } = {}) {
+    const c = client();
+    const headers = () => ({ Host: 'nyxotestaddress.onion', Cookie: c.header(), ...(forwardedFor ? { 'X-Forwarded-For': forwardedFor } : {}) });
+    const raw = (method, path, body) => new Promise((resolve, reject) => {
+        const payload = body === undefined ? undefined : JSON.stringify(body);
+        const token = /csrf_token=([^;]+)/.exec(c.header())?.[1] || '';
+        const r = http.request({ host: '127.0.0.1', port: 3006, path, method,
+            headers: { ...headers(), 'Content-Type': 'application/json', 'X-CSRF-Token': token,
+                ...(payload ? { 'Content-Length': Buffer.byteLength(payload) } : {}) } }, res => {
+            let data = '';
+            res.on('data', d => { data += d; });
+            res.on('end', () => {
+                c.absorb({ headers: { getSetCookie: () => res.headers['set-cookie'] || [] } });
+                let json = null;
+                try { json = JSON.parse(data); } catch { /* не JSON */ }
+                resolve({ status: res.statusCode, json });
+            });
+        });
+        r.on('error', reject);
+        if (payload) r.write(payload);
+        r.end();
+    });
+    return { c, raw, headers };
+}
+
+let torOk = 0;
+for (let i = 0; i < 5; i++) {
+    const t = onionClient();
+    await t.raw('GET', '/');
+    const r = await t.raw('POST', '/api/register/anonymous', {});
+    if (r.json?.success) torOk++;
+}
+check('через Tor у каждого браузера свой лимит регистраций, а не три на всех', torOk === 5, `${torOk} из 5`);
+
+const sameBrowser = onionClient();
+await sameBrowser.raw('GET', '/');
+let lastSame;
+for (let i = 0; i < 4; i++) lastSame = await sameBrowser.raw('POST', '/api/register/anonymous', {});
+check('а один браузер через Tor — не больше трёх в час', lastSame.status === 429, String(lastSame.status));
+
+// Host .onion снаружи (адрес не локальный) — обычный лимит по IP.
+let spoofOk = 0;
+for (let i = 0; i < 4; i++) {
+    const t = onionClient({ forwardedFor: '10.77.0.1' });
+    await t.raw('GET', '/');
+    if ((await t.raw('POST', '/api/register/anonymous', {})).json?.success) spoofOk++;
+}
+check('подставленный Host .onion не уводит из-под лимита по IP', spoofOk === 3, `${spoofOk} из 4`);
+
+// Сокеты через Tor — по пять на пользователя, а не пять на всех.
+const torSockets = [];
+let torSocketsOk = 0;
+for (let u = 0; u < 2; u++) {
+    const t = onionClient();
+    await t.raw('GET', '/');
+    await t.raw('POST', '/api/register/anonymous', {});
+    for (let i = 0; i < 4; i++) {
+        const sock = ioClient(BASE, { extraHeaders: t.headers(), transports: ['websocket'], reconnection: false, timeout: 3000 });
+        torSockets.push(sock);
+        if (await new Promise(res => { sock.once('connect', () => res(true)); sock.once('connect_error', () => res(false)); })) torSocketsOk++;
+    }
+}
+torSockets.forEach(s => s.close());
+check('через Tor двое держат по четыре сокета — всего больше пяти', torSocketsOk === 8, `${torSocketsOk} из 8`);
 
 /* ------------------------- заголовки ------------------------- */
 

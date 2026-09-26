@@ -320,12 +320,8 @@ module.exports = function registerFileRoutes(app, ctx) {
             const senderUsername = senderUser ? senderUser.username : '';
             const senderAvatar = senderUser ? (senderUser.avatar || '') : '';
 
-            // Без .catch сбой базы здесь был бы необработанным отказом промиса —
-            // а он роняет Node целиком.
-            const markStatus = status => dbRun('UPDATE messages SET status = $1 WHERE id = $2', [status, messageId])
-                .catch(err => log.error({ err: err }, 'File message status error'));
-            setTimeout(() => markStatus('delivered'), 1000);
-            setTimeout(() => markStatus('read'), 2000);
+            // «Доставлено» и «прочитано» больше не подделываются таймерами:
+            // их ставят отметки собеседников (lib/read-state.js).
 
             const fileMessage = {
                 id: messageId, chat_id: Number(chatId), room_id: roomId, user_id: req.session.userId,

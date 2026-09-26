@@ -254,6 +254,11 @@
             </div>
 
             <div id="chat-messages" class="chat-messages"></div>
+            <!-- Обрыв сокета: пока его нет, новые сообщения не приходят — это должно быть видно. -->
+            <div id="connection-status" class="connection-status" role="status" hidden>
+                <span class="connection-dot" aria-hidden="true"></span>
+                Нет соединения. Переподключаемся…
+            </div>
 
             <div id="message-input-container" class="message-input-container hidden">
                 <div id="reply-preview" class="reply-preview hidden">
@@ -397,6 +402,13 @@
                     <ul id="devices-list" class="devices-list"></ul>
                     <button id="link-device-btn" class="btn btn-secondary btn-block" type="button">Подключить устройство по QR-коду</button>
                 </section>
+                <div class="field">
+                    <label class="toggle-row">
+                        <input type="checkbox" id="read-receipts-toggle">
+                        <span>Отправлять отметки о прочтении</span>
+                    </label>
+                    <p class="field-hint">Если выключить, собеседники не увидят, что вы прочитали их сообщения, а вы не увидите, прочитали ли ваши.</p>
+                </div>
                 <button id="change-password-btn" class="btn btn-secondary btn-block" type="button">
                     <svg class="icon" aria-hidden="true"><use href="#i-lock"/></svg>
                     Сменить пароль
@@ -514,21 +526,23 @@
                 <div id="link-scan-step">
                     <p class="logout-text">
                         На новом устройстве нажмите «Войти по QR-коду с другого
-                        устройства» и отсканируйте код, который оно покажет.
+                        устройства» и отсканируйте камерой код, который оно
+                        покажет. Только с экрана перед вами: снимок кода, который
+                        прислали, не подойдёт — так к аккаунту подключают чужие
+                        устройства.
                     </p>
                     <div class="safety-qr-actions">
                         <button id="link-scan-camera" class="btn btn-secondary" type="button">Сканировать камерой</button>
-                        <button id="link-scan-photo-btn" class="btn btn-ghost" type="button">Распознать с фото</button>
-                        <input id="link-scan-photo" type="file" accept="image/*" hidden>
                     </div>
                     <div id="link-scan-area" class="safety-scan" hidden></div>
                 </div>
                 <div id="link-confirm-step" hidden>
                     <p class="logout-text"><strong id="link-confirm-label"></strong> получит доступ к вашему аккаунту и новым сообщениям.</p>
+                    <p id="link-confirm-age" class="field-hint"></p>
                     <p class="field-hint">Подключайте только своё устройство, которое видите перед собой. Если код прислали или попросили отсканировать — это чужое устройство.</p>
                     <div class="logout-actions">
-                        <button id="link-approve-btn" class="btn btn-primary btn-block" type="button">Подключить</button>
-                        <button id="link-cancel-btn" class="btn btn-ghost btn-block" type="button">Отмена</button>
+                        <button id="link-cancel-btn" class="btn btn-secondary btn-block" type="button">Отмена</button>
+                        <button id="link-approve-btn" class="btn btn-danger btn-block" type="button">Подключить</button>
                     </div>
                 </div>
             </div>

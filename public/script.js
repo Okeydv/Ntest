@@ -16,6 +16,8 @@ const elements = {
     registerBtn: document.getElementById('register-btn'),
     anonymousLoginBtn: document.getElementById('anonymous-login-btn'),
     logoutBtn: document.getElementById('logout-btn'),
+    connectionStatus: document.getElementById('connection-status'),
+    readReceiptsToggle: document.getElementById('read-receipts-toggle'),
     linkLoginBtn: document.getElementById('link-login-btn'),
     linkLoginModal: document.getElementById('link-login-modal'),
     linkQr: document.getElementById('link-qr'),
@@ -25,10 +27,9 @@ const elements = {
     linkScanStep: document.getElementById('link-scan-step'),
     linkScanArea: document.getElementById('link-scan-area'),
     linkScanCamera: document.getElementById('link-scan-camera'),
-    linkScanPhoto: document.getElementById('link-scan-photo'),
-    linkScanPhotoBtn: document.getElementById('link-scan-photo-btn'),
     linkConfirmStep: document.getElementById('link-confirm-step'),
     linkConfirmLabel: document.getElementById('link-confirm-label'),
+    linkConfirmAge: document.getElementById('link-confirm-age'),
     linkApproveBtn: document.getElementById('link-approve-btn'),
     linkCancelBtn: document.getElementById('link-cancel-btn'),
     chatExpiry: document.getElementById('chat-expiry'),
@@ -167,6 +168,8 @@ async function setupE2EE() {
         setTimeout(resolve, 3000);
     });
     checkNewDevices();
+    // Хранилище устройства доступно — сразу стираем истёкшее, не дожидаясь таймера.
+    sweepExpiredMessages();
 }
 
 /* --- Новые устройства аккаунта --------------------------------------------
@@ -298,6 +301,9 @@ function applyDecryptedContent(message, content) {
 // блок, который потом целиком встаёт в начало переписки. Превью в списке
 // чатов старые сообщения не трогают.
 async function appendMessageDecrypted(message, { fresh = false, container = null } = {}) {
+    // Одно сообщение может прийти дважды: по сокету, пока грузится
+    // история, и в самой истории.
+    if (message.id && elements.chatMessages.querySelector(`[data-message-id="${message.id}"]`)) return;
     await resolveReplyQuote(message);
     if (message.encrypted) {
         const raw = await resolveMessageText(message);
@@ -861,6 +867,8 @@ function showAuth() {
 }
 
 function showApp() {
+    // Истёкшее стирается сразу при запуске и дальше по таймеру.
+    startExpirySweep();
     elements.authScreen.classList.add('hidden');
     elements.app.classList.remove('hidden');
 }
@@ -1240,9 +1248,22 @@ function setupEventListeners() {
                 elements.changePasswordBtn.classList.remove('hidden');
                 elements.linkDeviceBtn.hidden = false;
             }
+            elements.readReceiptsToggle.checked = data.user.sendReadReceipts !== false;
             await renderDevices();
             openModal(elements.profileModal);
         }
+    });
+
+    elements.readReceiptsToggle.addEventListener('change', async () => {
+        const toggle = elements.readReceiptsToggle;
+        toggle.disabled = true;
+        const data = await api('/api/user/read-receipts', { method: 'POST', body: JSON.stringify({ enabled: toggle.checked }) });
+        toggle.disabled = false;
+        if (!data.success) {
+            toggle.checked = !toggle.checked;
+            return showToast(data.message, 'error');
+        }
+        showToast(data.enabled ? 'Отметки о прочтении включены' : 'Отметки о прочтении выключены', 'success');
     });
 
     elements.changePasswordBtn.addEventListener('click', () => {
@@ -1377,6 +1398,8 @@ function setupEventListeners() {
     setupMessageMenu();
     setupMessageKeyboard();
     setupHistoryPaging();
+    setupReadMarks();
+    setupConnectionStatus();
     setupDeviceLinking();
     setupMobileScreens();
     // Не дожидаемся таймера отмены, если страницу закрывают.
@@ -1517,11 +1540,15 @@ async function loadChats() {
     // for...of, а не forEach: превью зашифрованных чатов лежит в IndexedDB,
     // и его чтение асинхронно.
     for (const chat of data.chats) {
+        // Открытый чат, который сейчас на экране, — прочитан, даже если
+        // отметка ещё в пути.
+        if (chat.id === currentChatId && document.visibilityState === 'visible') chat.unread = 0;
         const div = chatItemElement(chat, await chatPreview(chat));
         div.dataset.roomId = chat.room_id || '';
         div.addEventListener('click', () => openChat(chat.id, chat.room_id, chat.name, chat.avatar, chat.online, chat.is_bot));
         elements.chatsList.appendChild(div);
     }
+    updateTitleCounter();
 }
 
 /**
@@ -1575,7 +1602,13 @@ function backToChatList() {
     elements.chatsList.querySelector('.chat-item.active')?.focus();
 }
 
+let lastOpenChat = null;
+
 async function openChat(chatId, roomId, name, avatar, online, isBot) {
+    lastOpenChat = [chatId, roomId, name, avatar, online, isBot];
+    // В комнату сокета — до загрузки истории: пришедшее, пока она
+    // грузится, иначе потерялось бы (дубли отсекает appendMessage).
+    socket.emit('joinChat', roomId ? `room:${roomId}` : `chat:${chatId}`);
     showChatScreen(true);
     if (mobileLayout.matches && !(history.state && history.state.nyxoChat)) {
         history.pushState({ nyxoChat: true }, '');
@@ -1624,9 +1657,7 @@ async function openChat(chatId, roomId, name, avatar, online, isBot) {
     for (const msg of page) await appendMessageDecrypted(msg);
     scrollToBottom();
     await fillScreenWithHistory();
-
-    const roomKey = roomId ? `room:${roomId}` : `chat:${chatId}`;
-    socket.emit('joinChat', roomKey);
+    scheduleReadMark();
 }
 
 /* --- Привязка устройства по QR ---------------------------------------------
@@ -1642,7 +1673,7 @@ async function startLinkLogin() {
     clearTimeout(linkPollTimer);
     elements.linkStatus.textContent = 'Готовим код…';
     elements.linkQr.hidden = true;
-    const data = await api('/api/link/start', { method: 'POST', body: JSON.stringify({ label: deviceLabel() }) });
+    const data = await api('/api/link/start', { method: 'POST', body: '{}' });
     if (!data.success) {
         elements.linkStatus.textContent = data.message;
         return;
@@ -1701,9 +1732,14 @@ async function inspectLinkCode(value) {
     }
     pendingLinkToken = token;
     elements.linkConfirmLabel.textContent = `«${data.label}»`;
+    const age = Math.max(0, Number(data.ageSeconds) || 0);
+    elements.linkConfirmAge.textContent = age < 60
+        ? `Код показан ${age} с назад. Название браузера определил сервер.`
+        : `Код показан ${Math.round(age / 60)} мин назад. Название браузера определил сервер.`;
     elements.linkScanStep.hidden = true;
     elements.linkConfirmStep.hidden = false;
-    elements.linkApproveBtn.focus();
+    // По умолчанию — «Отмена»: подключение не должно пройти от случайного Enter.
+    elements.linkCancelBtn.focus();
 }
 
 function setupDeviceLinking() {
@@ -1718,20 +1754,14 @@ function setupDeviceLinking() {
         closeModal(elements.profileModal);
         openModal(elements.linkScanModal);
     });
-    if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) elements.linkScanCamera.hidden = true;
+    // Без камеры подключить по QR нельзя — остаётся вход по паролю.
+    if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) elements.linkScanCamera.disabled = true;
     elements.linkScanCamera.addEventListener('click', async () => {
         try {
             await inspectLinkCode(await scanWithCamera(elements.linkScanArea));
         } catch {
             showToast('Камера недоступна — распознайте код с фото', 'error');
         }
-    });
-    elements.linkScanPhotoBtn.addEventListener('click', () => elements.linkScanPhoto.click());
-    elements.linkScanPhoto.addEventListener('change', async () => {
-        const file = elements.linkScanPhoto.files[0];
-        elements.linkScanPhoto.value = '';
-        if (!file) return;
-        await inspectLinkCode(await decodeQrFromFile(file).catch(() => '') || '');
     });
     elements.linkCancelBtn.addEventListener('click', () => closeModal(elements.linkScanModal));
     elements.linkApproveBtn.addEventListener('click', () => withBusy(elements.linkApproveBtn, async () => {
@@ -1740,6 +1770,157 @@ function setupDeviceLinking() {
         closeModal(elements.linkScanModal);
         showToast('Устройство подключено', 'success');
     }));
+}
+
+/* --- Соединение -------------------------------------------------------------
+   Сокет рвётся (сон ноутбука, смена сети, перезапуск сервера) и сам
+   переподключается. Пока его нет, новое не приходит — это видно плашкой.
+   После переподключения сокет заново входит в комнату открытого чата, а
+   пропущенное — сообщения, удаления, правки, смена срока — догружается:
+   список чатов и открытый чат перечитываются. */
+
+let connectionTimer = null;
+let wasDisconnected = false;
+
+function setupConnectionStatus() {
+    socket.on('disconnect', reason => {
+        // Разрыв по нашей же команде (после входа сокет переподключается
+        // с новой сессией) — не обрыв.
+        if (reason === 'io client disconnect') return;
+        wasDisconnected = true;
+        clearTimeout(connectionTimer);
+        // Короткие переподключения плашкой не мигают.
+        connectionTimer = setTimeout(() => { elements.connectionStatus.hidden = false; }, 1500);
+    });
+    socket.on('connect', async () => {
+        clearTimeout(connectionTimer);
+        elements.connectionStatus.hidden = true;
+        if (!wasDisconnected || !currentUser) return;
+        wasDisconnected = false;
+        await loadChats();
+        if (lastOpenChat && currentChatId === lastOpenChat[0]) {
+            const list = elements.chatMessages;
+            const fromBottom = list.scrollHeight - list.scrollTop;
+            const wasAtBottom = atChatBottom();
+            await openChat(...lastOpenChat);
+            if (!wasAtBottom) list.scrollTop = Math.max(0, list.scrollHeight - fromBottom);
+        }
+    });
+}
+
+/* --- Истёкшие сообщения на устройстве ------------------------------------
+   Раз в 10 секунд и при запуске: стереть из IndexedDB расшифрованное с
+   истёкшим сроком (e2ee.sweepExpired) и убрать такие пузыри с экрана —
+   в том числе незашифрованные, их текст на устройстве не хранится. */
+
+const EXPIRY_SWEEP_MS = 10 * 1000;
+let expirySweepTimer = null;
+
+async function sweepExpiredMessages() {
+    const now = Date.now();
+    let changed = false;
+    if (e2ee && e2ee.isReady()) changed = (await e2ee.sweepExpired(now).catch(() => [])).length > 0;
+    for (const bubble of elements.chatMessages.querySelectorAll('[data-expires-at]')) {
+        if (Number(bubble.dataset.expiresAt) <= now) removeMessageElement(bubble);
+    }
+    if (changed && currentUser) loadChats();
+}
+
+function startExpirySweep() {
+    clearInterval(expirySweepTimer);
+    sweepExpiredMessages();
+    expirySweepTimer = setInterval(sweepExpiredMessages, EXPIRY_SWEEP_MS);
+}
+
+/* --- Прочитано и доставлено ----------------------------------------------
+   Прочитанным чат отмечается, когда конец переписки на экране и вкладка
+   видна; пришедшее в фоне — только доставленным. Сервер пересчитывает
+   счётчик непрочитанного и рассылает собеседникам их статусы
+   (lib/read-state.js), а сюда — наши. */
+
+const STATUS_VIEW = {
+    sent: ['○', 'Отправлено'],
+    delivered: ['✓', 'Доставлено'],
+    read: ['✓✓', 'Прочитано'],
+};
+const STATUS_RANK = { sent: 0, delivered: 1, read: 2 };
+
+function setMessageStatus(span, status) {
+    const [mark, label] = STATUS_VIEW[status] || STATUS_VIEW.sent;
+    span.dataset.status = status in STATUS_VIEW ? status : 'sent';
+    span.textContent = mark;
+    span.title = label;
+    span.setAttribute('aria-label', label);
+}
+
+const readMarks = { chatId: null, read: 0, delivered: 0, timer: null };
+
+function newestShownMessageId() {
+    const ids = [...elements.chatMessages.querySelectorAll('[data-message-id]')]
+        .map(el => Number(el.dataset.messageId)).filter(Number.isInteger);
+    return ids.length ? Math.max(...ids) : 0;
+}
+
+function atChatBottom() {
+    const list = elements.chatMessages;
+    return list.scrollHeight - list.scrollTop - list.clientHeight < 80;
+}
+
+async function sendReadMark(kind, chatId, upTo) {
+    const data = await api(`/api/chats/${chatId}/${kind}`, { method: 'POST', body: JSON.stringify({ upTo }) }).catch(() => null);
+    if (data && data.success && kind === 'read') {
+        const badge = elements.chatsList.querySelector(`.chat-item[data-id="${chatId}"] .chat-badge`);
+        if (badge && data.unread === 0) badge.remove();
+        else if (badge) badge.textContent = String(data.unread);
+        updateTitleCounter();
+    }
+}
+
+// Вызывается при открытии чата, новом сообщении, прокрутке и когда вкладка
+// снова на экране; сама решает, что отметить.
+function scheduleReadMark() {
+    clearTimeout(readMarks.timer);
+    readMarks.timer = setTimeout(() => {
+        const chatId = currentChatId;
+        if (!chatId) return;
+        if (readMarks.chatId !== chatId) Object.assign(readMarks, { chatId, read: 0, delivered: 0 });
+        const upTo = newestShownMessageId();
+        if (!upTo) return;
+        const visible = document.visibilityState === 'visible' && atChatBottom();
+        if (visible && upTo > readMarks.read) {
+            readMarks.read = readMarks.delivered = upTo;
+            sendReadMark('read', chatId, upTo);
+        } else if (!visible && upTo > readMarks.delivered) {
+            readMarks.delivered = upTo;
+            sendReadMark('delivered', chatId, upTo);
+        }
+    }, 300);
+}
+
+// Наши статусы у собеседников: галочки у своих сообщений в открытом чате.
+function applyReceipts({ room_id, read, delivered }) {
+    if (!currentRoomId || Number(room_id) !== Number(currentRoomId)) return;
+    for (const span of elements.chatMessages.querySelectorAll('.message.sent .message-status')) {
+        const id = Number(span.closest('[data-message-id]')?.dataset.messageId);
+        if (!Number.isInteger(id)) continue;
+        const status = id <= read ? 'read' : id <= delivered ? 'delivered' : 'sent';
+        if (STATUS_RANK[status] > (STATUS_RANK[span.dataset.status] ?? 0)) setMessageStatus(span, status);
+    }
+}
+
+// Непрочитанное по всем чатам — в заголовке вкладки.
+const BASE_TITLE = document.title;
+function updateTitleCounter() {
+    const total = [...elements.chatsList.querySelectorAll('.chat-badge')]
+        .reduce((sum, badge) => sum + (Number(badge.textContent) || 0), 0);
+    document.title = total ? `(${total}) ${BASE_TITLE}` : BASE_TITLE;
+}
+
+function setupReadMarks() {
+    socket.on('receipts', applyReceipts);
+    elements.chatMessages.addEventListener('scroll', scheduleReadMark, { passive: true });
+    document.addEventListener('visibilitychange', scheduleReadMark);
+    window.addEventListener('focus', scheduleReadMark);
 }
 
 /* --- Исчезающие сообщения ---------------------------------------------------
@@ -2227,6 +2408,7 @@ function createMessageElement(message) {
     }
     const expiresAt = message.expires_at ? new Date(message.expires_at) : null;
     if (expiresAt && !Number.isNaN(expiresAt.getTime())) {
+        div.dataset.expiresAt = String(expiresAt.getTime());
         const timer = document.createElement('span');
         timer.className = 'message-expiry';
         timer.title = `Исчезнет ${fullFormat.format(expiresAt)}`;
@@ -2249,7 +2431,7 @@ function createMessageElement(message) {
     if (isMine) {
         const statusSpan = document.createElement('span');
         statusSpan.className = 'message-status';
-        statusSpan.textContent = message.status === 'read' ? '✓✓' : (message.status === 'delivered' ? '✓' : '○');
+        setMessageStatus(statusSpan, message.status);
         metaDiv.appendChild(statusSpan);
     }
 
@@ -2445,6 +2627,7 @@ async function handleNewMessage(message) {
     if (message.chat_id == currentChatId || message.room_id == currentRoomId) {
         await appendMessageDecrypted(message, { fresh: true });
         scrollToBottom();
+        scheduleReadMark();
     } else {
         // Чужой чат: расшифровываем ради превью в списке, рисовать
         // нечего.

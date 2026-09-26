@@ -166,9 +166,12 @@ const tabStops = await page.evaluate(() => [...document.querySelectorAll('#chat-
 check('вся переписка — одна остановка Tab', tabStops === 1, tabStops);
 const timeAligned = await page.evaluate(() => {
     const m = [...document.querySelectorAll('#chat-messages .message')].find(el => el.textContent.includes('первое'));
-    return m.querySelector('.message-meta').getBoundingClientRect().right - m.querySelector('.message-time').getBoundingClientRect().right;
+    // Последнее в строке (статус или время) стоит у правого края: невидимая
+    // «⋯» места в строке не занимает.
+    const meta = m.querySelector('.message-meta');
+    return meta.getBoundingClientRect().right - meta.lastElementChild.getBoundingClientRect().right;
 });
-check('«⋯» не занимает места в строке времени', timeAligned < 24, `статус и время отстоят от края на ${timeAligned}px`);
+check('«⋯» не занимает места в строке времени', timeAligned < 2, `последнее в строке отстоит от края на ${timeAligned}px`);
 await page.focus('#chat-messages .message[tabindex="0"]');
 check('остановка — последнее сообщение', (await page.evaluate(() => document.activeElement.textContent)).includes('от Боба'));
 await page.keyboard.press('ArrowUp');

@@ -7,6 +7,7 @@ const { pool, dbGet, dbAll, dbRun } = require('../lib/db');
 const { normalizeExpiry } = require('../lib/disappearing-messages');
 const { sanitizeText } = require('../lib/privacy');
 const { getCurrentTime, getSocketRoomKey } = require('../lib/helpers');
+const { receiptsFor, statusFor } = require('../lib/read-state');
 const { BLOB_ID_RE, MAX_BLOBS_PER_MESSAGE, purgeMessageContent } = require('../lib/storage');
 
 
@@ -454,11 +455,13 @@ module.exports = function registerMessageRoutes(app, ctx) {
             const hasMore = messages.length > limit;
             messages = messages.slice(0, limit).reverse();
 
-            // Прочитанным чат отмечается, когда открыли его конец, а не когда
-            // долистали до старых сообщений.
-            const markRead = () => before === null && dbRun(chat.room_id
-                ? 'UPDATE messages SET status = $1 WHERE room_id = $2 AND sent = 0'
-                : 'UPDATE messages SET status = $1 WHERE chat_id = $2 AND sent = 0', ['read', selectParam]);
+            // Прочитанным чат отмечает клиент (POST /api/chats/:id/read), когда
+            // конец переписки у него на экране, — открыть историю ещё не
+            // значит прочитать. Статусы своих сообщений — по отметкам
+            // собеседников (lib/read-state.js). С ботом отвечает сервер —
+            // значит, прочитано.
+            const receipts = chat.room_id ? await receiptsFor(chat.room_id, req.session.userId)
+                : chat.is_bot ? { read: 2147483647, delivered: 2147483647 } : null;
 
             // Срок исчезающих сообщений чата — вместе с первой страницей.
             const expirySeconds = before === null
@@ -466,7 +469,6 @@ module.exports = function registerMessageRoutes(app, ctx) {
                 : undefined;
 
             if (messages.length === 0) {
-                await markRead();
                 return res.json({ success: true, messages: [], hasMore: false, chat, expirySeconds });
             }
 
@@ -541,6 +543,7 @@ module.exports = function registerMessageRoutes(app, ctx) {
 
             messages = messages.map(m => ({
                 ...m,
+                status: statusFor(m.id, receipts),
                 reactions: reactionsMap[m.id] || [],
                 group: m.encrypted ? (groupMap[m.id] || null) : undefined,
                 // Для зашифрованного сообщения без конверта клиент обязан
@@ -550,8 +553,6 @@ module.exports = function registerMessageRoutes(app, ctx) {
                 envelope: m.encrypted ? (envelopeMap[m.id] || null) : undefined,
                 reply_to: m.reply_to_id ? { id: m.reply_to_id, text: m.reply_to_text, deleted: Number(m.reply_to_deleted) === 1, sender_username: m.reply_to_sender_username, sender_avatar: m.reply_to_sender_avatar } : null
             }));
-
-            await markRead();
 
             res.json({ success: true, messages, hasMore, chat, keyEnvelopes, expirySeconds });
         } catch (error) {
@@ -597,6 +598,8 @@ module.exports = function registerMessageRoutes(app, ctx) {
 
             const messageForSocket = {
                 ...fullMessage, sender_username: fullMessage.username, sender_avatar: fullMessage.user_avatar, expires_at: expiresAt,
+                // Бот читает сразу; в остальных чатах статус сдвинут отметки.
+                status: chat.is_bot ? 'read' : 'sent',
             };
             io.to(socketRoomKey).emit('newMessage', messageForSocket);
             res.json({ success: true, message: messageForSocket });
