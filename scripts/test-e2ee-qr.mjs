@@ -160,6 +160,29 @@ await erinPage.waitForFunction(() => document.querySelector('#safety-list .safet
     null, { timeout: 15000 }).catch(() => {});
 check('камерой: код собеседника распознан, собеседник сверен', await state(erinPage) === 'Сверено', await toast(erinPage));
 check('камера после распознавания выключена', await erinPage.evaluate(() => !document.querySelector('.safety-scan-video')));
+
+// Закрыли окно, не досканировав: камера должна погаснуть.
+await erinPage.evaluate(() => closeModal(document.getElementById('safety-modal')));
+await erinPage.click('#chat-encryption');
+await erinPage.waitForSelector('#safety-list .safety-entry');
+await erinPage.evaluate(async () => {
+    // Сверка уже пройдена — кнопки нет; вызываем сканирование напрямую.
+    // Поддельная камера показывает QR, и сканирование кончилось бы само, —
+    // распознавание на время проверки не находит ничего.
+    window.decodeQr = async () => null;
+    window.__tracks = [];
+    const orig = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+    navigator.mediaDevices.getUserMedia = async c => { const s = await orig(c); window.__tracks.push(...s.getTracks()); return s; };
+    const area = document.createElement('div');
+    document.querySelector('#safety-list').appendChild(area);
+    window.__scan = scanWithCamera(area);
+});
+await erinPage.waitForTimeout(800);
+const liveBefore = await erinPage.evaluate(() => window.__tracks.filter(t => t.readyState === 'live').length);
+await erinPage.keyboard.press('Escape');
+await erinPage.waitForTimeout(500);
+const liveAfter = await erinPage.evaluate(() => window.__tracks.filter(t => t.readyState === 'live').length);
+check('закрыли окно посреди сканирования — камера выключилась', liveBefore > 0 && liveAfter === 0, `${liveBefore} → ${liveAfter}`);
 await erinContext.close();
 
 check('ошибок на страницах нет', errors.length === 0, errors.join('; '));

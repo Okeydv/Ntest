@@ -393,6 +393,18 @@ await page.keyboard.press('Escape');
 check('на телефоне приложение занимает видимую высоту', await phonePage.evaluate(() =>
     Math.abs(document.querySelector('.app').getBoundingClientRect().height - innerHeight) < 1));
 
+/* ------------------------- название чата с разметкой ------------------------- */
+
+await page.evaluate(() => api('/api/chats', { method: 'POST', body: JSON.stringify({ name: '<img src=x onerror=alert(1)>' }) }));
+await page.reload({ waitUntil: 'networkidle' });
+await page.waitForTimeout(1200);
+const markup = await page.evaluate(() => {
+    const item = [...document.querySelectorAll('.chat-item')].find(i => i.textContent.includes('onerror'));
+    return item && { imgs: item.querySelectorAll('img').length, avatar: item.querySelector('.chat-avatar-small').textContent };
+});
+check('название чата с разметкой показывается текстом, и буква в аватаре тоже', markup && markup.imgs === 0 && markup.avatar === '<',
+    JSON.stringify(markup));
+
 /* ------------------------- бот ------------------------- */
 
 await page.reload({ waitUntil: 'networkidle' });

@@ -49,25 +49,6 @@ const {
     ENABLE_TOR_ROUTING
 } = require('./lib/tor-support');
 
-// === RUST ANON SERVICE INTEGRATION ===
-const ANON_SERVICE_URL = process.env.ANON_SERVICE_URL || 'http://127.0.0.1:8080';
-
-async function fetchAnonymousIdentity() {
-    try {
-        const res = await fetch(`${ANON_SERVICE_URL}/generate`, {
-            method: 'POST',
-            signal: AbortSignal.timeout(2000)
-        });
-        if (res.ok) {
-            const data = await res.json();
-            if (data.unique_code && data.username) return data;
-        }
-    } catch (e) {
-        console.warn('[Anon] Rust service unavailable, using fallback:', e.message);
-    }
-    return null;
-}
-
 // Какие вложения принимаются — общий с браузером список
 // (public/crypto/filetypes.js): один на оба пути, открытый и
 // зашифрованный. Тип определяется по содержимому файла, а не по тому, что
@@ -178,7 +159,16 @@ function resolveRealIp(headers, connectingIp) {
     return connectingIp;
 }
 
+// Забытый .catch где угодно не должен ронять весь сервер: такой отказ
+// пишется в журнал, и работа продолжается.
+process.on('unhandledRejection', reason => {
+    console.error('[unhandledRejection]', reason instanceof Error ? reason.stack : reason);
+});
+
 const app = express();
+// Название фреймворка наружу ни к чему: это подсказка, какие уязвимости
+// пробовать.
+app.disable('x-powered-by');
 app.set('trust proxy', 1);
 
 app.use((req, res, next) => {
@@ -198,6 +188,20 @@ const loginLimiter = rateLimit({
     legacyHeaders: false,
     keyGenerator: rateLimitKeyGenerator,
     message: { success: false, message: 'Слишком много попыток входа. Попробуйте позже.' }
+});
+
+// Подбор пароля к одному аккаунту с множества адресов лимит по IP не
+// останавливает. Этот считает неудачные попытки на email, откуда бы они ни
+// шли. Удачный вход в него не засчитывается.
+const loginEmailLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    max: 20,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: req => `email:${String((req.body && req.body.email) || '').trim().toLowerCase()}`,
+    skipSuccessfulRequests: true,
+    requestWasSuccessful: (req, res) => res.locals.loggedIn === true,
+    message: { success: false, message: 'Слишком много попыток входа в этот аккаунт. Попробуйте позже.' }
 });
 
 const registerLimiter = rateLimit({
@@ -380,17 +384,24 @@ async function maybeDumpCa() {
     process.exit(0);
 }
 
+// В production — либо TLS до базы с проверкой сертификата (DB_CA_CERT),
+// либо явно без TLS (DB_SSL=disable: база на этом же хосте или во
+// внутренней сети). Раньше без DB_CA_CERT шёл TLS без проверки: он только
+// выглядит защищённым, а подменить сервер базы по дороге можно так же, как
+// без него.
 const sslConfig = (() => {
     if (process.env.NODE_ENV !== 'production') return false;
     if (process.env.DB_CA_CERT) {
-        console.log('[SSL] production: rejectUnauthorized=true, CA закреплён через DB_CA_CERT');
+        console.log('[SSL] production: сертификат базы проверяется (DB_CA_CERT)');
         return { ca: process.env.DB_CA_CERT, rejectUnauthorized: true };
     }
-    console.warn('[SSL] production: DB_CA_CERT не задан — используется rejectUnauthorized=false ' +
-        '(осознанный компромисс под Railway internal network). Чтобы включить полную проверку ' +
-        'сертификата, запустите сервер один раз с DUMP_CA=true, скопируйте цепочку сертификатов ' +
-        'в переменную DB_CA_CERT и перезапустите.');
-    return { rejectUnauthorized: false };
+    if (process.env.DB_SSL === 'disable') {
+        console.log('[SSL] production: соединение с базой без TLS (DB_SSL=disable)');
+        return false;
+    }
+    console.error('[SSL] production: задайте DB_CA_CERT (сертификат базы; цепочку покажет запуск с '
+        + 'DUMP_CA=true) или DB_SSL=disable, если база в той же внутренней сети.');
+    process.exit(1);
 })();
 
 const pool = new Pool({
@@ -616,6 +627,9 @@ async function initDatabase() {
     // оказалась бы отправленной «сегодня в 14:03». Настоящей даты у старых
     // сообщений нет (была только строка «ЧЧ:ММ»), поэтому у них NULL, и
     // клиент показывает прежнюю строку без дня.
+    // Системные сообщения — без автора (см. postSystemMessage).
+    await pool.query(`ALTER TABLE messages ALTER COLUMN user_id DROP NOT NULL;`);
+    await pool.query(`UPDATE messages SET user_id = NULL WHERE message_type = 'system' AND user_id IS NOT NULL;`);
     // Приглашение можно отключить — тогда кода нет вовсе (UNIQUE допускает
     // сколько угодно NULL).
     await pool.query(`ALTER TABLE rooms ALTER COLUMN code DROP NOT NULL;`);
@@ -770,7 +784,7 @@ async function generateUniqueCodeAsync() {
 async function generateAnonymousUsernameAsync() {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
     for (let attempts = 0; attempts < 100; attempts++) {
-        const bytes = crypto.randomBytes(4);
+        const bytes = crypto.randomBytes(5);
         const suffix = Array.from(bytes).map(b => chars[b % chars.length]).join('');
         const username = `Гость-${suffix}`;
         const row = await dbGet('SELECT id FROM users WHERE username = $1', [username]);
@@ -798,7 +812,23 @@ async function generateInviteCodeAsync() {
 // bcrypt.compare выполнялся ВСЕГДА — и когда юзер найден, и когда нет — с
 // одинаковой стоимостью (~100мс), иначе разница во времени ответа позволяет
 // перебором узнавать зарегистрированные email.
-const DUMMY_PASSWORD_HASH = bcrypt.hashSync(crypto.randomBytes(32).toString('hex'), 12);
+// bcrypt учитывает только первые 72 байта пароля: у двух паролей с общим
+// началом такой длины (а по-русски это 36 букв) хеш один и тот же. Поэтому
+// пароль сначала сворачивается SHA-256 (в base64 — без нулевых байтов,
+// которые bcrypt тоже обрезает). Такие хеши помечены префиксом; старые, без
+// него, проверяются как раньше и при удачном входе пересчитываются.
+const PASSWORD_PREFIX = 'sha256-bcrypt$';
+const prehashPassword = password => crypto.createHash('sha256').update(String(password), 'utf8').digest('base64');
+async function hashPassword(password) {
+    return PASSWORD_PREFIX + await bcrypt.hash(prehashPassword(password), 12);
+}
+async function checkPassword(password, stored) {
+    if (stored.startsWith(PASSWORD_PREFIX)) {
+        return bcrypt.compare(prehashPassword(password), stored.slice(PASSWORD_PREFIX.length));
+    }
+    return bcrypt.compare(password, stored);
+}
+const DUMMY_PASSWORD_HASH = PASSWORD_PREFIX + bcrypt.hashSync(prehashPassword(crypto.randomBytes(32).toString('hex')), 12);
 
 const sessionSecret = process.env.SESSION_SECRET;
 if (!sessionSecret) throw new Error('SESSION_SECRET не задан в переменных окружения');
@@ -848,7 +878,8 @@ io.on('connection', (socket) => {
     socket.join(`user:${userId}`);
     socket.join(`session:${socket.request.sessionID}`);
 
-    console.log('Пользователь подключился через WebSocket, userId:', userId, 'deviceId:', socketDeviceId || '—');
+    // Кто и когда подключался — в журнал не пишется: журнал сервера
+    // приватного мессенджера не должен складываться в историю активности.
 
     socket.on('joinChat', async (roomKey) => {
         if (typeof roomKey !== 'string' || roomKey.length === 0) return;
@@ -878,9 +909,6 @@ io.on('connection', (socket) => {
         }
     });
 
-    socket.on('disconnect', () => {
-        console.log('Пользователь отключился, userId:', userId);
-    });
 });
 app.use(express.json());
 app.use(cookieParser());
@@ -915,6 +943,13 @@ app.use((req, res, next) => {
     }
 
     if (safeMethods.includes(req.method)) return next();
+
+    // Второй рубеж, кроме токена: изменяющий запрос с чужого сайта. Браузер
+    // присылает Origin (и Sec-Fetch-Site) сам, подделать их страница не может.
+    // Без Origin — не браузер, это решает токен.
+    if (!isAllowedOrigin(req) || req.headers['sec-fetch-site'] === 'cross-site') {
+        return res.status(403).json({ success: false, message: 'Запрещено: запрос с чужого сайта' });
+    }
 
     // Небезопасный метод: токен обязателен и должен совпадать с уже
     // существовавшей (не только что выставленной в этом же запросе) кукой —
@@ -998,7 +1033,9 @@ app.get('/uploads/:filename', async (req, res) => {
     if (!fs.existsSync(filePath)) return res.status(404).json({ success: false, message: 'Файл не найден' });
     try {
         const allowed = await userCanAccessFile(req.session.userId, filename);
-        if (!allowed) return res.status(403).json({ success: false, message: 'Доступ запрещён' });
+        // Тот же 404, что и на несуществующий файл: иначе по 403 было бы
+        // видно, что файл с таким именем есть.
+        if (!allowed) return res.status(404).json({ success: false, message: 'Файл не найден' });
     } catch (err) {
         console.error('Uploads access check error:', err);
         return res.status(500).json({ success: false, message: 'Ошибка проверки доступа' });
@@ -1095,7 +1132,7 @@ app.post('/api/register', registerLimiter, async (req, res) => {
         if (existing) return res.json({ success: false, message: 'Ошибка регистрации. Проверьте введённые данные.' });
 
         const uniqueCode = await generateUniqueCodeAsync();
-        const hashedPassword = await bcrypt.hash(password, 12);
+        const hashedPassword = await hashPassword(password);
 
         const client = await pool.connect();
         let userId;
@@ -1135,22 +1172,10 @@ app.post('/api/register', registerLimiter, async (req, res) => {
 
 app.post('/api/register/anonymous', registerLimiter, async (req, res) => {
     try {
-        let uniqueCode, username;
-        const rustIdentity = await fetchAnonymousIdentity();
-        if (rustIdentity) {
-            uniqueCode = rustIdentity.unique_code;
-            username = rustIdentity.username;
-            const existingCode = await dbGet('SELECT id FROM users WHERE unique_code = $1', [uniqueCode]);
-            const existingName = await dbGet('SELECT id FROM users WHERE username = $1', [username]);
-            if (existingCode || existingName) {
-                console.warn('[Anon] Rust-generated identity collision, using fallback');
-                uniqueCode = await generateUniqueCodeAsync();
-                username = await generateAnonymousUsernameAsync();
-            }
-        } else {
-            uniqueCode = await generateUniqueCodeAsync();
-            username = await generateAnonymousUsernameAsync();
-        }
+        // Раньше код и имя выдавал отдельный сервис на Rust, слушавший все
+        // сетевые интерфейсы. Случайную строку Node делает и сам.
+        const uniqueCode = await generateUniqueCodeAsync();
+        const username = await generateAnonymousUsernameAsync();
 
         // Генерация уникального session fingerprint для анонимного пользователя
         const sessionFingerprint = generateSecureToken(32);
@@ -1190,7 +1215,6 @@ app.post('/api/register/anonymous', registerLimiter, async (req, res) => {
         // Устанавливаем короткий срок жизни сессии для анонимных пользователей
         req.session.cookie.maxAge = 4 * 60 * 60 * 1000; // 4 часа
 
-        console.log(`[Anon] New anonymous user created: ${username} (ID: ${userId})`);
 
         res.json({
             success: true,
@@ -1210,7 +1234,7 @@ app.post('/api/register/anonymous', registerLimiter, async (req, res) => {
     }
 });
 
-app.post('/api/login', loginLimiter, async (req, res) => {
+app.post('/api/login', loginLimiter, loginEmailLimiter, async (req, res) => {
     const { email, password } = req.body;
     if (!email || !password) return res.json({ success: false, message: 'Введите email и пароль' });
     if (email.length > 254 || password.length > 128) return res.json({ success: false, message: 'Неверный email или пароль' });
@@ -1224,13 +1248,17 @@ app.post('/api/login', loginLimiter, async (req, res) => {
         // это убирает разницу во времени ответа между "нет такого email"
         // и "неверный пароль" (см. п.4 аудита).
         const hashToCheck = (user && user.password) ? user.password : DUMMY_PASSWORD_HASH;
-        const validPassword = await bcrypt.compare(password, hashToCheck);
+        const validPassword = await checkPassword(password, hashToCheck);
 
         // Дополнительная случайная задержка
         await addRandomDelay(20, 80);
 
         if (!user || !user.password || !validPassword) {
             return res.json({ success: false, message: 'Неверный email или пароль' });
+        }
+        res.locals.loggedIn = true;
+        if (!user.password.startsWith(PASSWORD_PREFIX)) {
+            await dbRun('UPDATE users SET password = $1 WHERE id = $2', [await hashPassword(password), user.id]);
         }
 
         try {
@@ -1254,6 +1282,18 @@ app.post('/api/login', loginLimiter, async (req, res) => {
  * у которой нет внешнего ключа на users.
  */
 async function deleteAnonymousAccount(userId) {
+    // Участники его комнат должны увидеть, что он ушёл: его сообщения
+    // исчезают вместе с аккаунтом.
+    const user = await dbGet('SELECT username FROM users WHERE id = $1', [userId]);
+    const rooms = await dbAll(
+        `SELECT DISTINCT rp.room_id FROM room_participants rp
+         WHERE rp.user_id = $1
+           AND EXISTS (SELECT 1 FROM room_participants o WHERE o.room_id = rp.room_id AND o.user_id <> $1)`,
+        [userId]
+    );
+    for (const { room_id: roomId } of rooms) {
+        await postSystemMessage({ roomId, chatId: null, text: `${user ? user.username : 'Участник'} вышел(ла) из чата` });
+    }
     await e2eeProxy.revokeAllKeys(userId);
     await dbRun('DELETE FROM devices WHERE user_id = $1', [userId]);
     await dbRun('DELETE FROM messages WHERE user_id = $1', [userId]);
@@ -1285,7 +1325,9 @@ async function sweepAnonymousAccounts() {
         }
         if (stale.length) console.log(`[Anon] Удалено брошенных анонимных аккаунтов: ${stale.length}`);
     } catch (error) {
-        console.error('[Anon] Sweep error:', error.message);
+        // Таблицу сессий создаёт connect-pg-simple при первом входе — до
+        // него убирать и некого.
+        if (error.code !== '42P01') console.error('[Anon] Sweep error:', error.message);
     }
 }
 setInterval(sweepAnonymousAccounts, ANON_SWEEP_INTERVAL_MS).unref();
@@ -1297,7 +1339,6 @@ app.post('/api/logout', async (req, res) => {
     if (isAnonymous && userId) {
         try {
             await deleteAnonymousAccount(userId);
-            console.log(`[Anon] Successfully cleaned up anonymous user ${userId}`);
         } catch (error) {
             console.error('[Anon] Cleanup error:', error);
         }
@@ -2023,7 +2064,7 @@ app.get('/api/messages/:chatId', async (req, res) => {
             ? `SELECT m.*, u.username as sender_username, u.avatar as sender_avatar,
                       rt.id as reply_to_id, rt.text as reply_to_text, rt.deleted as reply_to_deleted, ru.username as reply_to_sender_username, ru.avatar as reply_to_sender_avatar
                FROM messages m
-               JOIN users u ON m.user_id = u.id
+               LEFT JOIN users u ON m.user_id = u.id
                LEFT JOIN messages rt ON m.reply_to_id = rt.id AND rt.room_id = m.room_id
                LEFT JOIN users ru ON rt.user_id = ru.id
                WHERE m.room_id = $1 AND m.deleted = 0
@@ -2031,7 +2072,7 @@ app.get('/api/messages/:chatId', async (req, res) => {
             : `SELECT m.*, u.username as sender_username, u.avatar as sender_avatar,
                       rt.id as reply_to_id, rt.text as reply_to_text, rt.deleted as reply_to_deleted, ru.username as reply_to_sender_username, ru.avatar as reply_to_sender_avatar
                FROM messages m
-               JOIN users u ON m.user_id = u.id
+               LEFT JOIN users u ON m.user_id = u.id
                LEFT JOIN messages rt ON m.reply_to_id = rt.id AND rt.chat_id = m.chat_id AND rt.room_id IS NULL
                LEFT JOIN users ru ON rt.user_id = ru.id
                WHERE m.chat_id = $1 AND m.deleted = 0
@@ -2263,18 +2304,17 @@ app.post('/api/chats', async (req, res) => {
  * читает ещё кто-то: его устройства получали ключи автоматически.
  * Шифровать тут нечего — сервер эти события и так знает.
  */
-async function postSystemMessage({ roomId, chatId, userId, text }) {
+//
+// Автора у него нет (user_id — NULL): имя — в самом тексте. Раньше автором
+// записывался тот, о ком строка, и она пропадала вместе с его сообщениями —
+// анонимный аккаунт, удаляясь, уходил из чата без следа.
+async function postSystemMessage({ roomId, chatId, text }) {
     const inserted = await pool.query(
         `INSERT INTO messages (chat_id, room_id, user_id, text, message_type, sent, time, status)
-         VALUES ($1, $2, $3, $4, 'system', 0, $5, 'read') RETURNING id`,
-        [chatId, roomId, userId, text, getCurrentTime()]
+         VALUES ($1, $2, NULL, $3, 'system', 0, $4, 'read') RETURNING *`,
+        [chatId, roomId, text, getCurrentTime()]
     );
-    const message = await dbGet(
-        `SELECT m.*, u.username AS sender_username, u.avatar AS sender_avatar
-         FROM messages m JOIN users u ON u.id = m.user_id WHERE m.id = $1`,
-        [inserted.rows[0].id]
-    );
-    io.to(`room:${roomId}`).emit('newMessage', message);
+    io.to(`room:${roomId}`).emit('newMessage', inserted.rows[0]);
 }
 
 app.get('/api/chats/invite/:chatId', async (req, res) => {
@@ -2311,7 +2351,7 @@ app.post('/api/chats/:chatId/invite', async (req, res) => {
         await dbRun('UPDATE rooms SET code = $1 WHERE id = $2', [code, chat.room_id]);
         const user = await dbGet('SELECT username FROM users WHERE id = $1', [req.session.userId]);
         await postSystemMessage({
-            roomId: chat.room_id, chatId: chat.id, userId: req.session.userId,
+            roomId: chat.room_id, chatId: chat.id,
             text: `${user.username} ${code ? 'сменил(а) код приглашения' : 'отключил(а) приглашение'}`,
         });
         res.json({ success: true, code });
@@ -2352,7 +2392,7 @@ app.post('/api/chats/join', joinLimiter, async (req, res) => {
         res.locals.joined = true;
         const me = await dbGet('SELECT username FROM users WHERE id = $1', [req.session.userId]);
         await postSystemMessage({
-            roomId: room.id, chatId: chatResult.rows[0].id, userId: req.session.userId,
+            roomId: room.id, chatId: chatResult.rows[0].id,
             text: `${me.username} вошёл(ла) в чат по коду приглашения`,
         });
         res.json({ success: true, chat: { id: chatResult.rows[0].id, name: chatName, avatar, online: 0, is_bot: 0, room_id: room.id, invite_code: room.code } });
@@ -2383,7 +2423,7 @@ app.delete('/api/chats/:chatId', async (req, res) => {
             if (remaining && Number(remaining.cnt) > 0) {
                 const me = await dbGet('SELECT username FROM users WHERE id = $1', [req.session.userId]);
                 await postSystemMessage({
-                    roomId: chat.room_id, chatId: null, userId: req.session.userId,
+                    roomId: chat.room_id, chatId: null,
                     text: `${me.username} вышел(ла) из чата`,
                 });
             }
@@ -2578,8 +2618,12 @@ app.post('/api/messages/file', upload.single('file'), async (req, res) => {
         const senderUsername = senderUser ? senderUser.username : '';
         const senderAvatar = senderUser ? (senderUser.avatar || '') : '';
 
-        setTimeout(() => dbRun('UPDATE messages SET status = $1 WHERE id = $2', ['delivered', messageId]), 1000);
-        setTimeout(() => dbRun('UPDATE messages SET status = $1 WHERE id = $2', ['read', messageId]), 2000);
+        // Без .catch сбой базы здесь был бы необработанным отказом промиса —
+        // а он роняет Node целиком.
+        const markStatus = status => dbRun('UPDATE messages SET status = $1 WHERE id = $2', [status, messageId])
+            .catch(err => console.error('File message status error:', err.message));
+        setTimeout(() => markStatus('delivered'), 1000);
+        setTimeout(() => markStatus('read'), 2000);
 
         const fileMessage = {
             id: messageId, chat_id: Number(chatId), room_id: roomId, user_id: req.session.userId,
@@ -2817,9 +2861,9 @@ app.post('/api/change-password', passwordLimiter, async (req, res) => {
         const user = await dbGet('SELECT password FROM users WHERE id = $1', [req.session.userId]);
         if (!user) return res.json({ success: false, message: 'Пользователь не найден' });
         if (!user.password) return res.json({ success: false, message: 'У этого аккаунта нет пароля (приватный режим)' });
-        const validPassword = await bcrypt.compare(currentPassword, user.password);
+        const validPassword = await checkPassword(currentPassword, user.password);
         if (!validPassword) return res.json({ success: false, message: 'Неверный текущий пароль' });
-        const hashedPassword = await bcrypt.hash(newPassword, 12);
+        const hashedPassword = await hashPassword(newPassword);
         const userId = req.session.userId;
 
         await dbRun('UPDATE users SET password = $1 WHERE id = $2', [hashedPassword, userId]);
@@ -2837,6 +2881,22 @@ app.post('/api/change-password', passwordLimiter, async (req, res) => {
         console.error('Change password error:', error);
         res.json({ success: false, message: 'Ошибка изменения пароля' });
     }
+});
+
+// security.txt (RFC 9116): куда сообщать об уязвимостях. Адрес — из
+// SECURITY_CONTACT; не задан — файла нет.
+app.get('/.well-known/security.txt', (req, res, next) => {
+    const contact = process.env.SECURITY_CONTACT;
+    if (!contact) return next();
+    const expires = new Date(Date.now() + 180 * 24 * 60 * 60 * 1000).toISOString();
+    res.type('text/plain').send(`Contact: ${contact}\nExpires: ${expires}\nPreferred-Languages: ru, en\n`);
+});
+
+// Всё, чего нет, — один и тот же ответ, без страницы Express «Cannot GET»,
+// по которой видно фреймворк. Для API — JSON, для остального — страница.
+app.use((req, res) => {
+    if (req.path.startsWith('/api/')) return res.status(404).json({ success: false, message: 'Не найдено' });
+    res.status(404).type('text/html').send('<!doctype html><meta charset="utf-8"><title>Не найдено</title><p>Не найдено</p>');
 });
 
 app.use((err, req, res, next) => {

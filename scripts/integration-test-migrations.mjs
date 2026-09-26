@@ -4,7 +4,8 @@
 //     даты у них нет), а не время миграции; новые — момент отправки;
 //   - база, где прежняя миграция уже проставила всем старым сообщениям своё
 //     время: оно снимается, а у сообщений с настоящим временем остаётся;
-//   - починка идёт один раз, повторный запуск ничего не трогает.
+//   - починка идёт один раз, повторный запуск ничего не трогает;
+//   - в production без проверки сертификата базы сервер не запускается.
 //
 // Тест сам запускает второй экземпляр server.js (порт 3007) на той же базе:
 // миграции идут при старте сервера. Требует поднятых Postgres и сервера на
@@ -102,6 +103,26 @@ server = await startServer();
 const untouched = await db.query(`SELECT count(*) FROM messages WHERE created_at = '2026-04-01T09:00:00Z'`);
 check('повторный запуск ничего не трогает', Number(untouched.rows[0].count) === 2);
 await server.stop();
+
+/* ------------------------- production без проверки TLS ------------------------- */
+
+// Без DB_CA_CERT и без явного DB_SSL=disable production не запускается:
+// TLS без проверки сертификата только выглядит защищённым.
+const prod = spawn(process.execPath, ['server.js'], {
+    cwd: ROOT,
+    env: { ...process.env, NODE_ENV: 'production', DATABASE_URL: process.env.TEST_DATABASE_URL, PORT: '3008',
+        SESSION_SECRET: 'test-session-secret-at-least-32-chars-long', DB_CA_CERT: '', DB_SSL: '' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+});
+let prodLog = '';
+prod.stdout.on('data', d => { prodLog += d; });
+prod.stderr.on('data', d => { prodLog += d; });
+const prodCode = await new Promise(resolve => {
+    const timer = setTimeout(() => { prod.kill(); resolve('не вышел'); }, 15000);
+    prod.once('exit', code => { clearTimeout(timer); resolve(code); });
+});
+check('production без DB_CA_CERT и DB_SSL=disable не запускается', prodCode === 1 && /DB_CA_CERT/.test(prodLog),
+    `код ${prodCode}`);
 
 await db.end();
 console.log(fails ? `\n${fails} проверок провалено` : '\nвсе проверки пройдены');

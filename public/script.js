@@ -474,7 +474,11 @@ async function scanWithCamera(container) {
         await video.play();
         return await new Promise(resolve => {
             let done = false;
-            cancel.addEventListener('click', () => { done = true; resolve(null); });
+            const stop = () => { done = true; resolve(null); };
+            cancel.addEventListener('click', stop);
+            // Закрыли окно сверки (крестиком, Esc, кликом мимо) — камера
+            // гаснет вместе с ним, а не продолжает снимать в скрытом окне.
+            container.closest('dialog')?.addEventListener('close', stop, { once: true });
             const tick = async () => {
                 if (done) return;
                 if (video.readyState >= 2 && video.videoWidth > 0) {
@@ -1353,18 +1357,8 @@ async function loadChats() {
     // for...of, а не forEach: превью зашифрованных чатов лежит в IndexedDB,
     // и его чтение асинхронно.
     for (const chat of data.chats) {
-        const div = document.createElement('div');
-        div.className = 'chat-item';
-        div.dataset.id = chat.id;
+        const div = chatItemElement(chat, await chatPreview(chat));
         div.dataset.roomId = chat.room_id || '';
-        div.innerHTML = `
-            <div class="chat-avatar-small" style="background:${chat.avatar && chat.avatar.startsWith('#') ? chat.avatar : DEFAULT_AVATAR}">${chat.name.charAt(0).toUpperCase()}</div>
-            <div class="chat-info">
-                <div class="chat-name">${escapeHtml(chat.name)}</div>
-                <div class="chat-last">${escapeHtml(await chatPreview(chat))}</div>
-            </div>
-            ${chat.unread > 0 ? `<div class="chat-badge">${chat.unread}</div>` : ''}
-        `;
         div.addEventListener('click', () => openChat(chat.id, chat.room_id, chat.name, chat.avatar, chat.online, chat.is_bot));
         elements.chatsList.appendChild(div);
     }
@@ -1439,7 +1433,7 @@ async function openChat(chatId, roomId, name, avatar, online, isBot) {
     elements.chatStatus.textContent = isBot ? 'Бот' : (online ? 'В сети' : 'Не в сети');
     elements.chatStatus.className = 'status ' + (online ? 'online' : 'offline');
     elements.chatAvatar.textContent = name.charAt(0).toUpperCase();
-    elements.chatAvatar.style.background = (avatar && avatar.startsWith('#')) ? avatar : DEFAULT_AVATAR;
+    elements.chatAvatar.style.background = /^#[0-9a-f]{3,8}$/i.test(avatar || '') ? avatar : DEFAULT_AVATAR;
     elements.chatHeader.classList.remove('hidden');
     elements.messageInputContainer.classList.remove('hidden');
     elements.emptyState.classList.add('hidden');
@@ -2373,28 +2367,50 @@ async function performSearch() {
     }
 
     data.results.chats.forEach(chat => {
-        const div = document.createElement('div');
-        div.className = 'chat-item';
-        div.dataset.id = chat.id;
-        div.innerHTML = `
-            <div class="chat-avatar-small" style="background:${chat.avatar && chat.avatar.startsWith('#') ? chat.avatar : DEFAULT_AVATAR}">${chat.name.charAt(0).toUpperCase()}</div>
-            <div class="chat-info">
-                <div class="chat-name">${escapeHtml(chat.name)}</div>
-            </div>
-        `;
+        const div = chatItemElement(chat, null);
         div.addEventListener('click', () => openChat(chat.id, null, chat.name, chat.avatar, 0, 0));
         elements.chatsList.appendChild(div);
     });
+}
+
+/**
+ * Элемент списка чатов — через DOM, а не шаблонной строкой в innerHTML:
+ * первая буква названия и цвет аватара попадали туда без экранирования.
+ * Цвет принимается только вида #rrggbb.
+ */
+function chatItemElement(chat, previewText) {
+    const div = document.createElement('div');
+    div.className = 'chat-item';
+    div.dataset.id = chat.id;
+    const avatar = document.createElement('div');
+    avatar.className = 'chat-avatar-small';
+    avatar.style.background = /^#[0-9a-f]{3,8}$/i.test(chat.avatar || '') ? chat.avatar : DEFAULT_AVATAR;
+    avatar.textContent = chat.name.charAt(0).toUpperCase();
+    const info = document.createElement('div');
+    info.className = 'chat-info';
+    const name = document.createElement('div');
+    name.className = 'chat-name';
+    name.textContent = chat.name;
+    info.appendChild(name);
+    if (previewText !== null) {
+        const last = document.createElement('div');
+        last.className = 'chat-last';
+        last.textContent = previewText;
+        info.appendChild(last);
+    }
+    div.append(avatar, info);
+    if (chat.unread > 0) {
+        const badge = document.createElement('div');
+        badge.className = 'chat-badge';
+        badge.textContent = String(chat.unread);
+        div.appendChild(badge);
+    }
+    return div;
 }
 
 function scrollToBottom() {
     elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
 }
 
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
 
 init();
