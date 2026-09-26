@@ -11,6 +11,7 @@ pub struct SignedPrekeyRow {
 pub struct IdentityRow {
     pub identity_signing_key: [u8; PUBKEY_LEN],
     pub identity_dh_key: [u8; PUBKEY_LEN],
+    pub identity_dh_signature: Option<[u8; SIGNATURE_LEN]>,
 }
 
 pub struct OneTimePrekeyRow {
@@ -63,11 +64,12 @@ pub async fn insert_identity_keys(
     device_id: i64,
     signing_key: &[u8; PUBKEY_LEN],
     dh_key: &[u8; PUBKEY_LEN],
+    dh_signature: Option<&[u8; SIGNATURE_LEN]>,
 ) -> Result<IdentityWrite, sqlx::Error> {
     let inserted = sqlx::query_as::<_, (i64,)>(
         r#"
-        INSERT INTO identity_keys (user_id, device_id, identity_signing_key, identity_dh_key, updated_at)
-        VALUES ($1, $2, $3, $4, now())
+        INSERT INTO identity_keys (user_id, device_id, identity_signing_key, identity_dh_key, identity_dh_signature, updated_at)
+        VALUES ($1, $2, $3, $4, $5, now())
         ON CONFLICT (user_id, device_id) DO NOTHING
         RETURNING device_id
         "#,
@@ -76,6 +78,7 @@ pub async fn insert_identity_keys(
     .bind(device_id)
     .bind(&signing_key[..])
     .bind(&dh_key[..])
+    .bind(dh_signature.map(|s| s.to_vec()))
     .fetch_optional(pool)
     .await?;
     if inserted.is_some() {
@@ -90,6 +93,19 @@ pub async fn insert_identity_keys(
     .fetch_one(pool)
     .await?;
     if existing.0 == signing_key[..] && existing.1 == dh_key[..] {
+        // Устройство, зарегистрированное до подписей, дописывает подпись
+        // при следующем запуске. Ключи при этом не меняются, а подпись уже
+        // проверена обработчиком.
+        if let Some(sig) = dh_signature {
+            sqlx::query(
+                "UPDATE identity_keys SET identity_dh_signature = $3 WHERE user_id = $1 AND device_id = $2 AND identity_dh_signature IS NULL",
+            )
+            .bind(user_id)
+            .bind(device_id)
+            .bind(sig.to_vec())
+            .execute(pool)
+            .await?;
+        }
         Ok(IdentityWrite::Unchanged)
     } else {
         Ok(IdentityWrite::Conflict)
@@ -106,9 +122,9 @@ pub async fn fetch_identities(
     pool: &PgPool,
     target_user_id: i64,
 ) -> Result<Vec<(i64, IdentityRow)>, sqlx::Error> {
-    let rows = sqlx::query_as::<_, (i64, Vec<u8>, Vec<u8>)>(
+    let rows = sqlx::query_as::<_, (i64, Vec<u8>, Vec<u8>, Option<Vec<u8>>)>(
         r#"
-        SELECT device_id, identity_signing_key, identity_dh_key
+        SELECT device_id, identity_signing_key, identity_dh_key, identity_dh_signature
         FROM identity_keys
         WHERE user_id = $1
         ORDER BY device_id ASC
@@ -120,12 +136,13 @@ pub async fn fetch_identities(
 
     Ok(rows
         .into_iter()
-        .map(|(device_id, signing, dh)| {
+        .map(|(device_id, signing, dh, dh_sig)| {
             (
                 device_id,
                 IdentityRow {
                     identity_signing_key: to_arr32(signing),
                     identity_dh_key: to_arr32(dh),
+                    identity_dh_signature: dh_sig.map(to_arr64),
                 },
             )
         })
@@ -245,11 +262,12 @@ pub async fn fetch_bundles(
 
     // Один запрос на identity + signed prekey: INNER JOIN сам отбрасывает
     // устройства с неполным материалом.
-    let rows = sqlx::query_as::<_, (i64, Vec<u8>, Vec<u8>, i64, Vec<u8>, Vec<u8>)>(
+    let rows = sqlx::query_as::<_, (i64, Vec<u8>, Vec<u8>, Option<Vec<u8>>, i64, Vec<u8>, Vec<u8>)>(
         r#"
         SELECT ik.device_id,
                ik.identity_signing_key,
                ik.identity_dh_key,
+               ik.identity_dh_signature,
                sp.key_id,
                sp.public_key,
                sp.signature
@@ -265,7 +283,7 @@ pub async fn fetch_bundles(
     .await?;
 
     let mut bundles = Vec::with_capacity(rows.len());
-    for (device_id, signing_key, dh_key, spk_key_id, spk_pub, spk_sig) in rows {
+    for (device_id, signing_key, dh_key, dh_sig, spk_key_id, spk_pub, spk_sig) in rows {
         let otpk = sqlx::query_as::<_, (i64, i64, Vec<u8>)>(
             r#"
             DELETE FROM one_time_prekeys
@@ -289,6 +307,7 @@ pub async fn fetch_bundles(
             identity: IdentityRow {
                 identity_signing_key: to_arr32(signing_key),
                 identity_dh_key: to_arr32(dh_key),
+                identity_dh_signature: dh_sig.map(to_arr64),
             },
             signed_prekey: SignedPrekeyRow {
                 key_id: spk_key_id,

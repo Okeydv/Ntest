@@ -273,6 +273,28 @@ const listPreview = await ivy.page.evaluate(id =>
 check('старые страницы не перебивают превью в списке чатов', listPreview === 'страница 12', listPreview);
 await ivy.page.setViewportSize({ width: 1280, height: 720 });
 
+/* ------------------------- сообщение из новой версии ------------------------- */
+
+// Сервер доставил конверт с заголовком версии 2 — так выглядело бы
+// сообщение от клиента новее этого. Показывается просьба обновить
+// страницу, а ключ сообщения не тратится: после «обновления» (версия
+// снова 1) то же сообщение читается.
+await ivy.page.goto('about:blank');
+await send(alice.page, 'из будущей версии');
+const futureId = (await db.query("SELECT max(id) AS id FROM messages WHERE room_id = $1", [ivyRoom.roomId])).rows[0].id;
+await db.query('UPDATE message_envelopes SET header = set_byte(header, 0, 2) WHERE message_id = $1 AND recipient_device_id = $2',
+    [futureId, ivyInfo.deviceId]);
+await ivy.page.goto(BASE, { waitUntil: 'networkidle' });
+await openRoom(ivy.page, ivyRoom.roomId);
+const futureShown = await ivy.page.evaluate(id =>
+    document.querySelector(`[data-message-id="${id}"] .message-locked`)?.textContent || '', futureId);
+check('сообщение из более новой версии — просьба обновить страницу', /более новой версии Nyxo — обновите страницу/.test(futureShown),
+    futureShown);
+await db.query('UPDATE message_envelopes SET header = set_byte(header, 0, 1) WHERE message_id = $1 AND recipient_device_id = $2',
+    [futureId, ivyInfo.deviceId]);
+await openRoom(ivy.page, ivyRoom.roomId);
+check('после обновления то же сообщение читается — ключ не потрачен', await waitText(ivy.page, 'из будущей версии'));
+
 /* ------------------------- новые устройства аккаунта ------------------------- */
 
 const toastText = page => page.evaluate(() =>

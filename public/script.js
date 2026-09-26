@@ -323,6 +323,7 @@ function applyDecryptedContent(message, content) {
     message.text = content && content.t === 'text' ? content.body : '';
     message.encryptedFile = content && content.t === 'file' ? content : null;
     message.brokenAttachment = Boolean(content && content.t === 'invalid');
+    message.newerVersion = Boolean(content && content.t === 'newer');
 }
 
 /**
@@ -2401,6 +2402,13 @@ function createMessageElement(message) {
     if (message.deleted) {
         const em = document.createElement('em');
         em.textContent = 'Сообщение удалено';
+        contentDiv.appendChild(em);
+    } else if (message.newerVersion) {
+        // Отправлено более новой версией Nyxo: разобрать её формат этот
+        // клиент не может, но после обновления страницы сообщение прочитается.
+        const em = document.createElement('em');
+        em.className = 'message-locked';
+        em.textContent = 'Сообщение из более новой версии Nyxo — обновите страницу';
         contentDiv.appendChild(em);
     } else if (message.undecryptable) {
         // Сообщение зашифровано, но ключа у этого устройства нет: оно

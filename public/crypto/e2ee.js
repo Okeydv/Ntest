@@ -33,7 +33,7 @@ const X3DH_PREFIX = new Uint8Array(32).fill(0xff);
 const ENVELOPE_PREKEY = 1;
 const ENVELOPE_NORMAL = 2;
 
-const HEADER_VERSION = 1;
+export const HEADER_VERSION = 1;
 const HEADER_NORMAL_LEN = 42;
 const HEADER_PREKEY_LEN = 146;
 
@@ -117,12 +117,35 @@ export async function generateIdentity({ extractable = false } = {}) {
     return { signing, dh: dhKeys };
 }
 
+/*
+ * Два ключа личности связаны подписью: X25519-ключ подписан Ed25519-ключом
+ * того же устройства, с контекстом — чтобы такую подпись нельзя было выдать
+ * за подпись signed prekey. Без неё сервер мог бы отдать настоящий ключ
+ * подписи вместе с чужим ключом для DH. Проверяет её и e2ee-key-server
+ * (crypto::verify_identity_dh), и каждый получатель bundle.
+ */
+const IDENTITY_DH_CONTEXT = new TextEncoder().encode('nyxo/identity-dh/v1');
+
 /** Публичная часть личности — то, что уходит на key-server. */
 export async function exportIdentityPublic(identity) {
+    const dhPub = await rawPub(identity.dh.publicKey);
+    const signature = new Uint8Array(await subtle.sign({ name: 'Ed25519' }, identity.signing.privateKey,
+        concat(IDENTITY_DH_CONTEXT, dhPub)));
     return {
         identity_signing_key: toB64(await rawPub(identity.signing.publicKey)),
-        identity_dh_key: toB64(await rawPub(identity.dh.publicKey)),
+        identity_dh_key: toB64(dhPub),
+        identity_dh_signature: toB64(signature),
     };
+}
+
+/** Подписан ли X25519-ключ личности её же Ed25519-ключом. */
+export async function verifyIdentityBinding(signingKeyB64, dhKeyB64, signatureB64) {
+    try {
+        const key = await subtle.importKey('raw', fromB64(signingKeyB64), { name: 'Ed25519' }, false, ['verify']);
+        return await subtle.verify({ name: 'Ed25519' }, key, fromB64(signatureB64), concat(IDENTITY_DH_CONTEXT, fromB64(dhKeyB64)));
+    } catch {
+        return false;
+    }
 }
 
 /**

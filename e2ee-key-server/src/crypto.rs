@@ -74,6 +74,27 @@ pub fn verify_signed_prekey(
         .map_err(|_| AppError::BadRequest("signed_prekey: signature verification failed".into()))
 }
 
+/// Контекст подписи DH-ключа личности: подпись этого вида нельзя выдать ни
+/// за подпись signed prekey, ни наоборот.
+pub const IDENTITY_DH_CONTEXT: &[u8] = b"nyxo/identity-dh/v1";
+
+/// Проверяет, что X25519-ключ личности подписан Ed25519-ключом того же
+/// устройства: подписывается IDENTITY_DH_CONTEXT || identity_dh_key.
+pub fn verify_identity_dh(
+    identity_signing_key: &[u8; PUBKEY_LEN],
+    identity_dh_key: &[u8; PUBKEY_LEN],
+    signature: &[u8; SIGNATURE_LEN],
+) -> Result<(), AppError> {
+    let verifying_key = VerifyingKey::from_bytes(identity_signing_key)
+        .map_err(|_| AppError::BadRequest("identity_signing_key: invalid Ed25519 point".into()))?;
+    let mut message = Vec::with_capacity(IDENTITY_DH_CONTEXT.len() + PUBKEY_LEN);
+    message.extend_from_slice(IDENTITY_DH_CONTEXT);
+    message.extend_from_slice(identity_dh_key);
+    verifying_key
+        .verify(&message, &Signature::from_bytes(signature))
+        .map_err(|_| AppError::BadRequest("identity_dh_signature: signature verification failed".into()))
+}
+
 pub fn encode_b64(bytes: &[u8]) -> String {
     STANDARD.encode(bytes)
 }
@@ -153,5 +174,21 @@ mod tests {
         let bad_b64 = encode_b64(&[1u8; 32]); // подпись должна быть 64 байта
         let result = decode_signature("test_field", &bad_b64);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn identity_dh_signature_binds_dh_key() {
+        let signing_key = fixed_signing_key(7);
+        let dh_key = [9u8; 32];
+        let mut message = IDENTITY_DH_CONTEXT.to_vec();
+        message.extend_from_slice(&dh_key);
+        let sig = signing_key.sign(&message).to_bytes();
+        let verifying = signing_key.verifying_key().to_bytes();
+        assert!(verify_identity_dh(&verifying, &dh_key, &sig).is_ok());
+        // Другой DH-ключ с той же подписью не проходит.
+        assert!(verify_identity_dh(&verifying, &[8u8; 32], &sig).is_err());
+        // Подпись без контекста (как у signed prekey) — тоже.
+        let bare = signing_key.sign(&dh_key).to_bytes();
+        assert!(verify_identity_dh(&verifying, &dh_key, &bare).is_err());
     }
 }

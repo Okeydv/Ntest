@@ -23,6 +23,15 @@ const subtle = globalThis.crypto.subtle;
 // собеседник мог бы набрать текст, который клиент примет за файл. Здесь
 // набранный JSON просто окажется внутри body.
 const PAYLOAD_VERSION = 1;
+
+/*
+ * Сообщение из более новой версии Nyxo: версия заголовка или данных
+ * больше, чем умеет этот клиент. Такое не расшифровывается и не
+ * показывается кашей — только просьбой обновить страницу (ключ сообщения
+ * при этом не расходуется, после обновления оно прочитается).
+ * NEWER_VERSION_MARK — метка, которую возвращает расшифровка вместо текста.
+ */
+export const NEWER_VERSION_MARK = '\u0000nyxo:newer-version';
 const BLOB_ID_RE = /^[0-9a-f]{32}$/;
 const MAX_NAME = 255;
 
@@ -57,9 +66,11 @@ function validFile(p) {
  */
 export function decodePayload(str) {
     if (typeof str !== 'string') return null;
+    if (str === NEWER_VERSION_MARK) return { t: 'newer' };
     if (str.startsWith('{')) {
         let parsed = null;
         try { parsed = JSON.parse(str); } catch { /* не JSON — обычный текст */ }
+        if (parsed && Number.isInteger(parsed.v) && parsed.v > PAYLOAD_VERSION) return { t: 'newer' };
         if (parsed && parsed.v === PAYLOAD_VERSION) {
             if (parsed.t === 'text' && typeof parsed.body === 'string') return parsed;
             // Имя назначил отправитель — и его клиент мог быть каким угодно.
@@ -76,6 +87,7 @@ export function decodePayload(str) {
 export function payloadPreview(p) {
     if (!p) return '';
     if (p.t === 'text') return p.body;
+    if (p.t === 'newer') return 'Сообщение из новой версии Nyxo';
     if (p.t === 'file') {
         if (IMAGE_TYPES.has(p.mime)) return 'Фото';
         if (VIDEO_TYPES.has(p.mime)) return 'Видео';

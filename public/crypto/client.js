@@ -8,17 +8,18 @@
 // прогнать в тестах, подменив api().
 
 import {
-    generateIdentity, exportIdentityPublic, generateSignedPrekey, generateOneTimePrekeys,
+    generateIdentity, exportIdentityPublic, verifyIdentityBinding, generateSignedPrekey, generateOneTimePrekeys,
     initiateSession, acceptSession, encryptMessage, decryptToText,
     exportSession, importSession, parseHeader, toB64, fromB64,
-    ENVELOPE_PREKEY,
+    ENVELOPE_PREKEY, HEADER_VERSION,
 } from './e2ee.js';
 import * as store from './store.js';
 import { userFingerprint, combineFingerprints } from './safety.js';
 import {
     createSenderKey, senderKeyDistribution, encryptGroup,
-    importDistribution, distributionKey, decryptGroup, parseGroupHeader,
+    importDistribution, distributionKey, decryptGroup, parseGroupHeader, GROUP_VERSION,
 } from './group.js';
+import { NEWER_VERSION_MARK } from './attachments.js';
 
 // Пул одноразовых prekeys. Каждый входящий первый контакт съедает один,
 // поэтому пул пополняется заранее: пустой пул не ломает связь, но первое
@@ -37,9 +38,17 @@ let state = {
 
 /* ================================================================== */
 
-async function publishKeys() {
+// Ключи личности с подписью DH-ключа. Устройство, заведённое до подписей,
+// дописывает её так же — сервер при тех же ключах только добавит подпись.
+async function publishIdentity() {
     const identityPublic = await exportIdentityPublic(state.identity);
-    await state.api('/api/keys/identity', { method: 'PUT', body: JSON.stringify(identityPublic) });
+    const result = await state.api('/api/keys/identity', { method: 'PUT', body: JSON.stringify(identityPublic) });
+    if (result && result.success) await store.meta.set('identityDhSigned', true);
+    return result;
+}
+
+async function publishKeys() {
+    await publishIdentity();
     await state.api('/api/keys/signed-prekey', {
         method: 'PUT',
         body: JSON.stringify(state.signedPrekey.upload),
@@ -200,6 +209,9 @@ async function bootstrapNow({ api, userId, deviceName = 'Браузер' }) {
                 state.identity = storedIdentity;
                 state.signedPrekey = storedSpk;
                 state.ready = true;
+                if (!(await store.meta.get('identityDhSigned'))) {
+                    await publishIdentity().catch(e => console.warn('[E2EE] подпись ключа личности не опубликована:', e.message));
+                }
                 replenishOneTimePrekeys();
                 rotateSignedPrekeyIfDue().catch(e => console.warn('[E2EE] signed prekey не обновлён:', e.message));
                 return { deviceId: state.deviceId, fresh: false };
@@ -261,9 +273,30 @@ async function identityStatus(userId, deviceId, signingKey, dhKey) {
  * иначе мусорный конверт от имени устройства успел бы занять его место и
  * настоящий ключ потом выглядел бы подменой.
  */
-async function rememberIdentity(userId, deviceId, signingKey, dhKey) {
-    if (await store.identities.load(userId, deviceId)) return;
-    await store.identities.save(userId, deviceId, { signingKey, dhKey, firstSeen: Date.now() });
+async function rememberIdentity(userId, deviceId, signingKey, dhKey, dhSigned = false) {
+    const known = await store.identities.load(userId, deviceId);
+    if (known) {
+        // Устройство дописало подпись — запоминаем: пропадёт — подмена.
+        if (dhSigned && !known.dhSigned && known.signingKey === signingKey && known.dhKey === dhKey) {
+            await store.identities.save(userId, deviceId, { ...known, dhSigned: true });
+        }
+        return;
+    }
+    await store.identities.save(userId, deviceId, { signingKey, dhKey, dhSigned, firstSeen: Date.now() });
+}
+
+/*
+ * Подпись DH-ключа личности (см. exportIdentityPublic). 'ok' — подписан;
+ * 'legacy' — подписи нет, но устройство и не подписывало (заведено до
+ * подписей); 'bad' — подпись не сходится или пропала у устройства, которое
+ * раньше подписывало: так выглядит подмена сервером.
+ */
+async function identityBinding(userId, deviceId, rec) {
+    if (rec.identity_dh_signature) {
+        return (await verifyIdentityBinding(rec.identity_signing_key, rec.identity_dh_key, rec.identity_dh_signature)) ? 'ok' : 'bad';
+    }
+    const known = await store.identities.load(userId, deviceId);
+    return known && known.dhSigned ? 'bad' : 'legacy';
 }
 
 function verificationState(record, deviceIds) {
@@ -377,10 +410,16 @@ async function encryptPairwise(targets, plaintext) {
                 rejected.push(bundle.device_id);
                 continue;
             }
+            const binding = await identityBinding(userId, bundle.device_id, bundle);
+            if (binding === 'bad') {
+                console.error(`[E2EE] ключи устройства ${bundle.device_id} не подписаны им самим — подмена, устройство пропущено`);
+                rejected.push(bundle.device_id);
+                continue;
+            }
             try {
                 const session = await initiateSession({ identity: state.identity, bundle });
                 await rememberIdentity(userId, bundle.device_id,
-                    bundle.identity_signing_key, bundle.identity_dh_key);
+                    bundle.identity_signing_key, bundle.identity_dh_key, binding === 'ok');
                 live.set(target.device_id, { target, session });
             } catch (e) {
                 // Подменённый bundle — единственный случай, когда молчать
@@ -747,8 +786,18 @@ export function decryptIncoming(message) {
     return serialized(() => decryptIncomingNow(message));
 }
 
+// Версию заголовка смотрим до расшифровки: новее нашей — не трогаем
+// сессию вовсе, чтобы после обновления страницы сообщение прочиталось.
+function fromNewerVersion(message) {
+    const first = b64 => { try { return fromB64(b64)[0]; } catch { return 0; } };
+    if (message.envelope && first(message.envelope.header) > HEADER_VERSION) return true;
+    if (message.group && first(message.group.header) > GROUP_VERSION) return true;
+    return false;
+}
+
 async function decryptIncomingNow(message) {
     if (!state.ready || !message) return null;
+    if (fromNewerVersion(message)) return NEWER_VERSION_MARK;
     // Пока эта вкладка ждала блокировку, сообщение могла расшифровать
     // другая: ключ сообщения одноразовый, второй раз не выйдет.
     const already = await store.plaintext.load(message.id);
@@ -977,15 +1026,14 @@ async function trustedDevices(userId) {
             continue;
         }
         const status = await identityStatus(userId, d.device_id, d.identity_signing_key, d.identity_dh_key);
-        if (status === 'changed') {
+        const binding = await identityBinding(userId, d.device_id, d);
+        if (status === 'changed' || binding === 'bad') {
             conflicts.push(d.device_id);
             const known = await store.identities.load(userId, d.device_id);
-            devices.push({ deviceId: d.device_id, signingKey: known.signingKey, dhKey: known.dhKey });
+            if (known) devices.push({ deviceId: d.device_id, signingKey: known.signingKey, dhKey: known.dhKey });
             continue;
         }
-        if (status === 'new') {
-            await rememberIdentity(userId, d.device_id, d.identity_signing_key, d.identity_dh_key);
-        }
+        await rememberIdentity(userId, d.device_id, d.identity_signing_key, d.identity_dh_key, binding === 'ok');
         devices.push({ deviceId: d.device_id, signingKey: d.identity_signing_key, dhKey: d.identity_dh_key });
     }
 
