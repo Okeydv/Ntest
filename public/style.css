@@ -72,11 +72,12 @@
     --tr-label: 0.085em;
 
     /* --- Движение ------------------------------------------------------------ */
+    /* Без «отскока» и не дольше четверти секунды: интерфейс, который часто
+       открывают, должен отвечать, а не показывать анимацию. */
     --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
-    --ease-back: cubic-bezier(0.34, 1.26, 0.64, 1);
     --dur-1: 120ms;
-    --dur-2: 200ms;
-    --dur-3: 320ms;
+    --dur-2: 180ms;
+    --dur-3: 240ms;
 
     /* --- Акцент -------------------------------------------------------------- */
     --accent: #6d5efc;
@@ -210,6 +211,7 @@ body {
     color: var(--text);
     background: var(--bg);
     height: 100vh;
+    height: 100dvh;
     overflow: hidden;
     position: relative;
     -webkit-font-smoothing: antialiased;
@@ -269,7 +271,9 @@ body::before {
     border: 2px solid transparent;
     background-clip: content-box;
 }
-::-webkit-scrollbar-thumb:hover { background-clip: padding-box; }
+@media (hover: hover) {
+    ::-webkit-scrollbar-thumb:hover { background-clip: padding-box; }
+}
 
 /* ============================================================================
    3. ТИПОГРАФИКА
@@ -406,9 +410,11 @@ code, .input-code, .mono {
     box-shadow: var(--sh-accent), var(--inset-highlight);
 }
 
-.btn-primary:hover {
-    transform: translateY(-2px);
-    box-shadow: var(--sh-accent-hover), var(--inset-highlight);
+@media (hover: hover) {
+    .btn-primary:hover {
+        transform: translateY(-2px);
+        box-shadow: var(--sh-accent-hover), var(--inset-highlight);
+    }
 }
 
 .btn-primary:active {
@@ -423,10 +429,12 @@ code, .input-code, .mono {
     box-shadow: var(--sh-1);
 }
 
-.btn-secondary:hover {
-    border-color: var(--accent-line);
-    background: var(--control-hover);
-    transform: translateY(-1px);
+@media (hover: hover) {
+    .btn-secondary:hover {
+        border-color: var(--accent-line);
+        background: var(--control-hover);
+        transform: translateY(-1px);
+    }
 }
 
 .btn-secondary:active { transform: translateY(0); }
@@ -441,10 +449,12 @@ code, .input-code, .mono {
     font-size: var(--fs-sm);
 }
 
-.btn-ghost:hover {
-    color: var(--text);
-    background: var(--accent-soft);
-    border-color: var(--accent-line);
+@media (hover: hover) {
+    .btn-ghost:hover {
+        color: var(--text);
+        background: var(--accent-soft);
+        border-color: var(--accent-line);
+    }
 }
 
 .btn-danger {
@@ -453,9 +463,11 @@ code, .input-code, .mono {
     box-shadow: var(--sh-danger), var(--inset-highlight);
 }
 
-.btn-danger:hover {
-    transform: translateY(-2px);
-    filter: brightness(1.06);
+@media (hover: hover) {
+    .btn-danger:hover {
+        transform: translateY(-2px);
+        filter: brightness(1.06);
+    }
 }
 
 .btn:disabled {
@@ -486,11 +498,13 @@ code, .input-code, .mono {
         box-shadow var(--dur-2) var(--ease);
 }
 
-.icon-btn:hover {
-    color: var(--text);
-    background: var(--accent-soft);
-    border-color: var(--accent-line);
-    transform: translateY(-1px);
+@media (hover: hover) {
+    .icon-btn:hover {
+        color: var(--text);
+        background: var(--accent-soft);
+        border-color: var(--accent-line);
+        transform: translateY(-1px);
+    }
 }
 
 .icon-btn:active { transform: translateY(0) scale(0.94); }
@@ -514,11 +528,13 @@ code, .input-code, .mono {
     box-shadow: var(--sh-accent), var(--inset-highlight);
 }
 
-.icon-btn-accent:hover {
-    background: linear-gradient(140deg, var(--accent) 0%, var(--accent-2) 100%);
-    border-color: transparent;
-    color: var(--accent-ink);
-    box-shadow: var(--sh-accent-hover), var(--inset-highlight);
+@media (hover: hover) {
+    .icon-btn-accent:hover {
+        background: linear-gradient(140deg, var(--accent) 0%, var(--accent-2) 100%);
+        border-color: transparent;
+        color: var(--accent-ink);
+        box-shadow: var(--sh-accent-hover), var(--inset-highlight);
+    }
 }
 
 .icon-btn:disabled {
@@ -736,6 +752,7 @@ input.is-invalid:focus {
     align-items: center;
     justify-content: center;
     min-height: 100vh;
+    min-height: 100dvh;
     padding: 1.25rem;
     position: relative;
     z-index: 1;
@@ -810,7 +827,9 @@ input.is-invalid:focus {
     transition: color var(--dur-2) var(--ease), background var(--dur-2) var(--ease), box-shadow var(--dur-2) var(--ease);
 }
 
-.auth-tab:hover:not(.active) { color: var(--text); }
+@media (hover: hover) {
+    .auth-tab:hover:not(.active) { color: var(--text); }
+}
 
 .auth-tab.active {
     background: linear-gradient(140deg, var(--accent) 0%, var(--accent-strong) 100%);
@@ -837,6 +856,12 @@ input.is-invalid:focus {
 .app {
     display: flex;
     height: 100vh;
+    /* 100vh на телефоне — высота без адресной строки: низ с полем ввода
+       уезжал под неё. dvh — видимая высота сейчас. */
+    height: 100dvh;
+    /* Вырез и скругления экрана (viewport-fit=cover): контент — внутри
+       безопасной области. */
+    padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) 0 env(safe-area-inset-left, 0px);
     position: relative;
     z-index: 1;
 }
@@ -895,9 +920,11 @@ input.is-invalid:focus {
     transition: background var(--dur-2) var(--ease), border-color var(--dur-2) var(--ease);
 }
 
-.chat-item:hover {
-    background: var(--accent-soft);
-    border-color: var(--border);
+@media (hover: hover) {
+    .chat-item:hover {
+        background: var(--accent-soft);
+        border-color: var(--border);
+    }
 }
 
 .chat-item.active {
@@ -978,7 +1005,7 @@ input.is-invalid:focus {
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    padding: 0.875rem 1.125rem;
+    padding: 0.875rem 1.125rem calc(0.875rem + env(safe-area-inset-bottom, 0px));
     border-top: 1px solid var(--border);
 }
 
@@ -1067,7 +1094,9 @@ input.is-invalid:focus {
 
 /* В зашифрованном чате индикатор — вход в сверку ключей. */
 .encryption-badge:not(:disabled) { cursor: pointer; }
-.encryption-badge:not(:disabled):hover { text-decoration: underline; text-underline-offset: 0.2em; }
+@media (hover: hover) {
+    .encryption-badge:not(:disabled):hover { text-decoration: underline; text-underline-offset: 0.2em; }
+}
 
 .encryption-badge .icon { width: 0.8125rem; height: 0.8125rem; }
 .encryption-badge.is-on { color: var(--ok); }
@@ -1116,12 +1145,17 @@ input.is-invalid:focus {
     max-width: min(70%, 34rem);
     padding: 0.75rem 1rem;
     border-radius: var(--r-xl);
-    animation: messageIn var(--dur-3) var(--ease-back) both;
+}
+
+/* Появляются только новые сообщения. История при открытии чата не
+   анимируется: полсотни пузырей, въезжающих разом, — это не отклик, а шум. */
+.message.is-new {
+    animation: messageIn var(--dur-2) var(--ease) both;
 }
 
 @keyframes messageIn {
-    from { opacity: 0; transform: translateY(0.75rem) scale(0.98); }
-    to { opacity: 1; transform: translateY(0) scale(1); }
+    from { opacity: 0; transform: translateY(0.5rem); }
+    to { opacity: 1; transform: none; }
 }
 
 .message.sent {
@@ -1190,8 +1224,10 @@ input.is-invalid:focus {
 }
 
 .message-more .icon { width: 0.875rem; height: 0.875rem; }
-.message:hover .message-more,
 .message:focus-within .message-more { opacity: 1; }
+@media (hover: hover) {
+    .message:hover .message-more { opacity: 1; }
+}
 
 @media (hover: none) {
     .message-more { opacity: 0.7; }
@@ -1268,7 +1304,9 @@ input.is-invalid:focus {
     transition: transform var(--dur-2) var(--ease);
 }
 
-.message-image:hover { transform: scale(1.015); }
+@media (hover: hover) {
+    .message-image:hover { transform: scale(1.015); }
+}
 
 .file-attachment a {
     display: inline-flex;
@@ -1283,7 +1321,9 @@ input.is-invalid:focus {
     transition: background var(--dur-2) var(--ease);
 }
 
-.file-attachment a:hover { background: var(--bubble-inset-hover); }
+@media (hover: hover) {
+    .file-attachment a:hover { background: var(--bubble-inset-hover); }
+}
 .file-attachment .icon { width: 1rem; height: 1rem; }
 
 .reactions {
@@ -1302,7 +1342,9 @@ input.is-invalid:focus {
     transition: transform var(--dur-1) var(--ease), background var(--dur-2) var(--ease);
 }
 
-.reaction:hover { background: var(--bubble-inset-hover); transform: scale(1.08); }
+@media (hover: hover) {
+    .reaction:hover { background: var(--bubble-inset-hover); transform: scale(1.08); }
+}
 
 .reply-to {
     margin-bottom: 0.5rem;
@@ -1360,7 +1402,7 @@ input.is-invalid:focus {
 /* --- Поле ввода --------------------------------------------------------- */
 
 .message-input-container {
-    padding: 1rem 1.5rem 1.25rem;
+    padding: 1rem 1.5rem calc(1.25rem + env(safe-area-inset-bottom, 0px));
     background: var(--layer-2);
     border-top: 1px solid var(--border);
 }
@@ -1480,14 +1522,14 @@ dialog.modal::backdrop {
     border-radius: var(--r-2xl);
     background: var(--layer-4);
     box-shadow: var(--sh-3);
-    animation: modalIn var(--dur-3) var(--ease-back) both;
+    animation: modalIn var(--dur-2) var(--ease) both;
 }
 
 .modal-content-sm { width: min(24rem, calc(100vw - 2.5rem)); }
 
 @keyframes modalIn {
-    from { opacity: 0; transform: translateY(-1rem) scale(0.97); }
-    to { opacity: 1; transform: translateY(0) scale(1); }
+    from { opacity: 0; transform: scale(0.97); }
+    to { opacity: 1; transform: none; }
 }
 
 .modal-header {
@@ -1503,10 +1545,12 @@ dialog.modal::backdrop {
 .modal-body .field:last-of-type { margin-bottom: 1.25rem; }
 .modal-body > .btn:last-child { margin-bottom: 0; }
 
-.close-modal:hover {
-    background: var(--danger-soft);
-    border-color: transparent;
-    color: var(--danger);
+@media (hover: hover) {
+    .close-modal:hover {
+        background: var(--danger-soft);
+        border-color: transparent;
+        color: var(--danger);
+    }
 }
 
 /* ============================================================================
@@ -1585,7 +1629,9 @@ dialog.modal::backdrop {
     transition: transform var(--dur-1) var(--ease), box-shadow var(--dur-2) var(--ease);
 }
 
-.color-option:hover { transform: scale(1.12); }
+@media (hover: hover) {
+    .color-option:hover { transform: scale(1.12); }
+}
 
 .color-option.active {
     box-shadow: 0 0 0 2px var(--layer-4), 0 0 0 4px var(--accent);
@@ -1680,9 +1726,11 @@ dialog.modal::backdrop {
     animation: menuIn var(--dur-1) var(--ease) both;
 }
 
+/* Меню раскрывается из точки, где его открыли: transform-origin ставит
+   showMessageMenu. */
 @keyframes menuIn {
-    from { opacity: 0; transform: translateY(-0.375rem) scale(0.98); }
-    to { opacity: 1; transform: translateY(0) scale(1); }
+    from { opacity: 0; transform: scale(0.97); }
+    to { opacity: 1; transform: none; }
 }
 
 .menu-item {
@@ -1704,11 +1752,17 @@ dialog.modal::backdrop {
 }
 
 .menu-item .icon { width: 1rem; height: 1rem; color: var(--text-3); }
-.menu-item:hover { background: var(--accent-soft); }
-.menu-item:hover .icon { color: var(--accent); }
+@media (hover: hover) {
+    .menu-item:hover { background: var(--accent-soft); }
+}
+@media (hover: hover) {
+    .menu-item:hover .icon { color: var(--accent); }
+}
 .menu-item.danger { color: var(--danger); }
 .menu-item.danger .icon { color: var(--danger); }
-.menu-item.danger:hover { background: var(--danger-soft); }
+@media (hover: hover) {
+    .menu-item.danger:hover { background: var(--danger-soft); }
+}
 
 .toast {
     /* Центровка полями, а не left: 50% с translate(-50%): при left: 50%
@@ -1731,7 +1785,7 @@ dialog.modal::backdrop {
     font-weight: 500;
     color: var(--text);
     box-shadow: var(--sh-3);
-    animation: toastIn var(--dur-3) var(--ease-back) both;
+    animation: toastIn var(--dur-2) var(--ease) both;
 }
 
 /* display — только у открытого: иначе авторское flex перебило бы
@@ -1757,7 +1811,9 @@ dialog.modal .toast { bottom: calc(1.75rem + env(safe-area-inset-bottom, 0px)); 
     cursor: pointer;
 }
 
-.toast-action:hover { background: var(--accent-soft); }
+@media (hover: hover) {
+    .toast-action:hover { background: var(--accent-soft); }
+}
 
 .toast-close { flex-shrink: 0; margin: -0.25rem -0.5rem -0.25rem 0; }
 
@@ -1797,6 +1853,8 @@ dialog.modal .toast { bottom: calc(1.75rem + env(safe-area-inset-bottom, 0px)); 
         inset: 0;
         width: 100%;
         z-index: 50;
+        /* Поверх экрана целиком — безопасную область отступает сам. */
+        padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) 0 env(safe-area-inset-left, 0px);
         transition: transform var(--dur-3) var(--ease), visibility 0s;
     }
 

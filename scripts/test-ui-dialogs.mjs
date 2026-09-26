@@ -335,6 +335,45 @@ const toastBox = await phonePage.evaluate(() => {
 check('тост на телефоне не сжат в колонку и стоит по центру',
     toastBox.width > 375 * 0.8 && Math.abs(toastBox.center - 375 / 2) < 2, JSON.stringify(toastBox));
 
+/* ------------------------- движение ------------------------- */
+
+const css = await page.evaluate(() => {
+    const sheet = [...document.styleSheets].find(x => x.href && x.href.includes('style.css'));
+    const rules = [...sheet.cssRules];
+    const root = getComputedStyle(document.documentElement);
+    return {
+        looseHover: rules.filter(r => r instanceof CSSStyleRule && r.selectorText.includes(':hover')).map(r => r.selectorText),
+        longest: Math.max(...['--dur-1', '--dur-2', '--dur-3'].map(v => parseFloat(root.getPropertyValue(v)))),
+        text: rules.map(r => r.cssText).join('\n'),
+    };
+});
+check('ховеры — только там, где есть мышь', css.looseHover.length === 0, css.looseHover.join(', '));
+check('анимации не дольше 250 мс и без «отскока»', css.longest <= 250 && !css.text.includes('1.26'), `${css.longest} мс`);
+
+await page.reload({ waitUntil: 'networkidle' });
+await page.waitForTimeout(1200);
+await page.locator('.chat-item', { hasText: 'Меню' }).click();
+await page.waitForTimeout(900);
+check('история при открытии чата не анимируется', await page.evaluate(() =>
+    document.querySelectorAll('#chat-messages .message').length > 0 && document.querySelectorAll('#chat-messages .is-new').length === 0));
+await send(page, 'свежее');
+check('а новое сообщение — да', await page.evaluate(() =>
+    [...document.querySelectorAll('#chat-messages .message')].at(-1).classList.contains('is-new')));
+const fresh = page.locator('#chat-messages .message', { hasText: 'свежее' });
+const freshBox = await fresh.boundingBox();
+await page.mouse.click(freshBox.x + 30, freshBox.y + 12, { button: 'right' });
+const origin = await page.evaluate(() => {
+    const m = document.getElementById('message-menu');
+    return { origin: m.style.transformOrigin, left: parseFloat(m.style.left), top: parseFloat(m.style.top) };
+});
+const [ox, oy] = origin.origin.split(' ').map(parseFloat);
+check('меню раскрывается из точки клика', Math.abs(origin.left + ox - (freshBox.x + 30)) < 1
+    && Math.abs(origin.top + oy - (freshBox.y + 12)) < 1, JSON.stringify(origin));
+await page.keyboard.press('Escape');
+
+check('на телефоне приложение занимает видимую высоту', await phonePage.evaluate(() =>
+    Math.abs(document.querySelector('.app').getBoundingClientRect().height - innerHeight) < 1));
+
 check('ошибок на страницах нет', errors.length === 0, errors.join('; '));
 await browser.close();
 await db.end();

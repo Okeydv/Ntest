@@ -266,8 +266,11 @@ function applyDecryptedContent(message, content) {
     message.brokenAttachment = Boolean(content && content.t === 'invalid');
 }
 
-/** Расшифровать и дорисовать сообщение в открытый чат. */
-async function appendMessageDecrypted(message) {
+/**
+ * Расшифровать и дорисовать сообщение в открытый чат. fresh — сообщение
+ * пришло только что (анимируется), а не из истории.
+ */
+async function appendMessageDecrypted(message, { fresh = false } = {}) {
     if (message.encrypted) {
         const raw = await resolveMessageText(message);
         const content = raw === null ? null : e2ee.decodePayload(raw);
@@ -279,7 +282,7 @@ async function appendMessageDecrypted(message) {
             updateChatPreviewInList(message, preview);
         }
     }
-    appendMessage(message);
+    appendMessage(message, { fresh });
 }
 
 /** Есть ли в чате устройства, кроме этого: то есть есть ли для кого шифровать. */
@@ -1280,8 +1283,9 @@ function lastDayInChat() {
     return bubbles.length ? bubbles[bubbles.length - 1].dataset.day : null;
 }
 
-function appendMessage(message) {
+function appendMessage(message, { fresh = false } = {}) {
     const el = createMessageElement(message);
+    if (fresh) el.classList.add('is-new');
     const date = messageDate(message);
     if (date) {
         el.dataset.day = dayKey(date);
@@ -1685,8 +1689,12 @@ function showMessageMenu(x, y, message, trigger = null) {
     menu.showPopover();
     // Размер известен только после показа: прижимаем меню к краям окна.
     const margin = 8;
-    menu.style.left = `${Math.max(margin, Math.min(x, window.innerWidth - menu.offsetWidth - margin))}px`;
-    menu.style.top = `${Math.max(margin, Math.min(y, window.innerHeight - menu.offsetHeight - margin))}px`;
+    const left = Math.max(margin, Math.min(x, window.innerWidth - menu.offsetWidth - margin));
+    const top = Math.max(margin, Math.min(y, window.innerHeight - menu.offsetHeight - margin));
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+    // Раскрывается из точки нажатия, даже если меню пришлось сдвинуть от края.
+    menu.style.transformOrigin = `${x - left}px ${y - top}px`;
     if (trigger) menuItems()[0]?.focus();
 }
 
@@ -1790,7 +1798,7 @@ function flushPendingDeletes() {
 
 async function handleNewMessage(message) {
     if (message.chat_id == currentChatId || message.room_id == currentRoomId) {
-        await appendMessageDecrypted(message);
+        await appendMessageDecrypted(message, { fresh: true });
         scrollToBottom();
     } else {
         // Чужой чат: расшифровываем ради превью в списке, рисовать
@@ -1898,7 +1906,7 @@ async function sendEncryptedPayload(chatId, encoded, { replyToId = null, blobIds
     if (chatId === currentChatId) {
         const local = { ...data.message };
         applyDecryptedContent(local, content);
-        appendMessage(local);
+        appendMessage(local, { fresh: true });
         scrollToBottom();
     }
 
