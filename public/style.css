@@ -253,6 +253,12 @@ body::before {
    [hidden] { display: none } слабее любого авторского. */
 [hidden] { display: none !important; }
 
+/* Своё состояние нажатия вместо серой вспышки браузера на телефоне. */
+html { -webkit-tap-highlight-color: transparent; }
+body { overscroll-behavior: none; }
+.chat-item:active,
+.menu-item:active { background: var(--accent-soft); }
+
 .icon-sprite {
     position: absolute;
     width: 0;
@@ -953,6 +959,8 @@ input.is-invalid:focus {
 .chats-list {
     flex: 1;
     overflow-y: auto;
+    /* Потянуть список вниз — не перезагрузка страницы (Chrome на Android). */
+    overscroll-behavior: contain;
     padding: 0.25rem 0.75rem 0.75rem;
 }
 
@@ -1250,6 +1258,7 @@ input.is-invalid:focus {
 .encryption-badge.is-on { color: var(--ok); }
 .encryption-badge.is-off { color: var(--text-3); }
 .encryption-badge.is-warn { color: var(--danger); }
+.encryption-badge-short { display: none; }
 
 /* Срок исчезающих сообщений в шапке: нажатие открывает меню чата. */
 .expiry-badge {
@@ -1320,6 +1329,7 @@ input.is-invalid:focus {
 .chat-messages {
     flex: 1;
     overflow-y: auto;
+    overscroll-behavior: contain;
     display: flex;
     flex-direction: column;
     gap: 0.75rem;
@@ -1424,13 +1434,17 @@ input.is-invalid:focus {
 }
 
 .message-more .icon { width: 0.875rem; height: 0.875rem; }
-.message:focus-within .message-more { opacity: 1; }
 @media (hover: hover) {
-    .message:hover .message-more { opacity: 1; }
+    .message:hover .message-more,
+    .message:focus-within .message-more { opacity: 1; }
 }
 
+/* На сенсорном экране меню открывает долгое нажатие, «⋯» не нужна и только
+   занимает место у пузыря. Видна лишь при фокусе с клавиатуры. */
 @media (hover: none) {
-    .message-more { opacity: 0.7; }
+    .message-more { pointer-events: none; }
+    .message:focus-visible .message-more,
+    .message-more:focus-visible { opacity: 1; pointer-events: auto; }
 }
 
 /* На тач-экране палец больше курсора: кнопка выглядит так же, но
@@ -1608,6 +1622,40 @@ input.is-invalid:focus {
     font-weight: 600;
 }
 .message-undelivered .icon { width: 0.875rem; height: 0.875rem; flex: none; }
+
+/* Телефон: долгое нажатие открывает меню, а не выделяет текст и не
+   показывает системное меню. Выделить — пунктом «Выделить текст». */
+@media (pointer: coarse) {
+    .message {
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-touch-callout: none;
+    }
+    .message.is-selectable {
+        -webkit-user-select: text;
+        user-select: text;
+    }
+}
+.message { transition: transform var(--dur-1) var(--ease); }
+.message.is-swipe-ready { box-shadow: -3px 0 0 var(--accent); }
+
+/* Время в конце последней строки: строка времени — в правом нижнем углу,
+   распорка в тексте держит под неё место. */
+.meta-spacer { display: none; }
+.message.inline-meta .meta-spacer {
+    display: inline-block;
+    width: var(--meta-w, 3.5rem);
+    height: 1px;
+}
+.message.inline-meta .message-meta {
+    position: absolute;
+    right: 1rem;
+    bottom: 0.625rem;
+    margin-top: 0;
+}
+
+/* Разделитель не прячется под прилипшей датой дня. */
+.unread-separator { scroll-margin-top: 3rem; }
 
 /* Цитата ведёт к исходному сообщению. */
 .reply-to[data-reply-id] { cursor: pointer; }
@@ -2491,7 +2539,7 @@ dialog.modal::backdrop {
    окна — там он у верхнего края экрана. */
 dialog.modal .toast { top: calc(1rem + env(safe-area-inset-top, 0px)); bottom: auto; }
 
-.toast-text { min-width: 0; }
+.toast-text { min-width: 0; white-space: pre-line; }
 
 .toast-action {
     flex-shrink: 0;
@@ -2553,7 +2601,29 @@ dialog.modal .toast { top: calc(1rem + env(safe-area-inset-top, 0px)); bottom: a
         transition: transform var(--dur-3) var(--ease), visibility 0s var(--dur-3);
     }
 
-    .chat-back { display: inline-flex; margin-left: -0.5rem; }
+    /* Простая стрелка без круга; нажимается квадрат 44×44. */
+    .chat-back {
+        display: grid;
+        place-items: center;
+        width: 44px;
+        height: 44px;
+        border: none;
+        background: none;
+    }
+    .chat-back .icon { width: 1.375rem; height: 1.375rem; }
+    /* Приглашение — в меню чата: в шапке телефона ему нет места. */
+    #get-chat-code-btn { display: none; }
+    /* Полная подпись — только для экранного диктора, на экране — короткое
+       слово вместо одинокого значка. */
+    .encryption-badge .encryption-badge-text {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+    }
+    .encryption-badge .encryption-badge-short { display: inline; white-space: nowrap; }
 
     .main-content { width: 100%; }
     .message { max-width: 86%; }

@@ -205,6 +205,24 @@ await send(dan, 'бот, ты тут?');
 await dan.waitForTimeout(2500);
 check('без шифрования сокет живой: ответ бота пришёл сам', await dan.locator('#chat-messages .message.received').count() > before);
 
+/* ------------------------- сервер ключей лёг ------------------------- */
+
+const gina = await openApp('gina');
+await register(gina, 'gina');
+await newRoom(alice, 'С Гиной', gina);
+await openRoom(alice, 'С Гиной');
+await alice.route('**/api/keys/bundle/**', route => route.fulfill({ status: 503, contentType: 'application/json',
+    body: JSON.stringify({ success: false, code: 'KEY_SERVER_UNAVAILABLE', message: 'Шифрование на сервере временно недоступно', errorId: 'abcdef012345' }) }));
+await send(alice, 'без сервера ключей не уйду');
+const downToast = await alice.textContent('#toast');
+check('сервер ключей лёг — «Шифрование на сервере временно недоступно — сообщение не отправлено»',
+    downToast.includes('Шифрование на сервере временно недоступно — сообщение не отправлено'), downToast);
+check('код ошибки — отдельной строкой', /\nКод ошибки: abcdef012345/.test(downToast), JSON.stringify(downToast));
+check('это не «нет ключей у собеседника»: сообщение не встало ждать',
+    await alice.locator('.message.is-pending').count() === 0 && await alice.inputValue('#message-input') === 'без сервера ключей не уйду');
+await alice.unroute('**/api/keys/bundle/**');
+await alice.fill('#message-input', '');
+
 /* ------------------------- бот ------------------------- */
 
 await alice.locator('.chat-item[data-room-id=""]').first().click();

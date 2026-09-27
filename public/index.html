@@ -2,7 +2,10 @@
 <html lang="ru" data-theme="dark">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
+    <!-- Nyxo можно поставить на главный экран: манифест и иконки. -->
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="apple-touch-icon" href="/icons/icon-192.png">
     <meta name="color-scheme" content="dark light">
     <meta name="theme-color" content="#08080e" media="(prefers-color-scheme: dark)">
     <meta name="theme-color" content="#f4f4f7" media="(prefers-color-scheme: light)">
@@ -402,6 +405,10 @@
                     </select>
                     <p class="field-hint">Срок считается от отправки, прочитано сообщение или нет. Касается новых сообщений всех участников. Исчезнувшее стирается и с сервера, и с устройств, но собеседник мог успеть его сохранить.</p>
                 </div>
+                <button id="chat-menu-invite-btn" class="btn btn-secondary btn-block" type="button">
+                    <svg class="icon" aria-hidden="true"><use href="#i-link"/></svg>
+                    Код приглашения
+                </button>
                 <button id="delete-chat-btn" class="btn btn-danger btn-block" type="button">
                     <svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg>
                     Удалить чат
@@ -683,6 +690,12 @@
         <button id="reply-message-btn" class="menu-item" role="menuitem" type="button">
             <svg class="icon" aria-hidden="true"><use href="#i-reply"/></svg>
             Ответить
+        </button>
+        <!-- На телефоне выделение в пузыре выключено (иначе долгое нажатие
+             выделяло бы текст вместо меню) — включается этим пунктом. -->
+        <button id="select-text-btn" class="menu-item" role="menuitem" type="button" hidden>
+            <svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg>
+            Выделить текст
         </button>
         <button id="edit-message-btn" class="menu-item" role="menuitem" type="button">
             <svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg>

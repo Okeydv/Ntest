@@ -6,6 +6,11 @@ let currentUser = null;
 let replyToMessageId = null;
 let editingMessageId = null;
 let longPressTimer = null;
+// Когда в последний раз открыли меню долгим нажатием: Android вслед за ним
+// присылает ещё и системный contextmenu — второй раз меню не открываем.
+let longPressShownAt = 0;
+const LONG_PRESS_MS = 400;
+const coarsePointer = () => window.matchMedia('(pointer: coarse)').matches;
 
 const elements = {
     authScreen: document.getElementById('auth-screen'),
@@ -19,6 +24,8 @@ const elements = {
     jumpDown: document.getElementById('jump-down'),
     jumpDownCount: document.getElementById('jump-down-count'),
     reactionRow: document.getElementById('reaction-row'),
+    selectTextBtn: document.getElementById('select-text-btn'),
+    chatMenuInviteBtn: document.getElementById('chat-menu-invite-btn'),
     uploadStatus: document.getElementById('upload-status'),
     uploadStatusName: document.getElementById('upload-status-name'),
     uploadProgress: document.getElementById('upload-progress'),
@@ -402,6 +409,7 @@ const shownMessageIds = new Set();
 function clearFeed() {
     elements.chatMessages.innerHTML = '';
     shownMessageIds.clear();
+    metaWidthObserver.disconnect();
 }
 
 async function appendMessageDecrypted(message, { fresh = false, container = null } = {}) {
@@ -527,7 +535,17 @@ async function refreshEncryptionBadge(chatId, isBot) {
     const label = document.createElement('span');
     label.className = 'encryption-badge-text';
     label.textContent = text;
-    badge.replaceChildren(createIcon(icon), label);
+    // На телефоне места мало: вместо одинокого значка — короткое слово.
+    const short = document.createElement('span');
+    short.className = 'encryption-badge-short';
+    short.setAttribute('aria-hidden', 'true');
+    short.textContent = isBot ? 'Без шифрования'
+        : !checkable && mode === 'warn' && icon === 'i-timer' ? 'Нет ключей'
+            : !checkable && mode === 'warn' ? 'Не шифруется'
+                : mode === 'warn' ? 'Ключи изменились'
+                    : icon === 'i-shield-check' ? 'Сверено'
+                        : mode === 'on' ? 'Шифруется' : 'Без шифрования';
+    badge.replaceChildren(createIcon(icon), label, short);
 }
 
 /* --- Сверка ключей -------------------------------------------------------
@@ -1120,7 +1138,7 @@ async function api(url, options = {}) {
     // Код ошибки — номер запроса в журнале сервера. Человеку он ничего не
     // говорит, но по нему находится, что именно сломалось.
     if (data && data.errorId && typeof data.message === 'string') {
-        data.message = `${data.message} (код ${data.errorId})`;
+        data.message = `${data.message}\nКод ошибки: ${data.errorId}`;
     }
     return data;
 }
@@ -1478,7 +1496,9 @@ function setupEventListeners() {
             }
             return;
         }
-        if (e.key !== 'Enter' || e.shiftKey || e.isComposing || e.keyCode === 229) return;
+        // На телефоне Enter — перенос строки, отправка — кнопкой: на
+        // экранной клавиатуре Shift+Enter не набрать.
+        if (e.key !== 'Enter' || e.shiftKey || e.isComposing || e.keyCode === 229 || coarsePointer()) return;
         e.preventDefault();
         sendMessage();
     });
@@ -1488,11 +1508,32 @@ function setupEventListeners() {
     elements.cancelReplyBtn.addEventListener('click', clearReply);
 
     elements.replyMessageBtn.addEventListener('click', () => {
-        replyToMessageId = elements.messageMenu.dataset.forMessage;
-        const text = elements.messageMenu.dataset.forMessageText;
-        elements.replyPreviewText.textContent = text.substring(0, 100);
-        elements.replyPreview.classList.remove('hidden');
+        startReply({ id: elements.messageMenu.dataset.forMessage, text: elements.messageMenu.dataset.forMessageText });
         hideMessageMenu();
+    });
+
+    // Выделение текста в пузыре на телефоне включается только отсюда.
+    elements.selectTextBtn.addEventListener('click', () => {
+        const bubble = menuBubble;
+        hideMessageMenu();
+        const text = bubble && bubble.querySelector('.message-text');
+        if (!text) return;
+        bubble.classList.add('is-selectable');
+        const range = document.createRange();
+        range.selectNodeContents(text);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+    });
+    document.addEventListener('selectionchange', () => {
+        const selection = window.getSelection();
+        if (selection && !selection.isCollapsed) return;
+        document.querySelectorAll('.message.is-selectable').forEach(el => el.classList.remove('is-selectable'));
+    });
+
+    elements.chatMenuInviteBtn.addEventListener('click', () => {
+        closeModal(elements.chatMenuModal);
+        elements.getChatCodeBtn.click();
     });
 
     elements.editMessageBtn.addEventListener('click', () => {
@@ -1806,6 +1847,7 @@ async function openChat(chatId, roomId, name, avatar, online, isBot) {
     currentChatId = chatId;
     currentRoomId = roomId;
     currentChatIsBot = Boolean(isBot);
+    elements.chatMenuInviteBtn.hidden = currentChatIsBot;
     // Расшифрованные вложения прошлого чата больше не нужны в памяти.
     if (e2ee) e2ee.releaseAttachments();
     refreshEncryptionBadge(chatId, isBot);
@@ -1863,8 +1905,11 @@ async function openChat(chatId, roomId, name, avatar, online, isBot) {
     const separator = reopening ? null : placeUnreadSeparator(Number(data.chat && data.chat.last_read_id) || 0);
     if (!restoreChatView(view)) {
         if (separator) {
+            // Дата дня прилипает к верху ленты — разделитель встаёт под ней.
             const list = elements.chatMessages;
-            list.scrollTop += separator.getBoundingClientRect().top - list.getBoundingClientRect().top - 16;
+            const day = separator.closest('.day-group')?.querySelector('.day-separator');
+            const offset = (day ? day.getBoundingClientRect().height : 0) + 12;
+            list.scrollTop += separator.getBoundingClientRect().top - list.getBoundingClientRect().top - offset;
         }
         else scrollToBottom();
     }
@@ -2107,7 +2152,17 @@ function resetNewBelow() {
     elements.jumpDownCount.textContent = '';
 }
 
+// У конца ли лента: когда экранная клавиатура сжимает окно, лента, что была
+// у конца, у него и остаётся.
+let stickToBottom = true;
+
 function setupFeed() {
+    elements.chatMessages.addEventListener('scroll', () => { stickToBottom = atChatBottom(); }, { passive: true });
+    if (window.visualViewport) {
+        window.visualViewport.addEventListener('resize', () => {
+            if (stickToBottom && currentChatId) scrollToBottom();
+        });
+    }
     elements.jumpDown.addEventListener('click', () => {
         scrollToBottom({ smooth: true });
         resetNewBelow();
@@ -2230,6 +2285,7 @@ function renderReactions(bubble, reactions) {
     const before = new Set(box ? [...box.children].map(c => c.dataset.emoji) : []);
     if (!reactions.length) {
         box?.remove();
+        updateInlineMeta(bubble);
         return;
     }
     if (!box) {
@@ -2238,6 +2294,7 @@ function renderReactions(bubble, reactions) {
         content.appendChild(box);
     }
     box.replaceChildren(...reactions.map(emoji => reactionChip(emoji, !before.has(emoji))));
+    updateInlineMeta(bubble);
 }
 
 function reactionChip(emoji, fresh = false) {
@@ -2874,6 +2931,23 @@ function systemLineText(text) {
     return text;
 }
 
+// Ширина строки времени — в --meta-w пузыря (для распорки). Меняется сама:
+// ✓ → ✓✓, таймер исчезающего сообщения.
+const metaWidthObserver = new ResizeObserver(entries => {
+    for (const entry of entries) {
+        const bubble = entry.target.closest('.message');
+        if (bubble) bubble.style.setProperty('--meta-w', `${Math.ceil(entry.target.getBoundingClientRect().width) + 6}px`);
+    }
+});
+
+// Время в строке текста — только пока текст последний в пузыре: реакции и
+// пометки под ним сдвигают время вниз.
+function updateInlineMeta(bubble) {
+    const content = bubble.querySelector('.message-content');
+    const last = content && content.lastElementChild;
+    bubble.classList.toggle('inline-meta', Boolean(last && last.classList.contains('message-text') && last.querySelector('.meta-spacer')));
+}
+
 function createMessageElement(message) {
     // Событие чата (вошёл, вышел, сменил код) — строкой, без меню.
     if (message.message_type === 'system') {
@@ -3032,6 +3106,17 @@ function createMessageElement(message) {
 
     div.appendChild(contentDiv);
     div.appendChild(metaDiv);
+    // Время — в конце последней строки текста, если помещается: место под
+    // него держит невидимая распорка шириной со строку времени.
+    const lastText = contentDiv.lastElementChild;
+    if (lastText && lastText.classList.contains('message-text')) {
+        const spacer = document.createElement('span');
+        spacer.className = 'meta-spacer';
+        spacer.setAttribute('aria-hidden', 'true');
+        lastText.appendChild(spacer);
+        div.classList.add('inline-meta');
+        metaWidthObserver.observe(metaDiv);
+    }
 
     // Кнопка «⋯» — меню для клавиатуры и тача, где правого клика нет.
     const more = document.createElement('button');
@@ -3058,18 +3143,51 @@ function createMessageElement(message) {
     div.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         if (message.deleted) return;
-        showMessageMenu(e.clientX, e.clientY, message);
+        if (Date.now() - longPressShownAt < 1000) return;
+        showMessageMenu(e.clientX, e.clientY, message, null, div);
     });
 
+    // Долгое нажатие (400 мс, лёгкая вибрация) — меню; свайп вправо — ответ.
+    let swipe = null;
     div.addEventListener('touchstart', (e) => {
+        if (div.classList.contains('is-selectable')) return;
+        const touch = e.touches[0];
+        swipe = { x: touch.clientX, y: touch.clientY, dx: 0, active: false };
+        clearTimeout(longPressTimer);
         longPressTimer = setTimeout(() => {
-            const touch = e.touches[0];
-            showMessageMenu(touch.clientX, touch.clientY, message);
-        }, 600);
+            if (message.deleted || !swipe || swipe.active) return;
+            longPressShownAt = Date.now();
+            if (navigator.vibrate) navigator.vibrate(10);
+            showMessageMenu(touch.clientX, touch.clientY, message, null, div);
+        }, LONG_PRESS_MS);
     }, { passive: true });
-
-    div.addEventListener('touchend', () => clearTimeout(longPressTimer));
-    div.addEventListener('touchmove', () => clearTimeout(longPressTimer));
+    div.addEventListener('touchmove', (e) => {
+        if (!swipe) return;
+        const touch = e.touches[0];
+        const dx = touch.clientX - swipe.x;
+        const dy = touch.clientY - swipe.y;
+        if (Math.hypot(dx, dy) > 10) clearTimeout(longPressTimer);
+        if (!swipe.active && !message.deleted && dx > 12 && Math.abs(dx) > Math.abs(dy) * 1.5) swipe.active = true;
+        if (swipe.active) {
+            swipe.dx = Math.max(0, Math.min(dx, 72));
+            div.style.transform = `translateX(${swipe.dx}px)`;
+            div.classList.toggle('is-swipe-ready', swipe.dx >= 56);
+        }
+    }, { passive: true });
+    const endSwipe = () => {
+        clearTimeout(longPressTimer);
+        if (swipe && swipe.active) {
+            div.style.transform = '';
+            div.classList.remove('is-swipe-ready');
+            if (swipe.dx >= 56) {
+                if (navigator.vibrate) navigator.vibrate(10);
+                startReply(message);
+            }
+        }
+        swipe = null;
+    };
+    div.addEventListener('touchend', endSwipe);
+    div.addEventListener('touchcancel', endSwipe);
 
     return div;
 }
@@ -3094,8 +3212,11 @@ function menuItems() {
  * если меню открыли кнопкой «⋯» или с клавиатуры: фокус уходит в меню и
  * потом возвращается на сообщение.
  */
-function showMessageMenu(x, y, message, trigger = null) {
+let menuBubble = null;
+
+function showMessageMenu(x, y, message, trigger = null, bubble = trigger) {
     const menu = elements.messageMenu;
+    menuBubble = bubble;
     // Не data-message-id: по этому атрибуту ищут пузыри сообщений, и после
     // удаления пузыря находилось бы само меню.
     menu.dataset.forMessage = message.id;
@@ -3105,6 +3226,7 @@ function showMessageMenu(x, y, message, trigger = null) {
     // поэтому её нет вовсе — удалить и отправить заново можно.
     elements.editMessageBtn.hidden = !(isMine && !message.encrypted);
     elements.deleteMessageBtn.hidden = !isMine;
+    elements.selectTextBtn.hidden = !(coarsePointer() && message.text && !message.deleted && bubble);
     // С ботом реакции ни к чему: ответить некому.
     elements.reactionRow.hidden = currentChatIsBot;
 
@@ -3287,6 +3409,14 @@ async function handleNewMessage(message) {
     }
 }
 
+// Ответ на сообщение: из меню и свайпом вправо.
+function startReply(message) {
+    if (!message || !message.id) return;
+    replyToMessageId = message.id;
+    elements.replyPreviewText.textContent = (message.text || 'Сообщение').substring(0, 100);
+    elements.replyPreview.classList.remove('hidden');
+}
+
 function hideMessageMenu() {
     if (elements.messageMenu.matches(':popover-open')) elements.messageMenu.hidePopover();
 }
@@ -3442,6 +3572,7 @@ function markUndelivered(messageId, names) {
     note.className = 'message-undelivered';
     note.append(createIcon('i-alert'), undeliveredText(names));
     bubble.querySelector('.message-content')?.appendChild(note);
+    updateInlineMeta(bubble);
 }
 
 async function queuePending(chatId, encoded, replyToId, missing, clientId = newClientId()) {
@@ -3631,6 +3762,12 @@ async function resendText(chatId, text, replyToId, clientId = newClientId()) {
 
 function reportEncryptedSendError(prefix, chatId, error, retry = null) {
     console.error('[E2EE] отправка не удалась:', error);
+    if (error.code === 'KEY_SERVER_UNAVAILABLE') {
+        const code = error.errorId ? `\nКод ошибки: ${error.errorId}` : '';
+        showToast(`Шифрование на сервере временно недоступно — ${prefix.toLowerCase()}${code}`, 'error',
+            { action: retry ? { label: 'Повторить', onClick: retry } : null });
+        return;
+    }
     // Если отправку остановила сверка ключей, из ошибки сразу можно перейти
     // к ней; иначе — повторить то же самое в тот же чат.
     const action = error.code === 'verification-changed'
@@ -3856,6 +3993,7 @@ function confirmFiles(files) {
 
 function setupComposer() {
     elements.messageInput.addEventListener('input', autosizeMessageInput);
+    elements.messageInput.enterKeyHint = coarsePointer() ? 'enter' : 'send';
     elements.uploadCancelBtn.addEventListener('click', () => { if (activeUpload) activeUpload.cancel(); });
 
     elements.sendFilesConfirm.addEventListener('click', () => {
