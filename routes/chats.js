@@ -7,7 +7,7 @@ const { pool, dbGet, dbAll, dbRun } = require('../lib/db');
 const { normalizeExpiry, expiryLabel } = require('../lib/disappearing-messages');
 const { joinLimiter } = require('../lib/rate-limits');
 const { onlyStrings, BAD_FIELDS, getCurrentTime, generateInviteCodeAsync } = require('../lib/helpers');
-const { SCOPE, UNREAD_COUNT_SQL, broadcastReceipts } = require('../lib/read-state');
+const { SCOPE, UNREAD_COUNT_SQL, broadcastReceipts, receiptsFor, statusFor } = require('../lib/read-state');
 const { isOnline } = require('../lib/presence');
 
 
@@ -21,13 +21,23 @@ module.exports = function registerChatRoutes(app, ctx) {
                 SELECT c.id, c.name, c.avatar, c.is_bot, c.room_id, r.code as invite_code,
                        (SELECT array_agg(rp.user_id) FROM room_participants rp
                         WHERE rp.room_id = c.room_id AND rp.user_id <> c.user_id) AS peers,
-                       (SELECT text FROM messages WHERE ((c.room_id IS NOT NULL AND room_id = c.room_id) OR (c.room_id IS NULL AND chat_id = c.id)) AND deleted = 0 ORDER BY id DESC LIMIT 1) as last_message,
-                       (SELECT created_at FROM messages WHERE ((c.room_id IS NOT NULL AND room_id = c.room_id) OR (c.room_id IS NULL AND chat_id = c.id)) AND deleted = 0 ORDER BY id DESC LIMIT 1) as last_at,
+                       lm.text AS last_message, lm.created_at AS last_at, lm.id AS last_id,
+                       lm.user_id AS last_user_id, lm.sent AS last_sent, lm.message_type AS last_type,
+                       lm.username AS last_sender,
                        ${UNREAD_COUNT_SQL} as unread, c.last_read_id
                 FROM chats c
                 LEFT JOIN rooms r ON c.room_id = r.id
+                -- Последнее сообщение: для превью («Вы:», «Анна:»), времени
+                -- и отметки ✓✓ у своего.
+                LEFT JOIN LATERAL (
+                    SELECT m.id, m.text, m.created_at, m.user_id, m.sent, m.message_type, u.username
+                    FROM messages m LEFT JOIN users u ON u.id = m.user_id
+                    WHERE ((c.room_id IS NOT NULL AND m.room_id = c.room_id) OR (c.room_id IS NULL AND m.chat_id = c.id))
+                      AND m.deleted = 0
+                    ORDER BY m.id DESC LIMIT 1
+                ) lm ON true
                 WHERE c.user_id = $1
-                ORDER BY (SELECT MAX(id) FROM messages WHERE ((c.room_id IS NOT NULL AND room_id = c.room_id) OR (c.room_id IS NULL AND chat_id = c.id))) DESC NULLS LAST
+                ORDER BY lm.id DESC NULLS LAST
             `, [req.session.userId]);
             // «В сети» — если в сети хоть кто-то из собеседников; сколько их
             // всего — для подписи группы. Кто из них в сети сейчас — чтобы
@@ -40,6 +50,11 @@ module.exports = function registerChatRoutes(app, ctx) {
                 ? await dbAll('SELECT id, hide_presence, last_seen_at FROM users WHERE id = ANY($1::int[])', [allPeers])
                 : []).map(u => [u.id, u]));
             const visible = id => !(me && me.hide_presence) && peerInfo.has(id) && !peerInfo.get(id).hide_presence;
+            // Отметка у своего последнего сообщения — ✓ или ✓✓, как в ленте.
+            for (const c of chats) {
+                const own = c.last_user_id === req.session.userId && Number(c.last_sent) !== 0 && c.last_type !== 'system';
+                c.last_status = own && c.room_id ? statusFor(c.last_id, await receiptsFor(c.room_id, req.session.userId)) : null;
+            }
             res.json({ success: true, presenceHidden: Boolean(me && me.hide_presence), chats: chats.map(({ peers, ...c }) => {
                 const ids = peers || [];
                 const onlineIds = ids.filter(id => visible(id) && isOnline(id));

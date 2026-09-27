@@ -285,8 +285,11 @@
             </div>
             <!-- Файл, который тащат в окно: куда его можно бросить. -->
             <div id="drop-zone" class="drop-zone" hidden>
-                <svg class="icon" aria-hidden="true"><use href="#i-attach"/></svg>
-                Отпустите, чтобы отправить
+                <span class="drop-zone-title">
+                    <svg class="icon" aria-hidden="true"><use href="#i-attach"/></svg>
+                    <span id="drop-zone-count">Отпустите, чтобы отправить</span>
+                </span>
+                <span class="drop-zone-note">Автор, дата и место съёмки будут удалены из файлов</span>
             </div>
             <!-- Новое, пока читаешь историю: не прокручиваем, а показываем кнопку. -->
             <button id="jump-down" class="jump-down" type="button" aria-label="К новым сообщениям" hidden>
@@ -295,22 +298,26 @@
             </button>
             <!-- Обрыв сокета: пока его нет, новые сообщения не приходят — это должно быть видно. -->
             <div id="connection-status" class="connection-status" role="status" hidden>
-                <span class="connection-dot" aria-hidden="true"></span>
-                <span id="connection-status-text">Нет соединения. Переподключаемся…</span>
+                <span class="connection-spinner" aria-hidden="true"></span>
+                <span id="connection-status-text">Соединение…</span>
             </div>
 
             <div id="message-input-container" class="message-input-container hidden">
                 <div id="reply-preview" class="reply-preview hidden">
                     <svg class="icon reply-preview-icon" aria-hidden="true"><use href="#i-reply"/></svg>
                     <span id="reply-preview-text"></span>
-                    <button id="cancel-reply-btn" class="icon-btn icon-btn-sm icon-btn-quiet" title="Отменить ответ" aria-label="Отменить ответ" type="button">
+                    <span class="reply-preview-hint" aria-hidden="true">Esc — отменить</span>
+                    <button id="cancel-reply-btn" class="icon-btn icon-btn-quiet reply-cancel" title="Отменить ответ" aria-label="Отменить ответ" type="button">
                         <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
                     </button>
                 </div>
                 <!-- Файл шифруется и загружается: сколько осталось, и можно отменить. -->
                 <div id="upload-status" class="upload-status" hidden>
                     <svg class="icon" aria-hidden="true"><use href="#i-attach"/></svg>
-                    <span id="upload-status-name" class="upload-status-name"></span>
+                    <span class="upload-status-text">
+                        <span id="upload-status-name" class="upload-status-name"></span>
+                        <span id="upload-status-note" class="upload-status-note"></span>
+                    </span>
                     <progress id="upload-progress" class="upload-progress" max="100" aria-labelledby="upload-status-name"></progress>
                     <span id="upload-status-percent" class="upload-status-percent" aria-hidden="true"></span>
                     <button id="upload-cancel-btn" class="icon-btn icon-btn-sm icon-btn-quiet" title="Отменить отправку" aria-label="Отменить отправку" type="button">
@@ -327,6 +334,8 @@
                         <svg class="icon" aria-hidden="true"><use href="#i-send"/></svg>
                     </button>
                 </div>
+                <!-- Пока поле в фокусе: как отправить и как перенести строку. -->
+                <p class="composer-hint" aria-hidden="true">Enter — отправить · Shift+Enter — новая строка</p>
                 <input type="file" id="file-input" class="hidden" accept="image/*,video/*,.pdf,.txt" multiple>
             </div>
 
@@ -394,17 +403,15 @@
                 </button>
             </div>
             <div class="modal-body">
-                <div class="field">
-                    <label class="field-label" for="chat-expiry-select">Исчезающие сообщения</label>
-                    <select id="chat-expiry-select" class="select">
-                        <option value="0">Выключены</option>
-                        <option value="300">Через 5 минут</option>
-                        <option value="3600">Через 1 час</option>
-                        <option value="86400">Через 1 день</option>
-                        <option value="604800">Через 1 неделю</option>
-                    </select>
+                <fieldset id="chat-expiry-options" class="field expiry-options">
+                    <legend class="field-label">Исчезающие сообщения</legend>
+                    <label class="radio-row"><input type="radio" name="chat-expiry" value="0"> Выключены</label>
+                    <label class="radio-row"><input type="radio" name="chat-expiry" value="300"> Через 5 минут</label>
+                    <label class="radio-row"><input type="radio" name="chat-expiry" value="3600"> Через 1 час</label>
+                    <label class="radio-row"><input type="radio" name="chat-expiry" value="86400"> Через 1 день</label>
+                    <label class="radio-row"><input type="radio" name="chat-expiry" value="604800"> Через 1 неделю</label>
                     <p class="field-hint">Срок считается от отправки, прочитано сообщение или нет. Касается новых сообщений всех участников. Исчезнувшее стирается и с сервера, и с устройств, но собеседник мог успеть его сохранить.</p>
-                </div>
+                </fieldset>
                 <button id="chat-menu-invite-btn" class="btn btn-secondary btn-block" type="button">
                     <svg class="icon" aria-hidden="true"><use href="#i-link"/></svg>
                     Код приглашения
@@ -503,6 +510,7 @@
             </div>
             <div class="modal-body">
                 <ul id="send-files-list" class="send-files-list"></ul>
+                <p class="field-hint send-files-note">Перед отправкой из файлов удаляются автор, дата и место съёмки; в чатах с собеседниками файл шифруется.</p>
                 <div class="logout-actions">
                     <button id="send-files-cancel" class="btn btn-secondary btn-block" type="button">Отмена</button>
                     <button id="send-files-confirm" class="btn btn-primary btn-block" type="button">Отправить</button>
@@ -632,6 +640,7 @@
                 <div id="link-confirm-step" hidden>
                     <p class="logout-text"><strong id="link-confirm-label"></strong> получит доступ к вашему аккаунту и новым сообщениям.</p>
                     <p id="link-confirm-age" class="field-hint"></p>
+                    <p class="field-hint link-server-note">Название браузера определил сервер по его данным — само устройство его не присылало. Сверьте с тем, что видите на экране нового устройства.</p>
                     <p class="field-hint">Подключайте только своё устройство, которое видите перед собой. Если код прислали или попросили отсканировать — это чужое устройство.</p>
                     <div class="logout-actions">
                         <button id="link-cancel-btn" class="btn btn-secondary btn-block" type="button">Отмена</button>
@@ -721,6 +730,9 @@
     <div id="reaction-picker" class="context-menu reaction-picker" role="dialog" aria-label="Все реакции" popover="auto"></div>
     <!-- Кто поставил реакцию: долгое нажатие или правый клик по ней. -->
     <div id="reaction-who" class="context-menu reaction-who" role="dialog" aria-label="Кто поставил реакцию" popover="manual"></div>
+
+    <!-- Узкий список: «Название · время» у чата под мышью или в фокусе. -->
+    <div id="compact-tip" class="compact-tip" role="tooltip" hidden></div>
 
     <!-- Тост — popover="manual": так он в верхнем слое и виден поверх открытого окна. -->
     <div id="toast" class="toast" role="status" aria-live="polite" popover="manual"></div>

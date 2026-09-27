@@ -210,7 +210,7 @@ check('клик мимо закрывает меню', !(await menuOpen()));
 /* ------------------------- приглашение ------------------------- */
 
 check('вход по коду виден в переписке строкой, не пузырём', await page.evaluate(() =>
-    [...document.querySelectorAll('#chat-messages .message-system')].some(el => el.textContent.startsWith('bob вошёл'))));
+    [...document.querySelectorAll('#chat-messages .message-system')].some(el => el.textContent === 'bob в чате · по коду приглашения')));
 await page.click('#get-chat-code-btn');
 await page.waitForFunction(() => document.getElementById('invite-modal').open);
 const shownCode = await page.textContent('#invite-code-display');

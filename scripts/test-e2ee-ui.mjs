@@ -166,22 +166,22 @@ const systemLines = page => page.evaluate(() =>
     [...document.querySelectorAll('#chat-messages .message-system')].map(e => e.textContent));
 
 await alice.page.click('#chat-menu-btn');
-await alice.page.selectOption('#chat-expiry-select', '3600');
+await alice.page.check('#chat-expiry-options input[value="3600"]');
 await alice.page.waitForTimeout(1200);
 check('срок выбирается в меню чата и виден в шапке', await expiryBadge(alice.page) === '1 час', await expiryBadge(alice.page));
 await alice.page.keyboard.press('Escape');
 check('собеседник сразу видит срок в шапке', await expiryBadge(bob.page) === '1 час', await expiryBadge(bob.page));
 check('и системное сообщение, кто включил',
-    (await systemLines(bob.page)).some(t => t === 'alice включил(а) исчезающие сообщения: 1 час'),
+    (await systemLines(bob.page)).some(t => t === 'Исчезающие сообщения включены · 1 час · alice'),
     JSON.stringify(await systemLines(bob.page)));
 check('себе — «Вы включили», со значком таймера',
     await alice.page.evaluate(() => [...document.querySelectorAll('#chat-messages .message-system')]
-        .some(l => l.textContent === 'Вы включили исчезающие сообщения: 1 час' && l.querySelector('svg.icon'))),
+        .some(l => l.textContent === 'Вы включили исчезающие сообщения · 1 час' && l.querySelector('svg.icon'))),
     JSON.stringify(await systemLines(alice.page)));
 
-// Сменили срок — «изменил(а) срок»; тост с «Отменить» возвращает прежний.
+// Сменили срок — строка о смене; тост с «Отменить» возвращает прежний.
 await alice.page.click('#chat-menu-btn');
-await alice.page.selectOption('#chat-expiry-select', '86400');
+await alice.page.check('#chat-expiry-options input[value="86400"]');
 await alice.page.waitForTimeout(1000);
 const expiryToast = await alice.page.evaluate(() => {
     const t = document.getElementById('toast');
@@ -192,8 +192,8 @@ const expiryToast = await alice.page.evaluate(() => {
 check('тост: «Исчезающие сообщения: 1 день · Отменить», со значком, цвета противоположного теме',
     expiryToast.text === 'Исчезающие сообщения: 1 день' && expiryToast.action === 'Отменить' && expiryToast.icon
     && expiryToast.bg === (expiryToast.theme === 'light' ? 'rgb(27, 27, 39)' : 'rgb(242, 243, 247)'), JSON.stringify(expiryToast));
-check('собеседнику — «изменил(а) срок»',
-    (await systemLines(bob.page)).includes('alice изменил(а) срок исчезающих сообщений: 1 день'), JSON.stringify(await systemLines(bob.page)));
+check('собеседнику — «Срок исчезающих сообщений · 1 день · alice» (без «(а)»)',
+    (await systemLines(bob.page)).includes('Срок исчезающих сообщений · 1 день · alice'), JSON.stringify(await systemLines(bob.page)));
 await alice.page.click('#toast .toast-action');
 await alice.page.waitForTimeout(1200);
 check('«Отменить» вернул прежний срок — и у собеседника',
@@ -226,7 +226,7 @@ check('после перезагрузки срок и таймер на мес�
     await expiryBadge(bob.page) === '1 час' && /^Исчезнет /.test(await lastBubbleTimer(bob.page) || ''));
 
 await alice.page.click('#chat-menu-btn');
-await alice.page.selectOption('#chat-expiry-select', '0');
+await alice.page.check('#chat-expiry-options input[value="0"]');
 await alice.page.waitForTimeout(1200);
 await alice.page.keyboard.press('Escape');
 await alice.page.fill('#message-input', 'а это останется');
@@ -234,7 +234,7 @@ await alice.page.click('#send-btn');
 await alice.page.waitForTimeout(1500);
 check('выключили — у собеседника пропал срок, новое сообщение без таймера',
     await expiryBadge(bob.page) === null && await lastBubbleTimer(bob.page) === null
-    && (await systemLines(bob.page)).includes('alice выключил(а) исчезающие сообщения'));
+    && (await systemLines(bob.page)).includes('Исчезающие сообщения выключены · alice'));
 
 /* ===================== новое устройство истории не видит ===================== */
 

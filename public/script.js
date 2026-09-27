@@ -31,11 +31,14 @@ const elements = {
     chatMenuInviteBtn: document.getElementById('chat-menu-invite-btn'),
     uploadStatus: document.getElementById('upload-status'),
     uploadStatusName: document.getElementById('upload-status-name'),
+    uploadStatusNote: document.getElementById('upload-status-note'),
     uploadProgress: document.getElementById('upload-progress'),
     uploadStatusPercent: document.getElementById('upload-status-percent'),
     uploadCancelBtn: document.getElementById('upload-cancel-btn'),
     dropZone: document.getElementById('drop-zone'),
+    dropZoneCount: document.getElementById('drop-zone-count'),
     sidebarResizer: document.getElementById('sidebar-resizer'),
+    compactTip: document.getElementById('compact-tip'),
     notifyToggle: document.getElementById('notify-toggle'),
     sendFilesModal: document.getElementById('send-files-modal'),
     sendFilesTitle: document.getElementById('send-files-title'),
@@ -63,7 +66,7 @@ const elements = {
     linkApproveBtn: document.getElementById('link-approve-btn'),
     linkCancelBtn: document.getElementById('link-cancel-btn'),
     chatExpiry: document.getElementById('chat-expiry'),
-    chatExpirySelect: document.getElementById('chat-expiry-select'),
+    chatExpiryOptions: document.getElementById('chat-expiry-options'),
     logoutModal: document.getElementById('logout-modal'),
     logoutWipeBtn: document.getElementById('logout-wipe-btn'),
     logoutKeepBtn: document.getElementById('logout-keep-btn'),
@@ -380,7 +383,19 @@ function updateChatPreviewInList(message, text) {
         ? `.chat-item[data-room-id="${message.room_id}"]`
         : `.chat-item[data-id="${message.chat_id}"]`;
     const line = elements.chatsList.querySelector(`${selector} .chat-last`);
-    if (line) line.textContent = text.substring(0, 30);
+    if (!line) return;
+    const item = line.closest('.chat-item');
+    const chat = item && chatsMeta.get(Number(item.dataset.id));
+    if (!chat) {
+        line.textContent = text.substring(0, 30);
+        return;
+    }
+    chat.last_user_id = message.user_id;
+    chat.last_sender = message.sender_username || null;
+    chat.last_sent = message.sent;
+    chat.last_type = message.message_type || 'text';
+    chat.last_status = isOwnMessage(message) ? message.status || 'sent' : null;
+    fillChatLast(line, chat, text.substring(0, 30));
 }
 
 /**
@@ -1052,7 +1067,7 @@ async function withBusy(button, fn) {
  * Тост — popover="manual": он в верхнем слое и виден поверх открытого
  * окна. Показ заново поднимает его над окном, открытым позже.
  */
-function showToast(message, type = 'info', { action = null, duration = null } = {}) {
+function showToast(message, type = 'info', { action = null, duration = null, progress = false } = {}) {
     const toast = elements.toast;
     const sticky = type === 'error' && !duration;
     const text = document.createElement('span');
@@ -1071,6 +1086,14 @@ function showToast(message, type = 'info', { action = null, duration = null } = 
             action.onClick();
         });
         toast.appendChild(button);
+    }
+    // Сколько осталось, чтобы передумать: полоска тает за время тоста.
+    if (progress && duration) {
+        const bar = document.createElement('span');
+        bar.className = 'toast-progress';
+        bar.setAttribute('aria-hidden', 'true');
+        bar.style.setProperty('--toast-duration', `${duration}ms`);
+        toast.appendChild(bar);
     }
     if (sticky || action) {
         const close = document.createElement('button');
@@ -1338,28 +1361,31 @@ function setupEventListeners() {
     elements.chatExpiry.addEventListener('click', () => openModal(elements.chatMenuModal));
     // Смена срока с «Отменить»: выбрали не то — вернуть прежний одним нажатием.
     const setChatExpiry = async (expirySeconds, { undoable = true } = {}) => {
-        const select = elements.chatExpirySelect;
+        const options = elements.chatExpiryOptions;
         const previous = chatExpirySeconds || 0;
         const chatId = currentChatId;
-        select.disabled = true;
+        options.disabled = true;
         try {
             const data = await api(`/api/chats/${chatId}/set-default-expiry`, {
                 method: 'POST', body: JSON.stringify({ expirySeconds }) });
             if (!data.success) {
-                select.value = String(previous);
+                checkExpiryOption(previous);
                 return showToast(data.message, 'error');
             }
             if (chatId === currentChatId) showChatExpiry(data.expirySeconds);
             showToast(`Исчезающие сообщения: ${data.expirySeconds ? expiryName(data.expirySeconds) : 'выключены'}`, 'success',
                 undoable && previous !== (data.expirySeconds || 0) ? {
                     duration: 6000,
+                    progress: true,
                     action: { label: 'Отменить', onClick: () => currentChatId === chatId && setChatExpiry(previous, { undoable: false }) },
                 } : {});
         } finally {
-            select.disabled = false;
+            options.disabled = false;
         }
     };
-    elements.chatExpirySelect.addEventListener('change', () => setChatExpiry(Number(elements.chatExpirySelect.value)));
+    elements.chatExpiryOptions.addEventListener('change', event => {
+        if (event.target.name === 'chat-expiry') setChatExpiry(Number(event.target.value));
+    });
 
     elements.deleteChatBtn.addEventListener('click', deleteChat);
 
@@ -1637,6 +1663,7 @@ function setupEventListeners() {
     setupComposer();
     setupPending();
     setupSidebarResize();
+    setupChatListKeyboard();
     setupNotifications();
     setupConnectionStatus();
     setupDeviceLinking();
@@ -1791,6 +1818,7 @@ async function loadChats() {
     }
     updateTitleCounter();
     refreshPresenceDots();
+    refreshChatListTabStop();
 }
 
 async function chatListItem(chat) {
@@ -1810,6 +1838,11 @@ async function refreshOpenChatItem(message) {
     if (!chat || !item || message.message_type === 'system') return;
     chat.last_at = message.created_at || new Date().toISOString();
     chat.last_message = message.encrypted ? null : message.text;
+    chat.last_user_id = message.user_id;
+    chat.last_sender = message.sender_username || null;
+    chat.last_sent = message.sent;
+    chat.last_type = message.message_type || 'text';
+    chat.last_status = isOwnMessage(message) ? message.status || 'sent' : null;
     chat.unread = 0;
     const fresh = await chatListItem(chat);
     if (!item.isConnected) return;
@@ -1825,6 +1858,7 @@ async function refreshOpenChatItem(message) {
  * ещё не открывало, превью честно нет.
  */
 async function chatPreview(chat) {
+    if (chat.last_message && chat.last_type === 'system') return systemLineText(chat.last_message).substring(0, 40);
     if (chat.last_message) return chat.last_message.substring(0, 30);
     if (e2ee) {
         const cached = await e2ee.recallPreview(chat);
@@ -1891,6 +1925,7 @@ async function openChat(chatId, roomId, name, avatar, online, isBot) {
     elements.chatsList.querySelectorAll('.chat-item').forEach(item => {
         item.classList.toggle('active', item.dataset.id === String(chatId));
     });
+    refreshChatListTabStop();
     elements.chatName.textContent = name;
     renderChatStatus(isBot, online);
     elements.chatAvatar.textContent = name.charAt(0).toUpperCase();
@@ -1990,6 +2025,8 @@ function currentRoomIsEmpty() {
 
 function applyRoomState() {
     if (!currentChatId) return;
+    const meta = currentChatMeta();
+    elements.chatMessages.classList.toggle('is-group', Boolean(meta && meta.peer_count > 1));
     const empty = currentRoomIsEmpty();
     const history = Boolean(elements.chatMessages.querySelector('.message'));
     elements.roomEmpty.hidden = !empty;
@@ -2130,9 +2167,7 @@ async function inspectLinkCode(value) {
     pendingLinkToken = token;
     elements.linkConfirmLabel.textContent = `«${data.label}»`;
     const age = Math.max(0, Number(data.ageSeconds) || 0);
-    elements.linkConfirmAge.textContent = age < 60
-        ? `Код показан ${age} с назад. Название браузера определил сервер.`
-        : `Код показан ${Math.round(age / 60)} мин назад. Название браузера определил сервер.`;
+    elements.linkConfirmAge.textContent = age < 60 ? `Код показан ${age} с назад.` : `Код показан ${Math.round(age / 60)} мин назад.`;
     elements.linkScanStep.hidden = true;
     elements.linkConfirmStep.hidden = false;
     // По умолчанию — «Отмена»: подключение не должно пройти от случайного Enter.
@@ -2358,13 +2393,19 @@ const prefersReducedMotion = () => window.matchMedia('(prefers-reduced-motion: r
 // Подряд идущие сообщения одного автора в пределах 5 минут — группа:
 // меньше отступ, без повторного имени.
 const GROUP_GAP_MS = 5 * 60 * 1000;
+// Первое в группе несёт имя автора (в группах), последнее — «хвостик» и
+// аватар.
 function regroupMessages() {
     let prev = null;
     for (const el of elements.chatMessages.querySelectorAll('.message, .message-system, .unread-separator, .day-separator')) {
         const bubble = el.classList.contains('message') && !el.hidden ? el : null;
         const same = bubble && prev && prev.dataset.senderKey === bubble.dataset.senderKey
             && Math.abs(Number(bubble.dataset.at) - Number(prev.dataset.at)) < GROUP_GAP_MS;
-        if (bubble) bubble.classList.toggle('is-continuation', Boolean(same));
+        if (bubble) {
+            bubble.classList.toggle('is-continuation', Boolean(same));
+            bubble.classList.add('group-end');
+            if (same) prev.classList.remove('group-end');
+        }
         if (!el.hidden) prev = bubble;
     }
 }
@@ -2566,7 +2607,7 @@ function setupConnectionStatus() {
         // только если переподключение действительно идёт.
         connectionTimer = setTimeout(() => {
             elements.connectionStatusText.textContent = socket.active
-                ? 'Нет соединения. Переподключаемся…'
+                ? 'Соединение…'
                 : 'Нет соединения. Обновите страницу';
             elements.connectionStatus.hidden = false;
         }, 1500);
@@ -2747,7 +2788,7 @@ function showChatExpiry(seconds) {
     chatExpirySeconds = seconds || null;
     const badge = elements.chatExpiry;
     badge.classList.toggle('hidden', !chatExpirySeconds);
-    elements.chatExpirySelect.value = String(chatExpirySeconds || 0);
+    checkExpiryOption(chatExpirySeconds || 0);
     if (!chatExpirySeconds) return;
     const phrase = expiryPhrase(chatExpirySeconds);
     const label = document.createElement('span');
@@ -2791,6 +2832,18 @@ async function loadOlderMessages() {
     if (historyPaging.loading || !historyPaging.hasMore || historyPaging.chatId !== chatId) return;
     historyPaging.loading = true;
     elements.chatMessages.setAttribute('aria-busy', 'true');
+    // Заготовки пузырей сверху, пока грузится страница постарше; экран при
+    // этом не прыгает.
+    const list = elements.chatMessages;
+    const placeholder = historySkeleton();
+    list.prepend(placeholder);
+    list.scrollTop += placeholder.offsetHeight;
+    const dropPlaceholder = () => {
+        if (!placeholder.isConnected) return;
+        const height = placeholder.offsetHeight;
+        placeholder.remove();
+        list.scrollTop -= height;
+    };
     try {
         const data = await api(`/api/messages/${chatId}?limit=${historyPageSize}&before=${historyPaging.oldestId}`);
         if (!data.success || currentChatId !== chatId) return;
@@ -2799,17 +2852,31 @@ async function loadOlderMessages() {
         const batch = document.createElement('div');
         for (const msg of page) await appendMessageDecrypted(msg, { container: batch });
         if (currentChatId !== chatId) return;
+        dropPlaceholder();
         // Экран не должен прыгать: то, что было перед глазами, остаётся на месте.
-        const list = elements.chatMessages;
         const fromBottom = list.scrollHeight - list.scrollTop;
         prependMessages(batch);
         list.scrollTop = list.scrollHeight - fromBottom;
         historyPaging.hasMore = Boolean(data.hasMore);
         if (page.length) historyPaging.oldestId = page[0].id;
     } finally {
+        dropPlaceholder();
         historyPaging.loading = false;
         elements.chatMessages.removeAttribute('aria-busy');
     }
+}
+
+function historySkeleton() {
+    const box = document.createElement('div');
+    box.className = 'history-skeleton';
+    box.setAttribute('aria-hidden', 'true');
+    for (const [side, width] of [['received', 55], ['sent', 40], ['received', 65]]) {
+        const bubble = document.createElement('div');
+        bubble.className = `message-skeleton ${side}`;
+        bubble.style.setProperty('--w', `${width}%`);
+        box.appendChild(bubble);
+    }
+    return box;
 }
 
 // Первая страница может не заполнить высокий экран — тогда прокрутки нет
@@ -3139,20 +3206,28 @@ function showInviteCode(code) {
  * Системная строка пишется сервером в третьем лице («alice включил(а)…»).
  * О себе — «Вы включили…».
  */
-const SELF_VERBS = [
-    [/^включил\(а\)/, 'включили'], [/^выключил\(а\)/, 'выключили'], [/^изменил\(а\)/, 'изменили'],
-    [/^вошёл\(ла\)/, 'вошли'], [/^вышел\(ла\)/, 'вышли'], [/^сменил\(а\)/, 'сменили'], [/^отключил\(а\)/, 'отключили'],
+// Сервер пишет строку в третьем лице с родом через скобки («alice
+// включил(а)…»). Человеку — без «(а)»: о других — событие и имя через
+// точку, о себе — «Вы включили…».
+const SYSTEM_LINES = [
+    [/^(.+) вошёл\(ла\) в чат по коду приглашения$/,
+        (name, self) => (self ? 'Вы вошли в чат по коду приглашения' : `${name} в чате · по коду приглашения`)],
+    [/^(.+) вышел\(ла\) из чата$/, (name, self) => (self ? 'Вы вышли из чата' : `${name} больше не в чате`)],
+    [/^(.+) сменил\(а\) код приглашения$/, (name, self) => (self ? 'Вы сменили код приглашения' : `Код приглашения изменён · ${name}`)],
+    [/^(.+) отключил\(а\) приглашение$/, (name, self) => (self ? 'Вы отключили приглашение' : `Приглашение отключено · ${name}`)],
+    [/^(.+) включил\(а\) исчезающие сообщения: (.+)$/,
+        (name, self, term) => (self ? `Вы включили исчезающие сообщения · ${term}` : `Исчезающие сообщения включены · ${term} · ${name}`)],
+    [/^(.+) изменил\(а\) срок исчезающих сообщений: (.+)$/,
+        (name, self, term) => (self ? `Вы изменили срок исчезающих сообщений · ${term}` : `Срок исчезающих сообщений · ${term} · ${name}`)],
+    [/^(.+) выключил\(а\) исчезающие сообщения$/,
+        (name, self) => (self ? 'Вы выключили исчезающие сообщения' : `Исчезающие сообщения выключены · ${name}`)],
 ];
 
 function systemLineText(text) {
     const me = currentUser && currentUser.username;
-    if (!me || !text.startsWith(`${me} `)) return text;
-    let rest = text.slice(me.length + 1);
-    for (const [pattern, replacement] of SELF_VERBS) {
-        if (pattern.test(rest)) {
-            rest = rest.replace(pattern, replacement);
-            return `Вы ${rest}`;
-        }
+    for (const [pattern, render] of SYSTEM_LINES) {
+        const match = pattern.exec(text);
+        if (match) return render(match[1], match[1] === me, match[2]);
     }
     return text;
 }
@@ -3181,7 +3256,7 @@ function createMessageElement(message) {
         line.className = 'message-system';
         line.dataset.messageId = message.id;
         const text = systemLineText(message.text || '');
-        if (/исчезающ/.test(text)) line.appendChild(createIcon('i-timer'));
+        if (/исчезающ/i.test(text)) line.appendChild(createIcon('i-timer'));
         line.append(text);
         return line;
     }
@@ -3197,6 +3272,21 @@ function createMessageElement(message) {
 
     const contentDiv = document.createElement('div');
     contentDiv.className = 'message-content';
+    // В группе у чужих: имя — над первым в группе, аватар — у последнего
+    // (что показывать, решают классы группы и .is-group у ленты).
+    if (!isMine && message.sender_username) {
+        const color = /^#[0-9a-f]{3,8}$/i.test(message.sender_avatar || '') ? message.sender_avatar : DEFAULT_AVATAR;
+        div.style.setProperty('--author-color', color);
+        const author = document.createElement('div');
+        author.className = 'message-author';
+        author.textContent = message.sender_username;
+        contentDiv.appendChild(author);
+        const face = document.createElement('div');
+        face.className = 'message-avatar';
+        face.setAttribute('aria-hidden', 'true');
+        face.textContent = message.sender_username.charAt(0).toUpperCase();
+        div.appendChild(face);
+    }
 
     if (message.deleted) {
         const em = document.createElement('em');
@@ -3570,6 +3660,7 @@ function scheduleDelete(messageId) {
     pendingDeletes.set(messageId, { el, timer: setTimeout(() => commitDelete(messageId), UNDO_DELETE_MS) });
     showToast('Сообщение удалено', 'info', {
         duration: UNDO_DELETE_MS,
+        progress: true,
         action: { label: 'Вернуть', onClick: () => undoDelete(messageId) },
     });
 }
@@ -3656,6 +3747,11 @@ function startReply(message) {
     replyToMessageId = message.id;
     elements.replyPreviewText.textContent = (message.text || 'Сообщение').substring(0, 100);
     elements.replyPreview.classList.remove('hidden');
+}
+
+function checkExpiryOption(seconds) {
+    const option = elements.chatExpiryOptions.querySelector(`input[name="chat-expiry"][value="${Number(seconds) || 0}"]`);
+    if (option) option.checked = true;
 }
 
 function hideMessageMenu() {
@@ -4034,6 +4130,7 @@ async function sendEncryptedFile(chatId, file, progress = silentProgress) {
     if (file.size > MAX_ATTACHMENT_BYTES) throw new Error('файл больше 50 МБ');
 
     progress.phase('шифруем…');
+    progress.note('Автор и дата из файла удалены, шифруется');
     const { ciphertext, meta } = await e2ee.encryptAttachment(file);
     progress.check();
 
@@ -4082,12 +4179,13 @@ async function uploadWithProgress(url, body, headers, progress) {
    бы мигнула. */
 
 let activeUpload = null;
-const silentProgress = { set() {}, phase() {}, onCancel() {}, check() {}, done() {} };
+const silentProgress = { set() {}, phase() {}, note() {}, onCancel() {}, check() {}, done() {} };
 
 function startUploadStatus(label) {
     let cancelled = false;
     let cancel = null;
     elements.uploadStatusName.textContent = label;
+    elements.uploadStatusNote.textContent = '';
     elements.uploadProgress.removeAttribute('value');
     elements.uploadStatusPercent.textContent = '';
     elements.uploadCancelBtn.hidden = false;
@@ -4103,6 +4201,9 @@ function startUploadStatus(label) {
             elements.uploadProgress.removeAttribute('value');
             elements.uploadStatusPercent.textContent = text;
             elements.uploadCancelBtn.hidden = !cancellable;
+        },
+        note(text) {
+            elements.uploadStatusNote.textContent = text;
         },
         onCancel(fn) {
             cancel = fn;
@@ -4260,6 +4361,11 @@ function setupComposer() {
         if (!hasFiles(event) || !currentChatId) return;
         event.preventDefault();
         depth++;
+        // Имена файлов до броска браузер не показывает — только сколько их.
+        const count = [...event.dataTransfer.items].filter(item => item.kind === 'file').length;
+        elements.dropZoneCount.textContent = count > 1
+            ? `Отпустите, чтобы отправить ${count} ${['файл', 'файла', 'файлов'][pluralForm(count)]}`
+            : 'Отпустите, чтобы отправить';
         elements.dropZone.hidden = false;
     });
     area.addEventListener('dragover', event => {
@@ -4311,13 +4417,67 @@ function applySidebarWidth(width, { save = true } = {}) {
     elements.sidebar.style.setProperty('--sidebar-w', `${value}px`);
     elements.sidebarResizer.setAttribute('aria-valuenow', String(value));
     elements.sidebarResizer.setAttribute('aria-valuetext', compact ? 'Компактный список' : `${value} пикселей`);
-    for (const item of elements.chatsList.querySelectorAll('.chat-item')) {
-        if (compact) item.title = item.querySelector('.chat-name')?.textContent || '';
-        else item.removeAttribute('title');
-    }
+    if (!compact) elements.compactTip.hidden = true;
     if (save) {
         try { localStorage.setItem(SIDEBAR.key, String(value)); } catch { /* не запомнится — не беда */ }
     }
+}
+
+/* --- Список чатов с клавиатуры и подсказка узкого списка -----------------
+   Весь список — одна остановка Tab: фокус на открытом (или первом) чате,
+   стрелки ходят по чатам, Enter и пробел открывают. В узком списке у чата
+   под мышью или в фокусе — подсказка «Название · время». */
+
+function refreshChatListTabStop() {
+    const items = [...elements.chatsList.querySelectorAll('.chat-item')];
+    const focused = items.find(item => item === document.activeElement);
+    const target = focused || items.find(item => item.classList.contains('active')) || items[0];
+    for (const item of items) item.tabIndex = item === target ? 0 : -1;
+}
+
+function showCompactTip(item) {
+    const tip = elements.compactTip;
+    if (!elements.sidebar.classList.contains('is-compact') || !item) {
+        tip.hidden = true;
+        return;
+    }
+    const name = item.querySelector('.chat-name')?.textContent || '';
+    const time = item.querySelector('.chat-time')?.textContent || '';
+    tip.textContent = time ? `${name} · ${time}` : name;
+    tip.hidden = false;
+    const r = item.getBoundingClientRect();
+    tip.style.left = `${Math.round(r.right + 8)}px`;
+    tip.style.top = `${Math.round(r.top + r.height / 2 - tip.offsetHeight / 2)}px`;
+}
+
+function setupChatListKeyboard() {
+    const list = elements.chatsList;
+    list.addEventListener('keydown', event => {
+        const item = event.target.closest && event.target.closest('.chat-item');
+        if (!item) return;
+        const items = [...list.querySelectorAll('.chat-item')];
+        const index = items.indexOf(item);
+        let next = null;
+        if (event.key === 'ArrowDown') next = items[index + 1];
+        else if (event.key === 'ArrowUp') next = items[index - 1];
+        else if (event.key === 'Home') next = items[0];
+        else if (event.key === 'End') next = items[items.length - 1];
+        else if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            item.click();
+            return;
+        }
+        if (!next) return;
+        event.preventDefault();
+        item.tabIndex = -1;
+        next.tabIndex = 0;
+        next.focus();
+    });
+    list.addEventListener('mouseover', event => showCompactTip(event.target.closest && event.target.closest('.chat-item')));
+    list.addEventListener('mouseleave', () => { elements.compactTip.hidden = true; });
+    list.addEventListener('focusin', event => showCompactTip(event.target.closest && event.target.closest('.chat-item')));
+    list.addEventListener('focusout', () => { elements.compactTip.hidden = true; });
+    list.addEventListener('scroll', () => { elements.compactTip.hidden = true; }, { passive: true });
 }
 
 function setupSidebarResize() {
@@ -4507,10 +4667,38 @@ async function performSearch() {
  * первая буква названия и цвет аватара попадали туда без экранирования.
  * Цвет принимается только вида #rrggbb.
  */
+// Вторая строка чата в списке: своё — «Вы:» и отметка ✓/✓✓, в группе
+// чужое — «Имя:», дальше текст.
+function fillChatLast(last, chat, previewText) {
+    last.replaceChildren();
+    // Своё — «Вы:» и отметка ✓/✓✓; в группе чужое — «Имя:».
+    const own = Boolean(currentUser) && chat.last_user_id === currentUser.id && Number(chat.last_sent) !== 0
+        && chat.last_type !== 'system';
+    if (own && chat.last_status && STATUS_VIEW[chat.last_status] && chat.last_status !== 'sent') {
+        const mark = document.createElement('span');
+        mark.className = `chat-last-status is-${chat.last_status}`;
+        mark.textContent = STATUS_VIEW[chat.last_status][0];
+        mark.title = STATUS_VIEW[chat.last_status][1];
+        last.appendChild(mark);
+    }
+    const prefix = own ? 'Вы: '
+        : chat.peer_count > 1 && chat.last_sender && chat.last_type !== 'system' && chat.last_message !== undefined
+            ? `${chat.last_sender}: ` : '';
+    if (prefix && previewText !== 'Нет сообщений') {
+        const who = document.createElement('span');
+        who.className = 'chat-last-author';
+        who.textContent = prefix;
+        last.appendChild(who);
+    }
+    last.append(previewText);
+}
+
 function chatItemElement(chat, previewText) {
     const div = document.createElement('div');
     div.className = 'chat-item';
     div.dataset.id = chat.id;
+    div.setAttribute('role', 'button');
+    div.tabIndex = -1;
     const avatar = document.createElement('div');
     avatar.className = 'chat-avatar-small';
     avatar.style.background = /^#[0-9a-f]{3,8}$/i.test(chat.avatar || '') ? chat.avatar : DEFAULT_AVATAR;
@@ -4526,19 +4714,18 @@ function chatItemElement(chat, previewText) {
     const at = chat.last_at ? new Date(chat.last_at) : null;
     if (at && !Number.isNaN(at.getTime())) {
         const time = document.createElement('time');
-        time.className = 'chat-time';
+        // Есть непрочитанное — время акцентным цветом.
+        time.className = 'chat-time' + (chat.unread > 0 ? ' has-unread' : '');
         time.dateTime = at.toISOString();
         time.textContent = listTimeLabel(at);
         time.title = fullFormat.format(at);
         top.appendChild(time);
     }
     info.appendChild(top);
-    // В компактном списке видно только аватар — имя всплывает подсказкой.
-    if (elements.sidebar.classList.contains('is-compact')) div.title = chat.name;
     if (previewText !== null) {
         const last = document.createElement('div');
         last.className = 'chat-last';
-        last.textContent = previewText;
+        fillChatLast(last, chat, previewText);
         info.appendChild(last);
     }
     div.append(avatar, info);

@@ -992,6 +992,27 @@ input.is-invalid:focus {
    вторая строка должна быть заметнее, а не такой же, как у остальных. */
 .chat-item.active .chat-last { color: var(--text-2); }
 
+/* Узкий список: выбранный чат — в кольце; подсказка «Название · время». */
+@media (min-width: 641px) {
+    .sidebar.is-compact .chat-item.active { background: none; border-color: transparent; }
+    .sidebar.is-compact .chat-item.active .chat-avatar-small {
+        box-shadow: 0 0 0 2px var(--layer-2), 0 0 0 4px var(--accent);
+    }
+}
+.compact-tip {
+    position: fixed;
+    z-index: 70;
+    padding: 0.375rem 0.625rem;
+    border-radius: var(--r-md);
+    background: var(--text);
+    color: var(--layer-1);
+    font-size: var(--fs-sm);
+    white-space: nowrap;
+    pointer-events: none;
+    box-shadow: var(--sh-2, 0 6px 18px rgba(0, 0, 0, 0.25));
+}
+.chat-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
 /* Зелёная точка «в сети» на аватаре. */
 .chat-avatar-small,
 #chat-avatar { position: relative; }
@@ -1059,6 +1080,11 @@ input.is-invalid:focus {
     color: var(--text-3);
 }
 .chat-item.active .chat-time { color: var(--text-2); }
+.chat-time.has-unread,
+.chat-item.active .chat-time.has-unread { color: var(--accent); font-weight: 600; }
+.chat-last-status { margin-right: 0.25rem; font-weight: 600; color: var(--text-3); }
+.chat-last-status.is-read { color: var(--accent); }
+.chat-last-author { color: var(--text-2); }
 
 .chat-item .chat-last {
     font-size: var(--fs-sm);
@@ -1297,6 +1323,24 @@ input.is-invalid:focus {
     .expiry-badge:hover { text-decoration: underline; text-underline-offset: 0.2em; }
 }
 .expiry-badge .icon { flex: none; width: 0.8125rem; height: 0.8125rem; }
+
+/* Срок исчезающих сообщений в меню чата — радиокнопками. */
+.expiry-options { margin: 0 0 1rem; padding: 0; border: 0; }
+.expiry-options legend { padding: 0; margin-bottom: 0.375rem; }
+.radio-row {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    min-height: 44px;
+    padding: 0 0.5rem;
+    border-radius: var(--r-md);
+    cursor: pointer;
+}
+.radio-row input { width: 1.125rem; height: 1.125rem; margin: 0; accent-color: var(--accent); }
+@media (hover: hover) {
+    .radio-row:hover { background: var(--accent-soft); }
+}
+.radio-row:has(input:checked) { font-weight: 600; }
 .expiry-badge-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 /* Совсем мало места (узкий телефон): у шифрования и срока остаются
    значки, текст — в подсказке, у диктора и в меню чата. На ширине
@@ -1387,7 +1431,6 @@ input.is-invalid:focus {
        на светлом начале прежнего градиента он не дотягивал до 4,5:1. */
     background: linear-gradient(140deg, var(--accent-strong) 0%, var(--accent-deep) 100%);
     color: var(--accent-ink);
-    border-bottom-right-radius: var(--r-xs);
     box-shadow: var(--sh-accent);
 }
 
@@ -1398,7 +1441,6 @@ input.is-invalid:focus {
     align-self: flex-start;
     background: var(--layer-3);
     border: 1px solid var(--border);
-    border-bottom-left-radius: var(--r-xs);
     box-shadow: var(--sh-1);
 }
 
@@ -1705,11 +1747,43 @@ input.is-invalid:focus {
     100% { opacity: 1; transform: none; }
 }
 
-/* Подряд идущие сообщения одного автора — группа: ближе друг к другу,
-   углы со стороны автора скруглены меньше. */
-.message.is-continuation { margin-top: -0.5rem; }
-.message.sent.is-continuation { border-top-right-radius: var(--r-xs); }
-.message.received.is-continuation { border-top-left-radius: var(--r-xs); }
+/* Подряд идущие сообщения одного автора — группа: 3 px между пузырями,
+   углы со стороны автора внутри группы скруглены меньше, «хвостик» (самый
+   острый угол) — только у последнего. */
+.message.is-continuation { margin-top: calc(3px - 0.75rem); }
+.message.sent.group-end { border-bottom-right-radius: var(--r-xs); }
+.message.received.group-end { border-bottom-left-radius: var(--r-xs); }
+.message.sent:not(.group-end) { border-bottom-right-radius: var(--r-sm); }
+.message.received:not(.group-end) { border-bottom-left-radius: var(--r-sm); }
+.message.sent.is-continuation { border-top-right-radius: var(--r-sm); }
+.message.received.is-continuation { border-top-left-radius: var(--r-sm); }
+
+/* В группе: имя автора — один раз сверху, аватар — у последнего. */
+.message-author,
+.message-avatar { display: none; }
+.chat-messages.is-group .message.received { margin-left: 2.25rem; }
+.chat-messages.is-group .message.received:not(.is-continuation) .message-author {
+    display: block;
+    margin-bottom: 0.125rem;
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    color: var(--author-color, var(--accent));
+    filter: brightness(1.25);
+}
+.chat-messages.is-group .message.received.group-end .message-avatar {
+    position: absolute;
+    left: -2.25rem;
+    bottom: 0;
+    display: grid;
+    place-items: center;
+    width: 1.75rem;
+    height: 1.75rem;
+    border-radius: 50%;
+    background: var(--author-color, var(--accent));
+    color: #fff;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
 
 /* Переход по цитате: исходное сообщение коротко подсвечивается. */
 .message.is-highlighted { animation: highlight 1.6s var(--ease); }
@@ -1781,6 +1855,7 @@ input.is-invalid:focus {
     background: var(--skeleton-base);
 }
 .message-skeleton.received { align-self: flex-start; }
+.history-skeleton { display: flex; flex-direction: column; gap: 0.75rem; padding-bottom: 0.75rem; }
 .message-skeleton.sent { align-self: flex-end; }
 
 /* Реакции в меню сообщения — строкой сверху, кнопки 44×44. */
@@ -1968,13 +2043,20 @@ input.is-invalid:focus {
     animation: fadeIn var(--dur-1) var(--ease) both;
 }
 .upload-status > .icon { flex: none; width: 1rem; height: 1rem; color: var(--accent); }
-.upload-status-name {
+.upload-status-text {
+    display: flex;
     flex: 1 1 auto;
+    flex-direction: column;
     min-width: 0;
+}
+.upload-status-name,
+.upload-status-note {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+.upload-status-note { font-size: var(--fs-xs); color: var(--text-3); }
+.upload-status-note:empty { display: none; }
 .upload-progress {
     flex: 0 1 8rem;
     height: 0.375rem;
@@ -2013,6 +2095,9 @@ input.is-invalid:focus {
     pointer-events: none;
     animation: fadeIn var(--dur-1) var(--ease) both;
 }
+.drop-zone { flex-direction: column; }
+.drop-zone-title { display: inline-flex; align-items: center; gap: 0.5rem; }
+.drop-zone-note { font-size: var(--fs-sm); font-weight: 400; color: var(--text-2); }
 .drop-zone .icon { width: 1.25rem; height: 1.25rem; color: var(--accent); }
 
 .send-files-list {
@@ -2131,6 +2216,30 @@ input.is-invalid:focus {
 .room-empty.is-strip p { font-size: var(--fs-sm); }
 @media (max-width: 640px) {
     .room-empty.is-strip { flex-wrap: wrap; padding-inline: 1rem; }
+}
+
+/* Подсказка под полем, пока оно в фокусе (не на телефоне). Место под неё
+   есть всегда — поле не прыгает. */
+.composer-hint {
+    margin-top: 0.375rem;
+    font-size: var(--fs-xs);
+    color: var(--text-3);
+    visibility: hidden;
+}
+.message-input-container:focus-within .composer-hint { visibility: visible; }
+@media (pointer: coarse) {
+    .composer-hint { display: none; }
+}
+.reply-preview-hint { flex: none; font-size: var(--fs-xs); color: var(--text-3); }
+@media (pointer: coarse) {
+    .reply-preview-hint { display: none; }
+}
+.reply-preview .reply-cancel {
+    width: 44px;
+    height: 44px;
+    margin: -0.5rem -0.375rem -0.5rem 0;
+    border: none;
+    background: none;
 }
 
 .input-wrapper textarea:disabled {
@@ -2431,23 +2540,49 @@ dialog.modal::backdrop {
     gap: 0.5rem;
     padding: 0.5rem 0.875rem;
     border-radius: var(--r-pill);
-    background: var(--text);
-    color: var(--layer-1);
+    background: var(--warn, #f5a524);
+    color: #1b1b27;
     font-size: var(--fs-sm);
     font-weight: 500;
     box-shadow: var(--sh-2, 0 6px 18px rgba(0, 0, 0, 0.25));
 }
 .connection-status[hidden] { display: none; }
-.connection-dot {
-    width: 0.5rem;
-    height: 0.5rem;
+/* «Соединение…» — жёлтая плашка с кружком загрузки. */
+.connection-spinner {
+    width: 0.875rem;
+    height: 0.875rem;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
     border-radius: 50%;
-    background: var(--warn, #f5a524);
-    animation: connectionPulse 1.2s ease-in-out infinite;
+    animation: connectionSpin 0.9s linear infinite;
+}
+@keyframes connectionSpin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+    .connection-spinner { animation: connectionPulse 1.2s ease-in-out infinite; }
 }
 @keyframes connectionPulse { 50% { opacity: 0.3; } }
 
 .logout-text { text-align: left; }
+/* Подключение устройства на телефоне — окном снизу экрана. */
+@media (max-width: 640px) {
+    #link-scan-modal,
+    #link-login-modal { margin: auto 0 0; width: 100%; }
+    #link-scan-modal .modal-content,
+    #link-login-modal .modal-content {
+        width: 100%;
+        max-height: 85vh;
+        border-radius: var(--r-2xl) var(--r-2xl) 0 0;
+        border-bottom: 0;
+        padding-bottom: env(safe-area-inset-bottom, 0px);
+        animation: sheetIn var(--dur-2) var(--ease) both;
+    }
+}
+@keyframes sheetIn {
+    from { transform: translateY(100%); }
+    to { transform: none; }
+}
+.link-server-note { font-style: italic; }
+
 .link-qr {
     display: block;
     width: min(16rem, 100%);
@@ -2614,6 +2749,23 @@ dialog.modal::backdrop {
 dialog.modal .toast { top: calc(1rem + env(safe-area-inset-top, 0px)); bottom: auto; }
 
 .toast-text { min-width: 0; white-space: pre-line; }
+/* Сколько осталось до конца (например, до удаления): полоска тает. */
+.toast-progress {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 3px;
+    border-radius: 0 0 var(--r-lg) var(--r-lg);
+    background: currentColor;
+    opacity: 0.45;
+    transform-origin: left;
+    animation: toastProgress var(--toast-duration, 5s) linear forwards;
+}
+@keyframes toastProgress {
+    from { transform: scaleX(1); }
+    to { transform: scaleX(0); }
+}
 
 .toast-action {
     flex-shrink: 0;

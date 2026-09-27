@@ -214,11 +214,19 @@ await alice.mouse.up();
 const compact = await alice.evaluate(() => ({
     width: Math.round(document.querySelector('.sidebar').getBoundingClientRect().width),
     compact: document.querySelector('.sidebar').classList.contains('is-compact'),
-    titles: [...document.querySelectorAll('#chats-list .chat-item')].every(i => i.title),
     search: getComputedStyle(document.querySelector('.search-container')).display,
 }));
 check('уже 160px — компактный список 76px', compact.compact && compact.width === 76 && compact.search === 'none', JSON.stringify(compact));
-check('в компактном имя чата — подсказкой', compact.titles);
+await alice.hover('#chats-list .chat-item >> nth=0');
+await alice.waitForTimeout(200);
+const tip = await alice.evaluate(() => ({ shown: !document.getElementById('compact-tip').hidden, text: document.getElementById('compact-tip').textContent,
+    ring: getComputedStyle(document.querySelector('#chats-list .chat-item.active .chat-avatar-small') || document.body).boxShadow }));
+check('в узком списке — подсказка «Название · время» при наведении', tip.shown && /^.+ · \d{2}:\d{2}$/.test(tip.text), JSON.stringify(tip));
+check('выбранный чат обведён кольцом', /rgb/.test(tip.ring) && tip.ring !== 'none', tip.ring);
+await alice.mouse.move(600, 400);
+await alice.focus('#chats-list .chat-item[tabindex="0"]');
+await alice.waitForTimeout(100);
+check('и при фокусе с клавиатуры', await alice.evaluate(() => !document.getElementById('compact-tip').hidden));
 await alice.reload({ waitUntil: 'networkidle' });
 await alice.waitForTimeout(1000);
 check('ширина запоминается', await sidebarWidth() === 76);
