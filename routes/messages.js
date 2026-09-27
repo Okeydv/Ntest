@@ -10,6 +10,7 @@ const { onlyStrings, BAD_FIELDS, getCurrentTime, getSocketRoomKey } = require('.
 const { receiptsFor, statusFor } = require('../lib/read-state');
 const { E2EE_REQUIRED, ROOM_EMPTY, canWriteTo } = require('../lib/rooms');
 const { plaintextNotice } = require('../lib/plaintext-purge');
+const EMOJI_SET = require('../public/emoji/set.json');
 const { BLOB_ID_RE, MAX_BLOBS_PER_MESSAGE, purgeMessageContent } = require('../lib/storage');
 
 
@@ -137,6 +138,24 @@ module.exports = function registerMessageRoutes(app, ctx) {
             ? await dbGet('SELECT id FROM messages WHERE id = $1 AND room_id = $2 AND deleted = 0', [id, chat.room_id])
             : await dbGet('SELECT id FROM messages WHERE id = $1 AND chat_id = $2 AND room_id IS NULL AND deleted = 0', [id, chat.id]);
         return target ? { id } : { error: 'Сообщение, на которое вы отвечаете, не найдено' };
+    }
+
+    // Реакции сообщений: [{ emoji, users: [{ id, username }] }] в порядке
+    // первой реакции. Кто поставил — чтобы показать счётчик, выделить свою и
+    // по долгому нажатию сказать, кто.
+    async function reactionsFor(messageIds) {
+        if (!messageIds.length) return {};
+        const rows = await dbAll(
+            `SELECT r.message_id, r.emoji, r.user_id, u.username FROM reactions r JOIN users u ON u.id = r.user_id
+             WHERE r.message_id = ANY($1::int[]) ORDER BY r.id`, [messageIds]);
+        const byMessage = {};
+        for (const row of rows) {
+            const list = byMessage[row.message_id] || (byMessage[row.message_id] = []);
+            let entry = list.find(e => e.emoji === row.emoji);
+            if (!entry) list.push(entry = { emoji: row.emoji, users: [] });
+            entry.users.push({ id: row.user_id, username: row.username });
+        }
+        return byMessage;
     }
 
     // Повтор с тем же client id — уже сохранённое сообщение (см. migrations/010).
@@ -519,14 +538,7 @@ module.exports = function registerMessageRoutes(app, ctx) {
             }
 
             const messageIds = messages.map(m => m.id);
-            const placeholders = messageIds.map((_, i) => `$${i + 1}`).join(',');
-            const reactions = await dbAll(
-                `SELECT message_id, STRING_AGG(DISTINCT emoji, ',') as emojis FROM reactions WHERE message_id IN (${placeholders}) GROUP BY message_id`,
-                messageIds
-            );
-
-            const reactionsMap = {};
-            reactions.forEach(r => { reactionsMap[r.message_id] = r.emojis.split(','); });
+            const reactionsMap = await reactionsFor(messageIds);
 
             // Конверты — только адресованные ЭТОМУ устройству. Чужие сервер
             // отдавать не должен: прочитать их устройство всё равно не может,
@@ -806,21 +818,20 @@ module.exports = function registerMessageRoutes(app, ctx) {
     // кто-то вообще" (см. п.1 аудита). Имя файла уникально (Date.now() + random),
     // поэтому джойн messages.file_url -> chats/room_participants однозначно
     // определяет владельца.
-    // В UI предлагается фиксированный набор из 5 эмодзи для реакций. Раньше на
-    // бэке проверялась только длина строки (≤10 символов), а не содержимое — это
-    // пропускало вход в message.reactions, который на фронте рендерится в
-    // innerHTML без escapeHtml (см. п.3 аудита). Теперь бэк принимает только
-    // эмодзи из этого списка.
-    const ALLOWED_REACTION_EMOJIS = new Set(['👍', '❤️', '😂', '😢', '🔥']);
+    // Реакции — только из своего набора (public/emoji/set.json): картинки к
+    // ним лежат на нашем сервере, и на всех устройствах они одинаковые.
+    // Раньше бэк проверял лишь длину строки, и в реакцию можно было положить
+    // что угодно.
+    const ALLOWED_REACTION_EMOJIS = new Set(EMOJI_SET.all);
 
-    // Реакции сообщения — всем в его чате: раньше они менялись только у
+    // Реакции — всем в его чате: раньше они менялись только у
     // поставившего и то после перезагрузки.
     async function broadcastReactions(messageId) {
         const message = await dbGet('SELECT chat_id, room_id FROM messages WHERE id = $1', [messageId]);
         if (!message) return;
-        const rows = await dbAll('SELECT DISTINCT emoji FROM reactions WHERE message_id = $1', [messageId]);
+        const reactions = (await reactionsFor([Number(messageId)]))[messageId] || [];
         io.to(getSocketRoomKey(message.chat_id, message.room_id)).emit('reactionsChanged', {
-            id: Number(messageId), chat_id: message.chat_id, room_id: message.room_id, reactions: rows.map(r => r.emoji),
+            id: Number(messageId), chat_id: message.chat_id, room_id: message.room_id, reactions,
         });
     }
 

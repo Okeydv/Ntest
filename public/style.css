@@ -992,6 +992,22 @@ input.is-invalid:focus {
    вторая строка должна быть заметнее, а не такой же, как у остальных. */
 .chat-item.active .chat-last { color: var(--text-2); }
 
+/* Зелёная точка «в сети» на аватаре. */
+.chat-avatar-small,
+#chat-avatar { position: relative; }
+.chat-avatar-small.is-online::after,
+#chat-avatar.is-online::after {
+    content: '';
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    width: 0.8rem;
+    height: 0.8rem;
+    border: 2px solid var(--layer-2);
+    border-radius: 50%;
+    background: var(--ok);
+}
+
 .chat-avatar-small {
     display: grid;
     place-items: center;
@@ -1578,14 +1594,32 @@ input.is-invalid:focus {
     margin-top: 0.5rem;
 }
 
+.emoji { display: block; width: 1.25rem; height: 1.25rem; }
+
 .reaction {
-    padding: 0.125rem 0.5rem;
-    border-radius: var(--r-sm);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    min-height: 1.75rem;
+    padding: 0.125rem 0.5rem 0.125rem 0.375rem;
+    border: 1px solid transparent;
+    border-radius: var(--r-pill);
     background: var(--bubble-inset);
     font-size: var(--fs-sm);
+    color: inherit;
     cursor: pointer;
-    transition: transform var(--dur-1) var(--ease), background var(--dur-2) var(--ease);
+    transition: transform var(--dur-1) var(--ease), background var(--dur-2) var(--ease), border-color var(--dur-2) var(--ease);
 }
+.reaction .emoji { width: 1.125rem; height: 1.125rem; }
+.reaction-count { min-width: 0.5rem; font-size: 0.75rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.reaction-count.count-bump { animation: countBump 200ms var(--ease); }
+@keyframes countBump {
+    from { opacity: 0; transform: translateY(-40%); }
+    to { opacity: 1; transform: none; }
+}
+/* Своя реакция — с обводкой. */
+.reaction.mine { border-color: var(--accent); background: var(--accent-soft); }
+.message.sent .reaction.mine { border-color: rgba(255, 255, 255, 0.75); background: rgba(255, 255, 255, 0.18); }
 
 @media (hover: hover) {
     .reaction:hover { background: var(--bubble-inset-hover); transform: scale(1.08); }
@@ -1663,11 +1697,12 @@ input.is-invalid:focus {
     .reply-to[data-reply-id]:hover { background: var(--bubble-inset-hover); }
 }
 
-/* Новая реакция чуть вырастает — 120 мс, без пружины. */
-.reaction.is-new { animation: reactionIn 120ms var(--ease) both; }
+/* Новая реакция всплывает с небольшим «переростом»: 0.9 → 1.1 → 1. */
+.reaction.is-new { animation: reactionIn 240ms var(--ease) both; }
 @keyframes reactionIn {
-    from { opacity: 0; transform: scale(0.9); }
-    to { opacity: 1; transform: none; }
+    0% { opacity: 0; transform: scale(0.9); }
+    60% { opacity: 1; transform: scale(1.1); }
+    100% { opacity: 1; transform: none; }
 }
 
 /* Подряд идущие сообщения одного автора — группа: ближе друг к другу,
@@ -1748,21 +1783,60 @@ input.is-invalid:focus {
 .message-skeleton.received { align-self: flex-start; }
 .message-skeleton.sent { align-self: flex-end; }
 
-/* Реакции в меню сообщения — одной строкой под пунктами. */
+/* Реакции в меню сообщения — строкой сверху, кнопки 44×44. */
 .reaction-row {
     display: flex;
     justify-content: space-between;
     gap: 0.125rem;
-    margin-top: 0.25rem;
-    padding-top: 0.25rem;
-    border-top: 1px solid var(--border);
+    margin-bottom: 0.25rem;
+    padding-bottom: 0.25rem;
+    border-bottom: 1px solid var(--border);
 }
-.reaction-row .reaction-choice {
+.reaction-row .reaction-choice,
+.reaction-row .reaction-more {
     justify-content: center;
-    width: auto;
-    padding: 0.375rem 0.5rem;
-    font-size: 1.125rem;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border-radius: 50%;
 }
+.reaction-row .emoji { width: 1.625rem; height: 1.625rem; }
+.reaction-row .reaction-more .icon { width: 1.25rem; height: 1.25rem; }
+
+/* Весь набор. */
+.reaction-picker {
+    display: none;
+    grid-template-columns: repeat(6, 44px);
+    gap: 0.125rem;
+    max-height: 16rem;
+    overflow-y: auto;
+}
+.reaction-picker:popover-open { display: grid; }
+.reaction-pick {
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    border: none;
+    border-radius: 50%;
+    background: none;
+    cursor: pointer;
+}
+.reaction-pick .emoji { width: 1.625rem; height: 1.625rem; }
+@media (hover: hover) {
+    .reaction-pick:hover { background: var(--accent-soft); }
+}
+
+.reaction-who { min-width: 10rem; max-width: 16rem; }
+.reaction-who-title {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.375rem 0.5rem;
+    font-weight: 600;
+}
+.reaction-who ul { margin: 0; padding: 0 0.5rem 0.375rem; list-style: none; font-size: var(--fs-sm); }
+.reaction-who li { padding: 0.25rem 0; }
 
 .reply-to-author {
     display: block;
@@ -2668,6 +2742,7 @@ dialog.modal .toast { top: calc(1rem + env(safe-area-inset-top, 0px)); bottom: a
 
     .message.is-new,
     .reaction.is-new,
+    .reaction-count.count-bump,
     .auth-container,
     .modal-content,
     .context-menu,

@@ -32,14 +32,28 @@ module.exports = function registerChatRoutes(app, ctx) {
             // «В сети» — если в сети хоть кто-то из собеседников; сколько их
             // всего — для подписи группы. Кто из них в сети сейчас — чтобы
             // клиент дальше вёл статус по событиям presence.
-            res.json({ success: true, chats: chats.map(({ peers, ...c }) => ({
-                ...c,
-                unread: Number(c.unread),
-                peer_count: (peers || []).length,
-                online: (peers || []).some(isOnline) ? 1 : 0,
-                peer_ids: peers || [],
-                online_ids: (peers || []).filter(isOnline),
-            })) });
+            // Статус собеседников — только если ни они, ни сам смотрящий его
+            // не скрывают (lib/presence.js).
+            const allPeers = [...new Set(chats.flatMap(c => c.peers || []))];
+            const me = await dbGet('SELECT hide_presence FROM users WHERE id = $1', [req.session.userId]);
+            const peerInfo = new Map((allPeers.length
+                ? await dbAll('SELECT id, hide_presence, last_seen_at FROM users WHERE id = ANY($1::int[])', [allPeers])
+                : []).map(u => [u.id, u]));
+            const visible = id => !(me && me.hide_presence) && peerInfo.has(id) && !peerInfo.get(id).hide_presence;
+            res.json({ success: true, presenceHidden: Boolean(me && me.hide_presence), chats: chats.map(({ peers, ...c }) => {
+                const ids = peers || [];
+                const onlineIds = ids.filter(id => visible(id) && isOnline(id));
+                return {
+                    ...c,
+                    unread: Number(c.unread),
+                    peer_count: ids.length,
+                    online: onlineIds.length ? 1 : 0,
+                    peer_ids: ids,
+                    online_ids: onlineIds,
+                    // Когда был в сети — для чата на двоих; null — не видно.
+                    last_seen: ids.length === 1 && visible(ids[0]) ? peerInfo.get(ids[0]).last_seen_at : null,
+                };
+            }) });
 
             // Список чатов с превью на экране — значит, сообщения до этого
             // устройства дошли: «доставлено» у собеседников.

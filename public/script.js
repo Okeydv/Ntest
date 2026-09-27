@@ -9,6 +9,7 @@ let longPressTimer = null;
 // Когда в последний раз открыли меню долгим нажатием: Android вслед за ним
 // присылает ещё и системный contextmenu — второй раз меню не открываем.
 let longPressShownAt = 0;
+let lastTap = null;
 const LONG_PRESS_MS = 400;
 const coarsePointer = () => window.matchMedia('(pointer: coarse)').matches;
 
@@ -24,6 +25,8 @@ const elements = {
     jumpDown: document.getElementById('jump-down'),
     jumpDownCount: document.getElementById('jump-down-count'),
     reactionRow: document.getElementById('reaction-row'),
+    reactionPicker: document.getElementById('reaction-picker'),
+    reactionWho: document.getElementById('reaction-who'),
     selectTextBtn: document.getElementById('select-text-btn'),
     chatMenuInviteBtn: document.getElementById('chat-menu-invite-btn'),
     uploadStatus: document.getElementById('upload-status'),
@@ -44,6 +47,7 @@ const elements = {
     connectionStatus: document.getElementById('connection-status'),
     connectionStatusText: document.getElementById('connection-status-text'),
     readReceiptsToggle: document.getElementById('read-receipts-toggle'),
+    hidePresenceToggle: document.getElementById('hide-presence-toggle'),
     linkLoginBtn: document.getElementById('link-login-btn'),
     linkLoginModal: document.getElementById('link-login-modal'),
     linkQr: document.getElementById('link-qr'),
@@ -1407,11 +1411,26 @@ function setupEventListeners() {
                 elements.linkDeviceBtn.hidden = false;
             }
             elements.readReceiptsToggle.checked = data.user.sendReadReceipts !== false;
+            elements.hidePresenceToggle.checked = Boolean(data.user.hidePresence);
             elements.notifyToggle.checked = notificationsOn();
             await renderDevices();
             await renderSecurityEvents();
             openModal(elements.profileModal);
         }
+    });
+
+    elements.hidePresenceToggle.addEventListener('change', async () => {
+        const toggle = elements.hidePresenceToggle;
+        toggle.disabled = true;
+        const data = await api('/api/user/presence', { method: 'POST', body: JSON.stringify({ hidden: toggle.checked }) });
+        toggle.disabled = false;
+        if (!data.success) {
+            toggle.checked = !toggle.checked;
+            return showToast(data.message, 'error');
+        }
+        showToast(data.hidden ? 'Теперь никто не видит, когда вы в сети' : 'Собеседники снова видят, когда вы в сети', 'success');
+        await loadChats();
+        if (currentChatId) renderChatStatus(currentChatIsBot);
     });
 
     elements.readReceiptsToggle.addEventListener('change', async () => {
@@ -1550,11 +1569,25 @@ function setupEventListeners() {
     });
 
     elements.reactionRow.addEventListener('click', event => {
+        const messageId = elements.messageMenu.dataset.forMessage;
+        if (event.target.closest('.reaction-more')) {
+            const r = elements.messageMenu.getBoundingClientRect();
+            hideMessageMenu();
+            openReactionPicker(messageId, r.left, r.top);
+            return;
+        }
         const choice = event.target.closest('.reaction-choice');
         if (!choice) return;
         hideMessageMenu();
-        toggleReaction(elements.messageMenu.dataset.forMessage, choice.dataset.emoji);
+        toggleReaction(messageId, choice.dataset.emoji);
     });
+    elements.reactionPicker.addEventListener('click', event => {
+        const pick = event.target.closest('.reaction-pick');
+        if (!pick) return;
+        elements.reactionPicker.hidePopover();
+        toggleReaction(elements.reactionPicker.dataset.forMessage, pick.dataset.emoji);
+    });
+    loadEmojiSet();
 
     let searchTimeout;
     elements.searchInput.addEventListener('input', () => {
@@ -1746,8 +1779,10 @@ async function loadChats() {
     // for...of, а не forEach: превью зашифрованных чатов лежит в IndexedDB,
     // и его чтение асинхронно.
     chatsMeta.clear();
+    presenceHidden = Boolean(data.presenceHidden);
     for (const chat of data.chats) {
         chatsMeta.set(chat.id, chat);
+        if (chat.peer_ids && chat.peer_ids.length === 1) peerLastSeen.set(Number(chat.peer_ids[0]), chat.last_seen || null);
         for (const id of chat.peer_ids || []) peerOnline.set(Number(id), (chat.online_ids || []).includes(id));
         // Открытый чат, который сейчас на экране, — прочитан, даже если
         // отметка ещё в пути.
@@ -1755,12 +1790,14 @@ async function loadChats() {
         elements.chatsList.appendChild(await chatListItem(chat));
     }
     updateTitleCounter();
+    refreshPresenceDots();
 }
 
 async function chatListItem(chat) {
     const div = chatItemElement(chat, await chatPreview(chat));
     div.dataset.roomId = chat.room_id || '';
     div.classList.toggle('active', chat.id === currentChatId);
+    div.querySelector('.chat-avatar-small')?.classList.toggle('is-online', !chat.is_bot && chatOnline(chat));
     div.addEventListener('click', () => openChat(chat.id, chat.room_id, chat.name, chat.avatar, chat.online, chat.is_bot));
     return div;
 }
@@ -2139,6 +2176,9 @@ function setupDeviceLinking() {
    5 минут) собираются в группу. Цитата ведёт к исходному сообщению. */
 
 let newBelow = 0;
+// Долгое нажатие по реакции показало, кто её поставил, — отпускание пальца
+// не должно тут же снять или поставить её.
+let reactionWhoShownAt = 0;
 
 function noteNewBelow() {
     newBelow++;
@@ -2177,8 +2217,40 @@ function setupFeed() {
         if (quote) goToMessage(Number(quote.dataset.replyId));
         const chip = event.target.closest('.reaction[data-emoji]');
         const bubble = chip && chip.closest('.message[data-message-id]');
-        if (bubble && !currentChatIsBot) toggleReaction(bubble.dataset.messageId, chip.dataset.emoji);
+        if (bubble && !currentChatIsBot) {
+            if (Date.now() - reactionWhoShownAt < 800) return;
+            toggleReaction(bubble.dataset.messageId, chip.dataset.emoji);
+        }
     });
+    elements.chatMessages.addEventListener('contextmenu', event => {
+        const chip = event.target.closest && event.target.closest('.reaction[data-emoji]');
+        if (!chip) return;
+        event.preventDefault();
+        showReactionWho(chip);
+    });
+    // «Кто поставил» открывается правым кликом или долгим нажатием — то
+    // есть до того, как отпущена кнопка или палец. Светлое закрытие
+    // popover="auto" сработало бы на этом же отпускании, поэтому окно
+    // ручное: закрывается нажатием мимо, Esc и прокруткой.
+    const hideWho = () => { if (elements.reactionWho.matches(':popover-open')) elements.reactionWho.hidePopover(); };
+    document.addEventListener('pointerdown', event => {
+        if (!elements.reactionWho.contains(event.target)) hideWho();
+    }, true);
+    document.addEventListener('keydown', event => { if (event.key === 'Escape') hideWho(); });
+    elements.chatMessages.addEventListener('scroll', hideWho, { passive: true });
+    let whoTimer = null;
+    elements.chatMessages.addEventListener('touchstart', event => {
+        const chip = event.target.closest && event.target.closest('.reaction[data-emoji]');
+        if (!chip) return;
+        whoTimer = setTimeout(() => {
+            reactionWhoShownAt = Date.now();
+            if (navigator.vibrate) navigator.vibrate(10);
+            showReactionWho(chip);
+        }, LONG_PRESS_MS);
+    }, { passive: true });
+    for (const type of ['touchend', 'touchmove', 'touchcancel']) {
+        elements.chatMessages.addEventListener(type, () => clearTimeout(whoTimer), { passive: true });
+    }
     elements.chatMessages.addEventListener('keydown', event => {
         const quote = event.target.closest && event.target.closest('.reply-to[data-reply-id]');
         if (quote && (event.key === 'Enter' || event.key === ' ')) {
@@ -2186,10 +2258,14 @@ function setupFeed() {
             goToMessage(Number(quote.dataset.replyId));
         }
     });
-    socket.on('presence', ({ user_id, online }) => {
-        peerOnline.set(Number(user_id), Boolean(online));
+    socket.on('presence', ({ user_id, online, last_seen, hidden }) => {
+        const id = Number(user_id);
+        peerOnline.set(id, Boolean(online) && !hidden);
+        if (hidden) peerLastSeen.set(id, null);
+        else if (!online && last_seen) peerLastSeen.set(id, last_seen);
+        refreshPresenceDots();
         const chat = currentChatMeta();
-        if (chat && (chat.peer_ids || []).map(Number).includes(Number(user_id))) renderChatStatus(chat.is_bot);
+        if (chat && (chat.peer_ids || []).map(Number).includes(id)) renderChatStatus(chat.is_bot);
     });
     socket.on('reactionsChanged', ({ id, reactions }) => {
         const bubble = elements.chatMessages.querySelector(`.message[data-message-id="${id}"]`);
@@ -2201,6 +2277,33 @@ function setupFeed() {
 // сколько в ней участников.
 const chatsMeta = new Map();
 const peerOnline = new Map();
+// Когда собеседник был в сети; null — не видно (скрыл он или вы).
+const peerLastSeen = new Map();
+let presenceHidden = false;
+
+const chatOnline = chat => Boolean(chat) && (chat.peer_ids || []).some(id => peerOnline.get(Number(id)));
+
+// «был(а) в 14:05», «был(а) вчера в 14:05», «был(а) 5 сентября».
+function lastSeenText(value) {
+    const date = value ? new Date(value) : null;
+    if (!date || Number.isNaN(date.getTime())) return 'был(а) недавно';
+    const today = new Date();
+    const days = Math.round((new Date(today.getFullYear(), today.getMonth(), today.getDate())
+        - new Date(date.getFullYear(), date.getMonth(), date.getDate())) / 86400000);
+    if (days <= 0) return `был(а) в ${timeFormat.format(date)}`;
+    if (days === 1) return `был(а) вчера в ${timeFormat.format(date)}`;
+    return `был(а) ${(date.getFullYear() === today.getFullYear() ? dayFormat : dayWithYearFormat).format(date)}`;
+}
+
+// Зелёная точка на аватаре — в списке и в шапке.
+function refreshPresenceDots() {
+    for (const item of elements.chatsList.querySelectorAll('.chat-item')) {
+        const chat = chatsMeta.get(Number(item.dataset.id));
+        item.querySelector('.chat-avatar-small')?.classList.toggle('is-online', Boolean(chat && !chat.is_bot && chatOnline(chat)));
+    }
+    const current = currentChatMeta();
+    elements.chatAvatar.classList.toggle('is-online', Boolean(current && !current.is_bot && chatOnline(current)));
+}
 const currentChatMeta = () => chatsMeta.get(currentChatId) || null;
 
 function renderChatStatus(isBot, online = false) {
@@ -2218,10 +2321,17 @@ function renderChatStatus(isBot, online = false) {
         return;
     }
     const members = chat ? chat.peer_count + 1 : 0;
-    const group = members > 2 ? `${members} ${['участник', 'участника', 'участников'][pluralForm(members)]} · ` : '';
-    status.textContent = group + (online ? 'в сети' : 'не в сети');
-    if (!group) status.textContent = online ? 'В сети' : 'Не в сети';
+    const count = `${members} ${['участник', 'участника', 'участников'][pluralForm(members)]}`;
+    if (members > 2) {
+        status.textContent = online ? `${count} · в сети` : count;
+    } else if (online) {
+        status.textContent = 'в сети';
+    } else {
+        const peer = chat && chat.peer_ids && chat.peer_ids[0];
+        status.textContent = presenceHidden || peer === undefined ? 'был(а) недавно' : lastSeenText(peerLastSeen.get(Number(peer)));
+    }
     status.className = 'status ' + (online ? 'online' : 'offline');
+    refreshPresenceDots();
 }
 
 async function goToMessage(id) {
@@ -2277,12 +2387,73 @@ function placeUnreadSeparator(lastReadId) {
     return separator;
 }
 
-// Реакции пузыря: новые появляются с лёгким увеличением.
+/* --- Реакции -----------------------------------------------------------------
+   Свой набор (public/emoji/set.json): картинки Twemoji лежат на нашем
+   сервере, и на всех устройствах реакции выглядят одинаково. Под
+   сообщением — значок и счётчик, своя реакция выделена; долгое нажатие
+   или правый клик по реакции — кто её поставил. */
+
+let EMOJI = { quick: ['👍', '❤️', '😂', '😮', '😢', '🔥'], all: [] };
+
+// Имя файла — кодовые точки без селектора варианта (U+FE0F), как у Twemoji.
+const emojiFile = emoji => [...emoji].map(c => c.codePointAt(0)).filter(cp => cp !== 0xfe0f)
+    .map(cp => cp.toString(16)).join('-');
+
+function emojiImage(emoji) {
+    const img = document.createElement('img');
+    img.className = 'emoji';
+    img.src = `/emoji/${emojiFile(emoji)}.svg`;
+    img.alt = emoji;
+    img.draggable = false;
+    return img;
+}
+
+async function loadEmojiSet() {
+    try {
+        const response = await fetch('/emoji/set.json');
+        if (response.ok) EMOJI = await response.json();
+    } catch {
+        // Без набора остаются шесть основных.
+    }
+    renderReactionMenu();
+}
+
+function reactionButton(emoji, className) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = className;
+    button.dataset.emoji = emoji;
+    button.setAttribute('aria-label', `Реакция ${emoji}`);
+    button.appendChild(emojiImage(emoji));
+    return button;
+}
+
+function renderReactionMenu() {
+    const quick = EMOJI.quick.map(emoji => {
+        const button = reactionButton(emoji, 'menu-item reaction-choice');
+        button.setAttribute('role', 'menuitem');
+        return button;
+    });
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'menu-item reaction-more';
+    more.setAttribute('role', 'menuitem');
+    more.setAttribute('aria-label', 'Все реакции');
+    more.appendChild(createIcon('i-plus'));
+    elements.reactionRow.replaceChildren(...quick, more);
+    elements.reactionPicker.replaceChildren(...(EMOJI.all.length ? EMOJI.all : EMOJI.quick)
+        .map(emoji => reactionButton(emoji, 'reaction-pick')));
+}
+
+const normalizeReactions = reactions => (reactions || []).map(r => (typeof r === 'string' ? { emoji: r, users: [] } : r));
+
+// Реакции пузыря: новая всплывает с «переростом», счётчик меняется плавно.
 function renderReactions(bubble, reactions) {
     const content = bubble.querySelector('.message-content');
     if (!content) return;
+    reactions = normalizeReactions(reactions);
     let box = content.querySelector('.reactions');
-    const before = new Set(box ? [...box.children].map(c => c.dataset.emoji) : []);
+    const before = new Map(box ? [...box.children].map(c => [c.dataset.emoji, Number(c.dataset.count)]) : []);
     if (!reactions.length) {
         box?.remove();
         updateInlineMeta(bubble);
@@ -2293,19 +2464,74 @@ function renderReactions(bubble, reactions) {
         box.className = 'reactions';
         content.appendChild(box);
     }
-    box.replaceChildren(...reactions.map(emoji => reactionChip(emoji, !before.has(emoji))));
+    box.replaceChildren(...reactions.map(r => reactionChip(r, {
+        fresh: !before.has(r.emoji),
+        bumped: before.has(r.emoji) && before.get(r.emoji) !== r.users.length,
+    })));
     updateInlineMeta(bubble);
 }
 
-function reactionChip(emoji, fresh = false) {
+function reactionChip(reaction, { fresh = false, bumped = false } = {}) {
+    const { emoji } = reaction;
+    const users = reaction.users || [];
+    const mine = Boolean(currentUser) && users.some(u => u.id === currentUser.id);
     const chip = document.createElement('button');
     chip.type = 'button';
-    chip.className = 'reaction' + (fresh ? ' is-new' : '');
+    chip.className = 'reaction' + (fresh ? ' is-new' : '') + (mine ? ' mine' : '');
     chip.dataset.emoji = emoji;
-    chip.textContent = emoji;
-    chip.setAttribute('aria-label', `Реакция ${emoji}: нажмите, чтобы поставить или снять`);
+    chip.dataset.count = String(users.length);
+    chip.reactionUsers = users;
+    const count = document.createElement('span');
+    count.className = 'reaction-count' + (bumped ? ' count-bump' : '');
+    count.textContent = users.length ? String(users.length) : '';
+    chip.append(emojiImage(emoji), count);
+    const names = users.map(u => (currentUser && u.id === currentUser.id ? 'вы' : u.username)).join(', ');
+    chip.title = names;
+    chip.setAttribute('aria-pressed', String(mine));
+    chip.setAttribute('aria-label', `${emoji}: ${users.length || ''}${names ? ` — ${names}` : ''}. ${mine ? 'Нажмите, чтобы снять свою' : 'Нажмите, чтобы поставить'}`);
     chip.tabIndex = -1;
     return chip;
+}
+
+// Кто поставил реакцию — всплывающий список у самой реакции.
+function showReactionWho(chip) {
+    const box = elements.reactionWho;
+    const users = chip.reactionUsers || [];
+    const title = document.createElement('div');
+    title.className = 'reaction-who-title';
+    title.append(emojiImage(chip.dataset.emoji), `${users.length}`);
+    const list = document.createElement('ul');
+    list.replaceChildren(...users.map(u => {
+        const li = document.createElement('li');
+        li.textContent = currentUser && u.id === currentUser.id ? 'Вы' : u.username;
+        return li;
+    }));
+    box.replaceChildren(title, list);
+    if (box.matches(':popover-open')) box.hidePopover();
+    box.showPopover();
+    const r = chip.getBoundingClientRect();
+    const margin = 8;
+    box.style.left = `${Math.max(margin, Math.min(r.left, window.innerWidth - box.offsetWidth - margin))}px`;
+    box.style.top = `${Math.max(margin, Math.min(r.bottom + 6, window.innerHeight - box.offsetHeight - margin))}px`;
+}
+
+function openReactionPicker(messageId, x, y) {
+    const picker = elements.reactionPicker;
+    picker.dataset.forMessage = messageId;
+    if (picker.matches(':popover-open')) picker.hidePopover();
+    picker.showPopover();
+    const margin = 8;
+    picker.style.left = `${Math.max(margin, Math.min(x, window.innerWidth - picker.offsetWidth - margin))}px`;
+    picker.style.top = `${Math.max(margin, Math.min(y, window.innerHeight - picker.offsetHeight - margin))}px`;
+    picker.querySelector('button')?.focus();
+}
+
+// Поставить (если своей такой ещё нет) — для двойного тапа.
+async function addReaction(messageId, emoji) {
+    const chip = elements.chatMessages.querySelector(`.message[data-message-id="${messageId}"] .reaction.mine[data-emoji="${emoji}"]`);
+    if (chip) return;
+    const added = await api('/api/reactions', { method: 'POST', body: JSON.stringify({ messageId: Number(messageId), emoji }) });
+    if (!added.success) showToast(added.message, 'error');
 }
 
 // Поставить реакцию или снять свою.
@@ -3050,7 +3276,7 @@ function createMessageElement(message) {
         if (message.reactions && message.reactions.length > 0) {
             const reactionsDiv = document.createElement('div');
             reactionsDiv.className = 'reactions';
-            reactionsDiv.append(...message.reactions.map(r => reactionChip(r)));
+            reactionsDiv.append(...normalizeReactions(message.reactions).map(r => reactionChip(r)));
             contentDiv.appendChild(reactionsDiv);
         }
     }
@@ -3142,7 +3368,7 @@ function createMessageElement(message) {
 
     div.addEventListener('contextmenu', (e) => {
         e.preventDefault();
-        if (message.deleted) return;
+        if (message.deleted || e.target.closest('.reaction')) return;
         if (Date.now() - longPressShownAt < 1000) return;
         showMessageMenu(e.clientX, e.clientY, message, null, div);
     });
@@ -3150,9 +3376,9 @@ function createMessageElement(message) {
     // Долгое нажатие (400 мс, лёгкая вибрация) — меню; свайп вправо — ответ.
     let swipe = null;
     div.addEventListener('touchstart', (e) => {
-        if (div.classList.contains('is-selectable')) return;
+        if (div.classList.contains('is-selectable') || e.target.closest('.reaction')) return;
         const touch = e.touches[0];
-        swipe = { x: touch.clientX, y: touch.clientY, dx: 0, active: false };
+        swipe = { x: touch.clientX, y: touch.clientY, dx: 0, active: false, moved: false, at: Date.now(), target: e.target };
         clearTimeout(longPressTimer);
         longPressTimer = setTimeout(() => {
             if (message.deleted || !swipe || swipe.active) return;
@@ -3166,7 +3392,10 @@ function createMessageElement(message) {
         const touch = e.touches[0];
         const dx = touch.clientX - swipe.x;
         const dy = touch.clientY - swipe.y;
-        if (Math.hypot(dx, dy) > 10) clearTimeout(longPressTimer);
+        if (Math.hypot(dx, dy) > 10) {
+            clearTimeout(longPressTimer);
+            swipe.moved = true;
+        }
         if (!swipe.active && !message.deleted && dx > 12 && Math.abs(dx) > Math.abs(dy) * 1.5) swipe.active = true;
         if (swipe.active) {
             swipe.dx = Math.max(0, Math.min(dx, 72));
@@ -3176,6 +3405,18 @@ function createMessageElement(message) {
     }, { passive: true });
     const endSwipe = () => {
         clearTimeout(longPressTimer);
+        // Двойной тап по пузырю — ❤️ (не по ссылке, цитате, вложению).
+        if (swipe && !swipe.active && !swipe.moved && Date.now() - swipe.at < 250 && !message.deleted && !currentChatIsBot
+            && !swipe.target.closest('a, button, video, img, .reply-to')) {
+            const now = Date.now();
+            if (lastTap && lastTap.bubble === div && now - lastTap.at < 300) {
+                lastTap = null;
+                if (navigator.vibrate) navigator.vibrate(10);
+                addReaction(message.id, '❤️');
+            } else {
+                lastTap = { bubble: div, at: now };
+            }
+        }
         if (swipe && swipe.active) {
             div.style.transform = '';
             div.classList.remove('is-swipe-ready');
@@ -3241,7 +3482,7 @@ function showMessageMenu(x, y, message, trigger = null, bubble = trigger) {
     menu.style.top = `${top}px`;
     // Раскрывается из точки нажатия, даже если меню пришлось сдвинуть от края.
     menu.style.transformOrigin = `${x - left}px ${y - top}px`;
-    if (trigger) menuItems()[0]?.focus();
+    if (trigger) (menuItems().find(item => item.id) || menuItems()[0])?.focus();
 }
 
 function setupMessageMenu() {

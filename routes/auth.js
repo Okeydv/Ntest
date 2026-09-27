@@ -4,6 +4,7 @@
 
 const { log } = require('../lib/log');
 const { broadcastReceipts } = require('../lib/read-state');
+const { setPresenceHidden } = require('../lib/presence');
 const { purgeMessageContent } = require('../lib/storage');
 const { recordSecurityEvent, listSecurityEvents } = require('../lib/security-events');
 const { pool, dbGet, dbAll, dbRun } = require('../lib/db');
@@ -359,9 +360,9 @@ module.exports = function registerAuthRoutes(app, ctx) {
     app.get('/api/user', async (req, res) => {
         if (!req.session.userId) return res.json({ success: false });
         try {
-            const user = await dbGet('SELECT id, unique_code, username, email, avatar, created_at, send_read_receipts FROM users WHERE id = $1', [req.session.userId]);
+            const user = await dbGet('SELECT id, unique_code, username, email, avatar, created_at, send_read_receipts, hide_presence FROM users WHERE id = $1', [req.session.userId]);
             if (!user) return res.json({ success: false });
-            res.json({ success: true, user: { id: user.id, uniqueCode: user.unique_code, username: user.username, avatar: user.avatar || '', email: user.email, createdAt: user.created_at, sendReadReceipts: user.send_read_receipts } });
+            res.json({ success: true, user: { id: user.id, uniqueCode: user.unique_code, username: user.username, avatar: user.avatar || '', email: user.email, createdAt: user.created_at, sendReadReceipts: user.send_read_receipts, hidePresence: user.hide_presence } });
         } catch (error) {
             res.json({ success: false });
         }
@@ -377,6 +378,22 @@ module.exports = function registerAuthRoutes(app, ctx) {
         } catch (error) {
             log.error({ err: error }, 'Avatar update error');
             res.status(500).json({ success: false, message: 'Ошибка обновления цвета аватара' });
+        }
+    });
+
+    // «Скрывать, когда я в сети». Скрывший и сам не видит чужой статус.
+    app.post('/api/user/presence', async (req, res) => {
+        if (!req.session.userId) return res.status(401).json({ success: false, message: 'Не авторизован' });
+        if (typeof (req.body && req.body.hidden) !== 'boolean') {
+            return res.status(400).json({ success: false, message: 'Нужно hidden: true или false' });
+        }
+        try {
+            await dbRun('UPDATE users SET hide_presence = $1 WHERE id = $2', [req.body.hidden, req.session.userId]);
+            res.json({ success: true, hidden: req.body.hidden });
+            await setPresenceHidden(io, req.session.userId, req.body.hidden);
+        } catch (error) {
+            log.error({ err: error }, 'Presence setting error');
+            if (!res.headersSent) res.status(500).json({ success: false, message: 'Не удалось сохранить' });
         }
     });
 

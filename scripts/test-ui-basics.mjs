@@ -337,6 +337,19 @@ const inline = await phone.evaluate(() => {
     return { sameLine: Math.abs(meta.bottom - text.bottom) < 6, height: Math.round(bubble.getBoundingClientRect().height) };
 });
 check('время — в конце строки короткого сообщения, пузырь в одну строку', inline && inline.sameLine && inline.height < 56, JSON.stringify(inline));
+await phone.evaluate(() => {
+    const bubble = [...document.querySelectorAll('#chat-messages .message')]
+        .filter(b => (b.querySelector('.message-text')?.textContent || '').trim()).at(-1);
+    const text = bubble.querySelector('.message-text');
+    const r = text.getBoundingClientRect();
+    const at = () => new Touch({ identifier: 3, target: text, clientX: r.left + 5, clientY: r.top + 5 });
+    for (let i = 0; i < 2; i++) {
+        text.dispatchEvent(new TouchEvent('touchstart', { touches: [at()], changedTouches: [at()], bubbles: true }));
+        text.dispatchEvent(new TouchEvent('touchend', { changedTouches: [at()], bubbles: true }));
+    }
+});
+await phone.waitForTimeout(1200);
+check('двойной тап по сообщению — ❤️', await phone.locator('#chat-messages .message .reaction.mine[data-emoji="❤️"]').count() === 1);
 
 const phoneLayout = await phone.evaluate(() => {
     const back = document.getElementById('chat-back-btn');
