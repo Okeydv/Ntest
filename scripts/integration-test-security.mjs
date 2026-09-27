@@ -67,6 +67,9 @@ const reg = await fetch(BASE + '/api/register', {
 });
 const sessionCookie = (reg.headers.getSetCookie?.() ?? []).find(c => c.startsWith('connect.sid='));
 j.absorb(reg);
+// Сессия пишется в базу, пока уходит тело ответа: заголовки с кукой приходят
+// раньше. Не дочитав ответ, следующий запрос мог обогнать запись — и 401.
+await reg.text();
 check('сессионная кука с SameSite=Lax', /SameSite=Lax/i.test(sessionCookie || ''), sessionCookie);
 
 /* ------------------------- служебные файлы ------------------------- */
@@ -110,9 +113,11 @@ const uploaded = await (await fetch(BASE + '/api/messages/file', { method: 'POST
 const fileUrl = uploaded.message.file_url;
 const stranger = jar();
 stranger.absorb(await fetch(BASE + '/', { headers: { 'X-Forwarded-For': '10.3.3.3' } }));
-stranger.absorb(await fetch(BASE + '/api/register', { method: 'POST',
+const strangerReg = await fetch(BASE + '/api/register', { method: 'POST',
     headers: { Cookie: stranger.header(), 'X-CSRF-Token': stranger.csrf(), 'Content-Type': 'application/json', 'X-Forwarded-For': '10.3.3.3' },
-    body: JSON.stringify({ username: 'mallory', email: 'mallory@example.com', password: 'password123', confirmPassword: 'password123' }) }));
+    body: JSON.stringify({ username: 'mallory', email: 'mallory@example.com', password: 'password123', confirmPassword: 'password123' }) });
+stranger.absorb(strangerReg);
+check('чужак зарегистрирован', (await strangerReg.json()).success === true);
 const foreign = await fetch(BASE + fileUrl, { headers: { Cookie: stranger.header() } });
 const missing = await fetch(BASE + '/uploads/1700000000000-deadbeef.txt', { headers: { Cookie: stranger.header() } });
 check('чужой файл неотличим от несуществующего', foreign.status === 404 && missing.status === 404

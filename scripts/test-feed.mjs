@@ -55,8 +55,23 @@ async function send(page, text) {
 }
 const status = page => page.evaluate(() => document.getElementById('chat-status').textContent);
 const bubble = (page, text) => page.locator('#chat-messages .message', { hasText: text }).last();
+// Лента может ещё доезжать (после цитаты, «↓», нового сообщения): пузырь,
+// измеренный на ходу, к клику уже в другом месте. Ждём, пока прокрутка
+// замрёт на несколько кадров, и только тогда меряем и нажимаем.
+const scrollSettled = page => page.waitForFunction(() => new Promise(resolve => {
+    const list = document.getElementById('chat-messages');
+    let last = list.scrollTop, still = 0;
+    const tick = () => {
+        still = list.scrollTop === last ? still + 1 : 0;
+        last = list.scrollTop;
+        if (still >= 5) resolve(true); else requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+}));
 async function openMenu(page, text) {
+    await scrollSettled(page);
     await bubble(page, text).scrollIntoViewIfNeeded();
+    await scrollSettled(page);
     const box = await bubble(page, text).boundingBox();
     await page.mouse.click(box.x + 20, box.y + 10, { button: 'right' });
     await page.waitForTimeout(150);
