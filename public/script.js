@@ -35,6 +35,7 @@ const elements = {
     securitySection: document.getElementById('security-section'),
     securityList: document.getElementById('security-list'),
     connectionStatus: document.getElementById('connection-status'),
+    connectionStatusText: document.getElementById('connection-status-text'),
     readReceiptsToggle: document.getElementById('read-receipts-toggle'),
     linkLoginBtn: document.getElementById('link-login-btn'),
     linkLoginModal: document.getElementById('link-login-modal'),
@@ -179,6 +180,25 @@ function deviceLabel(ua = navigator.userAgent) {
  * только что.
  */
 async function setupE2EE() {
+    try {
+        await bootstrapE2EE();
+    } finally {
+        // Сокет переподключается после входа всегда, поднялось шифрование или
+        // нет: рукопожатие несёт сессию, а она только что сменилась. Раньше
+        // это делалось лишь при удачном шифровании, и без него сокет
+        // оставался со старой (гостевой) сессией — новые сообщения не
+        // приходили.
+        await reconnectSocket();
+    }
+    if (!e2ee || !e2ee.isReady()) return;
+    checkNewDevices();
+    // Хранилище устройства доступно — сразу стираем истёкшее, не дожидаясь таймера.
+    sweepExpiredMessages();
+    // И отправляем то, что ждало ключей собеседника.
+    flushPending();
+}
+
+async function bootstrapE2EE() {
     e2ee = await cryptoModule();
     if (!e2ee) {
         console.warn('[E2EE] модуль крипты не загрузился');
@@ -197,11 +217,11 @@ async function setupE2EE() {
     }
     e2eeDeviceId = result.deviceId;
     e2eeFailure = null;
+}
 
-    // Сокет обязан переподключиться ПЕРЕД тем, как кто-то позовёт
-    // joinChat: серверную комнату device:<id> выбирают по сессии в момент
-    // рукопожатия, а deviceId там появился только что. Без ожидания
-    // следующий joinChat уходил в ещё не поднятое соединение.
+// Серверная комната device:<id> выбирается по сессии в момент рукопожатия,
+// поэтому сокет переподключается ПЕРЕД тем, как кто-то позовёт joinChat.
+async function reconnectSocket() {
     socket.disconnect();
     await new Promise(resolve => {
         socket.once('connect', resolve);
@@ -210,11 +230,6 @@ async function setupE2EE() {
         // деградирует до обновления по перезагрузке, но работает.
         setTimeout(resolve, 3000);
     });
-    checkNewDevices();
-    // Хранилище устройства доступно — сразу стираем истёкшее, не дожидаясь таймера.
-    sweepExpiredMessages();
-    // И отправляем то, что ждало ключей собеседника.
-    flushPending();
 }
 
 /* --- Новые устройства аккаунта --------------------------------------------
@@ -376,10 +391,24 @@ function applyDecryptedContent(message, content) {
 // container — куда складывать: для страницы старой истории это отдельный
 // блок, который потом целиком встаёт в начало переписки. Превью в списке
 // чатов старые сообщения не трогают.
+/*
+ * Одно сообщение может прийти дважды: по сокету, пока грузится история, и
+ * в самой истории. Проверка «уже показано» — до первого await: раньше она
+ * смотрела в DOM, и два вызова, начавшиеся до того, как первый дорисовал
+ * пузырь, проходили оба. Набор чистится вместе с лентой (clearFeed).
+ */
+const shownMessageIds = new Set();
+
+function clearFeed() {
+    elements.chatMessages.innerHTML = '';
+    shownMessageIds.clear();
+}
+
 async function appendMessageDecrypted(message, { fresh = false, container = null } = {}) {
-    // Одно сообщение может прийти дважды: по сокету, пока грузится
-    // история, и в самой истории.
-    if (message.id && elements.chatMessages.querySelector(`[data-message-id="${message.id}"]`)) return;
+    if (message.id) {
+        if (shownMessageIds.has(message.id)) return;
+        shownMessageIds.add(message.id);
+    }
     await resolveReplyQuote(message);
     if (message.encrypted) {
         const raw = await resolveMessageText(message);
@@ -1791,7 +1820,7 @@ async function openChat(chatId, roomId, name, avatar, online, isBot) {
     elements.messageInputContainer.classList.remove('hidden');
     elements.emptyState.classList.add('hidden');
     const view = reopening ? captureChatView() : chatViews.get(chatId);
-    elements.chatMessages.innerHTML = '';
+    clearFeed();
     resetNewBelow();
     if (!reopening) restoreDraft(chatId);
     showChatExpiry(null);
@@ -2246,9 +2275,18 @@ function setupConnectionStatus() {
         // с новой сессией) — не обрыв.
         if (reason === 'io client disconnect') return;
         wasDisconnected = true;
+        // Разрыв со стороны сервера (перезапуск, сессия сменилась) Socket.IO
+        // сам не лечит — переподключаемся сами, если есть кем.
+        if (reason === 'io server disconnect' && currentUser) socket.connect();
         clearTimeout(connectionTimer);
-        // Короткие переподключения плашкой не мигают.
-        connectionTimer = setTimeout(() => { elements.connectionStatus.hidden = false; }, 1500);
+        // Короткие переподключения плашкой не мигают. «Переподключаемся» —
+        // только если переподключение действительно идёт.
+        connectionTimer = setTimeout(() => {
+            elements.connectionStatusText.textContent = socket.active
+                ? 'Нет соединения. Переподключаемся…'
+                : 'Нет соединения. Обновите страницу';
+            elements.connectionStatus.hidden = false;
+        }, 1500);
     });
     socket.on('connect', async () => {
         clearTimeout(connectionTimer);
@@ -2579,6 +2617,15 @@ function dayGroup(date, container = elements.chatMessages) {
 
 function appendMessage(message, { fresh = false, container = elements.chatMessages } = {}) {
     const el = createMessageElement(message);
+    if (message.id) shownMessageIds.add(message.id);
+    // Уже показанный пузырь с тем же id заменяется, а не повторяется.
+    const existing = message.id && elements.chatMessages.querySelector(`.message[data-message-id="${message.id}"], .message-system[data-message-id="${message.id}"]`);
+    if (existing && container === elements.chatMessages) {
+        existing.replaceWith(el);
+        refreshMessageTabStop();
+        regroupMessages();
+        return;
+    }
     if (fresh) el.classList.add('is-new');
     dayGroup(messageDate(message), container).appendChild(el);
     if (container === elements.chatMessages) {
@@ -3273,7 +3320,7 @@ async function sendMessage() {
     } else if (currentChatIsBot) {
         // Бот отвечает на текст, который видит, — единственный чат без
         // шифрования.
-        const data = await api('/api/messages', { method: 'POST', body: JSON.stringify(payload) });
+        const data = await api('/api/messages', { method: 'POST', body: JSON.stringify({ ...payload, clientId: newClientId() }) });
         if (!data.success) return showToast(data.message || 'Сообщение не отправлено', 'error');
     } else {
         // Не отправилось — текст остаётся в поле: иначе его пришлось бы
@@ -3303,7 +3350,15 @@ async function sendMessage() {
  * ключами), и сообщение должно подождать на устройстве. Подменённые ключи —
  * исключение: ждать тут нечего, это повод сверить ключи.
  */
-async function sendEncryptedPayload(chatId, encoded, { replyToId = null, blobIds = [] } = {}) {
+// id сообщения, который назначает клиент: повтор отправки (сеть оборвалась,
+// «Повторить», ждущее) приходит с тем же id, и сервер отдаёт уже
+// сохранённое сообщение вместо второго (migrations/010).
+function newClientId() {
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+async function sendEncryptedPayload(chatId, encoded, { replyToId = null, blobIds = [], clientId = newClientId() } = {}) {
     const encrypted = await e2ee.encryptForChat(chatId, encoded);
     const { rejected, info } = encrypted;
     const { others } = peersOf(info);
@@ -3319,8 +3374,8 @@ async function sendEncryptedPayload(chatId, encoded, { replyToId = null, blobIds
     // Попарно — конверт с содержимым на каждое устройство; в группе —
     // один шифротекст на всех и ключ только тем, у кого его ещё нет.
     const body = encrypted.mode === 'group'
-        ? { chatId, replyToId, blobIds, group: encrypted.group, keyEnvelopes: encrypted.keyEnvelopes }
-        : { chatId, replyToId, blobIds, envelopes: encrypted.envelopes };
+        ? { chatId, replyToId, blobIds, clientId, group: encrypted.group, keyEnvelopes: encrypted.keyEnvelopes }
+        : { chatId, replyToId, blobIds, clientId, envelopes: encrypted.envelopes };
     const data = await api('/api/messages/encrypted', { method: 'POST', body: JSON.stringify(body) });
     if (!data || !data.success) throw new Error((data && data.message) || 'сервер не принял сообщение');
     await encrypted.commit();
@@ -3389,10 +3444,10 @@ function markUndelivered(messageId, names) {
     bubble.querySelector('.message-content')?.appendChild(note);
 }
 
-async function queuePending(chatId, encoded, replyToId, missing) {
+async function queuePending(chatId, encoded, replyToId, missing, clientId = newClientId()) {
     const item = {
         localId: `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
-        chatId, encoded, replyToId, createdAt: new Date().toISOString(),
+        chatId, encoded, replyToId, clientId, createdAt: new Date().toISOString(),
         waitingFor: missing.map(u => u.username),
     };
     await withPendingLock(async () => e2ee.pending.save([...(await e2ee.pending.list()), item]));
@@ -3424,7 +3479,7 @@ function appendPendingElement(item) {
     const meta = document.createElement('div');
     meta.className = 'message-meta message-pending';
     const label = document.createElement('span');
-    label.append(createIcon('i-timer'), 'Ждёт ключей собеседника');
+    label.append(createIcon('i-timer'), pendingCaption(item.waitingFor || []));
     label.title = item.waitingFor && item.waitingFor.length ? `Нет ключей у ${item.waitingFor.join(', ')}` : '';
     const cancel = document.createElement('button');
     cancel.type = 'button';
@@ -3436,6 +3491,14 @@ function appendPendingElement(item) {
     div.appendChild(body);
     dayGroup(new Date(item.createdAt), elements.chatMessages).appendChild(div);
     regroupMessages();
+}
+
+// Сообщение уходит, когда у собеседника появятся ключи, — то есть когда он
+// откроет Nyxo. Отправляет его открытая вкладка: закроешь — уйдёт при
+// следующем открытии.
+function pendingCaption(names) {
+    if (!names.length) return 'Ждёт ключей собеседника. Не закрывайте вкладку';
+    return `Уйдёт, когда ${names.join(', ')} ${names.length === 1 ? 'откроет' : 'откроют'} Nyxo. Не закрывайте вкладку`;
 }
 
 async function cancelPending(localId) {
@@ -3462,7 +3525,8 @@ async function flushPending() {
             for (const item of await e2ee.pending.list()) {
                 let result;
                 try {
-                    result = await sendEncryptedPayload(item.chatId, item.encoded, { replyToId: item.replyToId });
+                    result = await sendEncryptedPayload(item.chatId, item.encoded,
+                        { replyToId: item.replyToId, clientId: item.clientId || item.localId.padEnd(16, '0') });
                 } catch (error) {
                     // Чат удалён, ключи подменены, сеть — сообщение остаётся ждать.
                     console.warn('[E2EE] ждущее сообщение пока не отправлено:', error.message);
@@ -3508,20 +3572,22 @@ async function sendEncrypted(text, payload) {
     const chatId = currentChatId;
     const replyToId = payload.replyToId || null;
     if (!e2ee || !e2ee.isReady()) {
-        reportE2eeUnavailable('Сообщение не отправлено', () => retryAfterSetup(chatId, text, replyToId));
+        const clientId = newClientId();
+        reportE2eeUnavailable('Сообщение не отправлено', () => retryAfterSetup(chatId, text, replyToId, clientId));
         return 'failed';
     }
+    const clientId = newClientId();
     try {
         const encoded = e2ee.encodeText(text);
-        const result = await sendEncryptedPayload(chatId, encoded, { replyToId });
+        const result = await sendEncryptedPayload(chatId, encoded, { replyToId, clientId });
         if (result.waiting) {
-            await queuePending(chatId, encoded, replyToId, result.missing);
+            await queuePending(chatId, encoded, replyToId, result.missing, clientId);
             return 'queued';
         }
         return 'sent';
     } catch (error) {
         reportEncryptedSendError('Сообщение не отправлено', chatId, error,
-            () => resendText(chatId, text, replyToId));
+            () => resendText(chatId, text, replyToId, clientId));
         return 'failed';
     }
 }
@@ -3532,14 +3598,14 @@ function reportE2eeUnavailable(prefix, retry) {
 }
 
 // «Повторить», когда не поднялось шифрование: сначала поднять его заново.
-async function retryAfterSetup(chatId, text, replyToId) {
+async function retryAfterSetup(chatId, text, replyToId, clientId) {
     if (!e2ee || !e2ee.isReady()) await setupE2EE();
     if (currentChatId) refreshEncryptionBadge(currentChatId, currentChatIsBot);
     if (!e2ee || !e2ee.isReady()) {
-        reportE2eeUnavailable('Сообщение не отправлено', () => retryAfterSetup(chatId, text, replyToId));
+        reportE2eeUnavailable('Сообщение не отправлено', () => retryAfterSetup(chatId, text, replyToId, clientId));
         return;
     }
-    await resendText(chatId, text, replyToId);
+    await resendText(chatId, text, replyToId, clientId);
 }
 
 /**
@@ -3548,18 +3614,18 @@ async function retryAfterSetup(chatId, text, replyToId) {
  * другой чат — и повтор уходил туда. Теперь повторяется то же сообщение в
  * тот же чат; текст из поля убирается, только если это он и есть.
  */
-async function resendText(chatId, text, replyToId) {
+async function resendText(chatId, text, replyToId, clientId = newClientId()) {
     try {
         const encoded = e2ee.encodeText(text);
-        const result = await sendEncryptedPayload(chatId, encoded, { replyToId });
-        if (result.waiting) await queuePending(chatId, encoded, replyToId, result.missing);
+        const result = await sendEncryptedPayload(chatId, encoded, { replyToId, clientId });
+        if (result.waiting) await queuePending(chatId, encoded, replyToId, result.missing, clientId);
         if (chatId === currentChatId && elements.messageInput.value.trim() === text) {
             setMessageInput('');
             clearReply();
         }
     } catch (error) {
         reportEncryptedSendError('Сообщение не отправлено', chatId, error,
-            () => resendText(chatId, text, replyToId));
+            () => resendText(chatId, text, replyToId, clientId));
     }
 }
 
@@ -4032,7 +4098,7 @@ async function deleteChat() {
         elements.chatHeader.classList.add('hidden');
         elements.messageInputContainer.classList.add('hidden');
         elements.emptyState.classList.remove('hidden');
-        elements.chatMessages.innerHTML = '';
+        clearFeed();
         loadChats();
     } else {
         showToast(data.message, 'error');

@@ -155,6 +155,29 @@ const ownReply = await bob.send(secret.chats[bob.userId], 'понял', { replyT
 check('ответ внутри своего чата проходит', ownReply.json?.success === true && ownReply.json.message.reply_to_id === secretId,
     ownReply.json?.message?.reply_to_id);
 
+/* ------------------------- повтор отправки ------------------------- */
+
+// Ответ на отправку потерялся, клиент повторил с тем же id — второе
+// сообщение не появляется, возвращается уже сохранённое.
+const clientId = 'retry-0123456789abcdef';
+const firstTry = await bob.send(secret.chats[bob.userId], 'один раз', { clientId });
+const secondTry = await bob.send(secret.chats[bob.userId], 'один раз', { clientId });
+check('повтор с тем же id — то же сообщение, а не второе',
+    firstTry.json?.success && secondTry.json?.duplicate === true && secondTry.json.message.id === firstTry.json.message.id,
+    JSON.stringify(secondTry.json));
+const raceId = 'race-0123456789abcdefg';
+const race = await Promise.all([1, 2, 3].map(() => bob.send(secret.chats[bob.userId], 'разом', { clientId: raceId })));
+const raceRows = (await db.query('SELECT count(*)::int AS n FROM messages WHERE client_id = $1', [raceId])).rows[0].n;
+check('три одинаковых запроса разом — одна запись', raceRows === 1 && race.every(r => r.json?.success)
+    && new Set(race.map(r => r.json.message.id)).size === 1, `${raceRows} ${JSON.stringify(race.map(r => r.json?.message?.id))}`);
+const badId = await bob.send(secret.chats[bob.userId], 'кривой id', { clientId: 'x' });
+check('кривой id сообщения — 400', badId.status === 400, badId.status);
+const botChat = (await bob.req('GET', '/api/chats')).json.chats.find(c => c.is_bot).id;
+const botFirst = await bob.req('POST', '/api/messages', { chatId: botChat, text: 'боту один раз', clientId: 'bot-0123456789abcdef' });
+const botAgain = await bob.req('POST', '/api/messages', { chatId: botChat, text: 'боту один раз', clientId: 'bot-0123456789abcdef' });
+check('и в чате с ботом повтор не создаёт второе', botAgain.json?.duplicate === true && botAgain.json.message.id === botFirst.json.message.id,
+    JSON.stringify(botAgain.json)?.slice(0, 120));
+
 /* ------------------------- история страницами ------------------------- */
 
 const pageChat = eveRoom.chats[eve.userId];
