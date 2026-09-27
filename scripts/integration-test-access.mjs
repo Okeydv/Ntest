@@ -14,6 +14,9 @@
 //   - сообщение со сроком жизни в месяц не исчезает сразу (setTimeout не
 //     умеет ждать дольше 24,8 суток), недопустимый срок отклоняется
 //   - брошенный анонимный аккаунт (сессии нет) удаляется уборкой
+//   - через Tor (у всех 127.0.0.1) лимиты регистраций и сокетов — по
+//     браузеру и пользователю, а подставленный Host .onion от них не уводит;
+//     подбор пароля к одному email замедляется, но владельца не запирает
 //   - CSP не пускает соединения на чужие адреса; HSTS — только по HTTPS
 //
 // Требует поднятых Postgres, key-server и server.js на 3006, запущенного с
@@ -22,6 +25,7 @@
 
 import { io as ioClient } from 'socket.io-client';
 import pg from 'pg';
+import http from 'node:http';
 import { createRequire } from 'node:module';
 
 const bcrypt = createRequire(import.meta.url)('bcryptjs');
@@ -61,6 +65,23 @@ function client() {
                 cookies.set(pair.slice(0, i), pair.slice(i + 1));
             }
         },
+        // Устройство без ключей: серверу для конвертов нужен только его id.
+        async device() {
+            if (!c.deviceId) c.deviceId = (await c.req('POST', '/api/devices', { name: 'тест' })).json.device.id;
+            return c.deviceId;
+        },
+        // Сообщение в комнату — только зашифрованное. Шифрования здесь нет:
+        // вместо шифротекста — узнаваемая строка; проверяется сервер, а не
+        // крипта.
+        async send(chatId, text, extra = {}) {
+            await c.device();
+            const info = (await c.req('GET', `/api/chats/${chatId}/devices`)).json;
+            const envelopes = (info?.devices || []).filter(d => d.device_id !== c.deviceId).map(d => ({
+                recipientDeviceId: d.device_id, envelopeType: 1,
+                header: Buffer.from('h').toString('base64'), ciphertext: Buffer.from(text).toString('base64'),
+            }));
+            return c.req('POST', '/api/messages/encrypted', { chatId, envelopes, ...extra });
+        },
         // Сокет с кукой этого клиента; собирает все newMessage.
         socket(roomKey) {
             const sock = ioClient(BASE, { extraHeaders: { Cookie: c.header() }, transports: ['websocket'], reconnection: false });
@@ -89,6 +110,7 @@ async function login(name, password = 'password123') {
     return c;
 }
 async function roomChat(owner, name, ...guests) {
+    for (const member of [owner, ...guests]) await member.device();
     const created = await owner.req('POST', '/api/chats', { name });
     const code = (await owner.req('GET', `/api/chats/invite/${created.json.chat.id}`)).json.code;
     const chats = { [owner.userId]: created.json.chat.id };
@@ -112,20 +134,24 @@ const eve = await register('eve');
 const secret = await roomChat(alice, 'Секретный', bob);
 const eveRoom = await roomChat(eve, 'Свой у Евы', bob);
 
-const secretMsg = await alice.req('POST', '/api/messages', { chatId: secret.chats[alice.userId], text: 'пароль от сейфа 1234' });
-const secretId = secretMsg.json.message.id;
-const stolen = await eve.req('POST', '/api/messages', { chatId: eveRoom.chats[eve.userId], text: 'цитирую', replyToId: secretId });
+// Открытый текст в комнате остался только от прежних времён — кладём его
+// прямо в базу, как старые данные.
+const secretId = (await db.query(
+    `INSERT INTO messages (chat_id, room_id, user_id, text, message_type, sent, time, status)
+     VALUES ($1, $2, $3, 'пароль от сейфа 1234', 'text', 1, '00:00', 'sent') RETURNING id`,
+    [secret.chats[alice.userId], secret.roomId, alice.userId])).rows[0].id;
+const stolen = await eve.send(eveRoom.chats[eve.userId], 'цитирую', { replyToId: secretId });
 check('ответ на сообщение из чужого чата не принимается', stolen.json?.success === false, stolen.json?.message);
 
 // Такие ответы могли остаться в базе с прежних времён — история не должна
 // вытаскивать по ним чужой текст.
-const planted = await eve.req('POST', '/api/messages', { chatId: eveRoom.chats[eve.userId], text: 'старый ответ' });
+const planted = await eve.send(eveRoom.chats[eve.userId], 'старый ответ');
 await db.query('UPDATE messages SET reply_to_id = $1 WHERE id = $2', [secretId, planted.json.message.id]);
 const history = (await eve.req('GET', `/api/messages/${eveRoom.chats[eve.userId]}`)).json.messages;
 check('и старый такой ответ не открывает в истории чужую цитату',
     !JSON.stringify(history).includes('пароль от сейфа'), JSON.stringify(history.find(m => m.id === planted.json.message.id)?.reply_to));
 
-const ownReply = await bob.req('POST', '/api/messages', { chatId: secret.chats[bob.userId], text: 'понял', replyToId: secretId });
+const ownReply = await bob.send(secret.chats[bob.userId], 'понял', { replyToId: secretId });
 check('ответ внутри своего чата проходит', ownReply.json?.success === true && ownReply.json.message.reply_to_id === secretId,
     ownReply.json?.message?.reply_to_id);
 
@@ -133,7 +159,7 @@ check('ответ внутри своего чата проходит', ownReply
 
 const pageChat = eveRoom.chats[eve.userId];
 const sentIds = [];
-for (let i = 1; i <= 7; i++) sentIds.push((await eve.req('POST', '/api/messages', { chatId: pageChat, text: `номер ${i}` })).json.message.id);
+for (let i = 1; i <= 7; i++) sentIds.push((await eve.send(pageChat, `номер ${i}`)).json.message.id);
 const lastPage = (await eve.req('GET', `/api/messages/${pageChat}?limit=3`)).json;
 const olderPage = (await eve.req('GET', `/api/messages/${pageChat}?limit=3&before=${lastPage.messages[0].id}`)).json;
 check('история страницами: последние по возрастанию, перед ними следующие',
@@ -155,15 +181,23 @@ check('про чужой чат не спросить, и не больше 1000
 
 /* ------------------------- вышедший из чата не слышит его ------------------------- */
 
-const bobSock = await bob.socket(`room:${secret.roomId}`);
-await alice.req('POST', '/api/messages', { chatId: secret.chats[alice.userId], text: 'пока Боб здесь' });
+// Втроём: после ухода Боба в чате остаётся кому писать — в пустую группу
+// сервер ничего не принимает (lib/rooms.js).
+// Третий — отдельный пользователь: Ева дальше должна оставаться посторонней.
+const dave = await register('dave');
+const trio = await roomChat(alice, 'Трое', bob, dave);
+const bobSock = await bob.socket(`room:${trio.roomId}`);
+const daveSock = await dave.socket(`room:${trio.roomId}`);
+const before = await alice.send(trio.chats[alice.userId], 'пока Боб здесь');
 await sleep(400);
-check('участник получает сообщения по сокету', bobSock.received.some(m => m.text === 'пока Боб здесь'));
-await bob.req('DELETE', `/api/chats/${secret.chats[bob.userId]}`);
-await alice.req('POST', '/api/messages', { chatId: secret.chats[alice.userId], text: 'Боб уже ушёл' });
+check('участник получает сообщения по сокету', bobSock.received.some(m => m.id === before.json.message.id));
+await bob.req('DELETE', `/api/chats/${trio.chats[bob.userId]}`);
+const afterLeave = await alice.send(trio.chats[alice.userId], 'Боб уже ушёл');
 await sleep(400);
-check('после выхода из чата — нет', !bobSock.received.some(m => m.text === 'Боб уже ушёл'));
+check('после выхода из чата — нет', afterLeave.json?.success && daveSock.received.some(m => m.id === afterLeave.json.message.id)
+    && !bobSock.received.some(m => m.id === afterLeave.json.message.id), JSON.stringify(afterLeave.json));
 bobSock.close();
+daveSock.close();
 
 /* ------------------------- выход из аккаунта и смена пароля ------------------------- */
 
@@ -212,18 +246,18 @@ check('и сам пользователь — свои', self.json?.message !== 
 /* ------------------------- дальние сроки исчезающих сообщений ------------------------- */
 
 const MONTH = 30 * 24 * 3600;
-const longLived = await bob.req('POST', '/api/messages', { chatId: eveRoom.chats[bob.userId], text: 'живу месяц', expirySeconds: MONTH });
+const longLived = await bob.send(eveRoom.chats[bob.userId], 'живу месяц', { expirySeconds: MONTH });
 await sleep(1500);
 const row = await db.query(
     `SELECT m.deleted, extract(epoch FROM e.expires_at - now()) AS left FROM messages m
      JOIN message_expiry e ON e.message_id = m.id WHERE m.id = $1`, [longLived.json.message.id]);
 check('сообщение со сроком в месяц не исчезло сразу', row.rows[0]?.deleted === 0, JSON.stringify(row.rows[0]));
 check('и срок записан верно', Math.abs(Number(row.rows[0]?.left) - MONTH) < 60, row.rows[0]?.left);
-const tooLong = await bob.req('POST', '/api/messages', { chatId: eveRoom.chats[bob.userId], text: 'десять лет', expirySeconds: 10 * 365 * 24 * 3600 });
+const tooLong = await bob.send(eveRoom.chats[bob.userId], 'десять лет', { expirySeconds: 10 * 365 * 24 * 3600 });
 check('срок больше года отклоняется', tooLong.json?.success === false, tooLong.json?.message);
-const negative = await bob.req('POST', '/api/messages', { chatId: eveRoom.chats[bob.userId], text: 'минус', expirySeconds: -5 });
+const negative = await bob.send(eveRoom.chats[bob.userId], 'минус', { expirySeconds: -5 });
 check('отрицательный — тоже', negative.json?.success === false, negative.json?.message);
-const short = await bob.req('POST', '/api/messages', { chatId: eveRoom.chats[bob.userId], text: 'две секунды', expirySeconds: 2 });
+const short = await bob.send(eveRoom.chats[bob.userId], 'две секунды', { expirySeconds: 2 });
 await sleep(3000);
 const shortRow = await db.query('SELECT deleted FROM messages WHERE id = $1', [short.json.message.id]);
 check('короткий срок по-прежнему срабатывает по таймеру', shortRow.rows[0]?.deleted === 1);
@@ -335,10 +369,19 @@ const upgraded = (await db.query('SELECT password FROM users WHERE id = $1', [le
 check('старый хеш пароля подходит и переводится в новый формат',
     legacyLogin.json?.success === true && upgraded.startsWith('sha256-bcrypt$'), upgraded.slice(0, 20));
 
-// Подбор пароля к одному email с разных адресов.
-let guessed;
-for (let i = 0; i < 21; i++) guessed = await client().req('POST', '/api/login', { email: 'legacy@example.com', password: `guess${i}` });
-check('подбор к одному email с разных адресов упирается в лимит', guessed.status === 429, `${guessed.status} ${guessed.json?.message}`);
+// Подбор пароля к одному email с разных адресов: после 10 неудач каждая
+// попытка ждёт дольше, но владельца это не запирает.
+for (let i = 0; i < 11; i++) await client().req('POST', '/api/login', { email: 'legacy@example.com', password: `guess${i}` });
+let started = Date.now();
+const slowed = await client().req('POST', '/api/login', { email: 'legacy@example.com', password: 'guess-more' });
+const slowMs = Date.now() - started;
+check('подбор к одному email с разных адресов замедляется', slowed.json?.success === false && slowMs >= 1900, `${slowMs} мс`);
+started = Date.now();
+const owner = await client().req('POST', '/api/login', { email: 'legacy@example.com', password: 'password123' });
+check('а владелец с верным паролем входит — не заперт', owner.json?.success === true, `${owner.status} ${owner.json?.message}`);
+const afterOwner = Date.now();
+await client().req('POST', '/api/login', { email: 'legacy@example.com', password: 'guess-again' });
+check('удачный вход сбрасывает замедление', Date.now() - afterOwner < 1500, `${Date.now() - afterOwner} мс`);
 
 // Изменяющий запрос с чужого сайта.
 const csrfVictim = await login('bob');
@@ -352,6 +395,76 @@ const sameSite = await fetch(BASE + '/api/chats', { method: 'POST',
         'Content-Type': 'application/json', Origin: BASE },
     body: JSON.stringify({ name: 'со своего' }) });
 check('а со своего — проходит', sameSite.status === 200 && (await sameSite.json()).success === true);
+
+/* ------------------------- через Tor ------------------------- */
+
+// Tor-демон подключается с этой же машины: у всех пользователей .onion
+// адрес 127.0.0.1. Запрос через .onion — Host *.onion и без
+// X-Forwarded-For (адрес — локальный).
+function onionClient({ forwardedFor } = {}) {
+    const c = client();
+    const headers = () => ({ Host: 'nyxotestaddress.onion', Cookie: c.header(), ...(forwardedFor ? { 'X-Forwarded-For': forwardedFor } : {}) });
+    const raw = (method, path, body) => new Promise((resolve, reject) => {
+        const payload = body === undefined ? undefined : JSON.stringify(body);
+        const token = /csrf_token=([^;]+)/.exec(c.header())?.[1] || '';
+        const r = http.request({ host: '127.0.0.1', port: 3006, path, method,
+            headers: { ...headers(), 'Content-Type': 'application/json', 'X-CSRF-Token': token,
+                ...(payload ? { 'Content-Length': Buffer.byteLength(payload) } : {}) } }, res => {
+            let data = '';
+            res.on('data', d => { data += d; });
+            res.on('end', () => {
+                c.absorb({ headers: { getSetCookie: () => res.headers['set-cookie'] || [] } });
+                let json = null;
+                try { json = JSON.parse(data); } catch { /* не JSON */ }
+                resolve({ status: res.statusCode, json });
+            });
+        });
+        r.on('error', reject);
+        if (payload) r.write(payload);
+        r.end();
+    });
+    return { c, raw, headers };
+}
+
+let torOk = 0;
+for (let i = 0; i < 5; i++) {
+    const t = onionClient();
+    await t.raw('GET', '/');
+    const r = await t.raw('POST', '/api/register/anonymous', {});
+    if (r.json?.success) torOk++;
+}
+check('через Tor у каждого браузера свой лимит регистраций, а не три на всех', torOk === 5, `${torOk} из 5`);
+
+const sameBrowser = onionClient();
+await sameBrowser.raw('GET', '/');
+let lastSame;
+for (let i = 0; i < 4; i++) lastSame = await sameBrowser.raw('POST', '/api/register/anonymous', {});
+check('а один браузер через Tor — не больше трёх в час', lastSame.status === 429, String(lastSame.status));
+
+// Host .onion снаружи (адрес не локальный) — обычный лимит по IP.
+let spoofOk = 0;
+for (let i = 0; i < 4; i++) {
+    const t = onionClient({ forwardedFor: '10.77.0.1' });
+    await t.raw('GET', '/');
+    if ((await t.raw('POST', '/api/register/anonymous', {})).json?.success) spoofOk++;
+}
+check('подставленный Host .onion не уводит из-под лимита по IP', spoofOk === 3, `${spoofOk} из 4`);
+
+// Сокеты через Tor — по пять на пользователя, а не пять на всех.
+const torSockets = [];
+let torSocketsOk = 0;
+for (let u = 0; u < 2; u++) {
+    const t = onionClient();
+    await t.raw('GET', '/');
+    await t.raw('POST', '/api/register/anonymous', {});
+    for (let i = 0; i < 4; i++) {
+        const sock = ioClient(BASE, { extraHeaders: t.headers(), transports: ['websocket'], reconnection: false, timeout: 3000 });
+        torSockets.push(sock);
+        if (await new Promise(res => { sock.once('connect', () => res(true)); sock.once('connect_error', () => res(false)); })) torSocketsOk++;
+    }
+}
+torSockets.forEach(s => s.close());
+check('через Tor двое держат по четыре сокета — всего больше пяти', torSocketsOk === 8, `${torSocketsOk} из 8`);
 
 /* ------------------------- заголовки ------------------------- */
 

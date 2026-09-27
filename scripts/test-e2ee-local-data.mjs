@@ -137,6 +137,35 @@ check('исчезающее дошло', await waitText(bob.page, 'исчезн�
 check('и лежит у получателя', hasText(await local(bob.page), 'исчезну'));
 await sleep(3500);
 check('после срока стёрто и у получателя', !hasText(await local(bob.page), 'исчезну'));
+
+// Чат у получателя не открыт: событие об удалении идёт только в открытый
+// чат, и стирать должно само устройство — по сроку, который оно запомнило.
+await bob.page.reload({ waitUntil: 'networkidle' });
+await bob.page.waitForTimeout(1200);
+await send(alice.page, 'исчезну в закрытом чате');
+await sleep(1000);
+check('в закрытом чате исчезающее дошло до устройства', hasText(await local(bob.page), 'исчезну в закрытом чате'));
+const gone = async (page, text, ms) => {
+    for (let t = 0; t < ms; t += 1000) {
+        const d = await local(page);
+        if (!hasText(d, text) && !JSON.stringify(d.meta).includes(text)) return true;
+        await sleep(1000);
+    }
+    return false;
+};
+check('после срока стёрто и из закрытого чата — вместе с превью', await gone(bob.page, 'исчезну в закрытом чате', 16000));
+
+// Устройство было выключено, когда срок вышел: стирается при запуске.
+await alice.page.evaluate(chatId => api(`/api/chats/${chatId}/set-default-expiry`, {
+    method: 'POST', body: JSON.stringify({ expirySeconds: 5 }) }), room.chatId);
+await send(alice.page, 'исчезну, пока закрыто');
+await sleep(800);
+check('перед закрытием текст на устройстве', hasText(await local(bob.page), 'исчезну, пока закрыто'));
+await bob.page.goto('about:blank');
+await sleep(6000);
+await bob.page.goto(BASE, { waitUntil: 'networkidle' });
+check('при запуске истёкшее стёрто сразу', await gone(bob.page, 'исчезну, пока закрыто', 4000));
+await openRoom(bob.page, room.roomId);
 await alice.page.evaluate(chatId => api(`/api/chats/${chatId}/set-default-expiry`, {
     method: 'POST', body: JSON.stringify({ expirySeconds: 0 }) }), room.chatId);
 
@@ -243,6 +272,28 @@ const listPreview = await ivy.page.evaluate(id =>
     document.querySelector(`.chat-item[data-room-id="${id}"] .chat-last`)?.textContent, ivyRoom.roomId);
 check('старые страницы не перебивают превью в списке чатов', listPreview === 'страница 12', listPreview);
 await ivy.page.setViewportSize({ width: 1280, height: 720 });
+
+/* ------------------------- сообщение из новой версии ------------------------- */
+
+// Сервер доставил конверт с заголовком версии 2 — так выглядело бы
+// сообщение от клиента новее этого. Показывается просьба обновить
+// страницу, а ключ сообщения не тратится: после «обновления» (версия
+// снова 1) то же сообщение читается.
+await ivy.page.goto('about:blank');
+await send(alice.page, 'из будущей версии');
+const futureId = (await db.query("SELECT max(id) AS id FROM messages WHERE room_id = $1", [ivyRoom.roomId])).rows[0].id;
+await db.query('UPDATE message_envelopes SET header = set_byte(header, 0, 2) WHERE message_id = $1 AND recipient_device_id = $2',
+    [futureId, ivyInfo.deviceId]);
+await ivy.page.goto(BASE, { waitUntil: 'networkidle' });
+await openRoom(ivy.page, ivyRoom.roomId);
+const futureShown = await ivy.page.evaluate(id =>
+    document.querySelector(`[data-message-id="${id}"] .message-locked`)?.textContent || '', futureId);
+check('сообщение из более новой версии — просьба обновить страницу', /более новой версии Nyxo — обновите страницу/.test(futureShown),
+    futureShown);
+await db.query('UPDATE message_envelopes SET header = set_byte(header, 0, 1) WHERE message_id = $1 AND recipient_device_id = $2',
+    [futureId, ivyInfo.deviceId]);
+await openRoom(ivy.page, ivyRoom.roomId);
+check('после обновления то же сообщение читается — ключ не потрачен', await waitText(ivy.page, 'из будущей версии'));
 
 /* ------------------------- новые устройства аккаунта ------------------------- */
 

@@ -12,7 +12,8 @@
 //   - «Повторить» после ошибки отправляет в тот чат, где была ошибка
 //   - на телефоне: открытый чат прячет список, «назад» (и системная тоже)
 //     возвращает к нему; тост не сжимается в узкую колонку
-//   - удаление с «Вернуть»: отмена возвращает сообщение и не трогает сервер;
+//   - удаление с «Вернуть»: пузырь плавно сжимается, отмена возвращает
+//     сообщение и не трогает сервер;
 //     без отмены через 5 секунд сообщение удаляется; при закрытии страницы
 //     удаление не теряется
 //   - ошибка сервера показывается с кодом; «Отчёт об ошибке» в профиле
@@ -166,9 +167,12 @@ const tabStops = await page.evaluate(() => [...document.querySelectorAll('#chat-
 check('вся переписка — одна остановка Tab', tabStops === 1, tabStops);
 const timeAligned = await page.evaluate(() => {
     const m = [...document.querySelectorAll('#chat-messages .message')].find(el => el.textContent.includes('первое'));
-    return m.querySelector('.message-meta').getBoundingClientRect().right - m.querySelector('.message-time').getBoundingClientRect().right;
+    // Последнее в строке (статус или время) стоит у правого края: невидимая
+    // «⋯» места в строке не занимает.
+    const meta = m.querySelector('.message-meta');
+    return meta.getBoundingClientRect().right - meta.lastElementChild.getBoundingClientRect().right;
 });
-check('«⋯» не занимает места в строке времени', timeAligned < 24, `статус и время отстоят от края на ${timeAligned}px`);
+check('«⋯» не занимает места в строке времени', timeAligned < 2, `последнее в строке отстоит от края на ${timeAligned}px`);
 await page.focus('#chat-messages .message[tabindex="0"]');
 check('остановка — последнее сообщение', (await page.evaluate(() => document.activeElement.textContent)).includes('от Боба'));
 await page.keyboard.press('ArrowUp');
@@ -197,7 +201,7 @@ check('правый клик открывает меню у точки клик�
     await menuOpen() && Math.abs(menuBox.x - (box.x + 20)) < 16 && Math.abs(menuBox.y - (box.y + 10)) < 16,
     JSON.stringify(menuBox));
 const visibleItems = await page.evaluate(() =>
-    [...document.querySelectorAll('#message-menu .menu-item')].filter(b => b.offsetParent !== null).map(b => b.id));
+    [...document.querySelectorAll('#message-menu .menu-item[id]')].filter(b => b.offsetParent !== null).map(b => b.id));
 check('у чужого сообщения нет «Редактировать» и «Удалить»', JSON.stringify(visibleItems) === '["reply-message-btn"]',
     JSON.stringify(visibleItems));
 await page.mouse.click(5, 300);
@@ -222,7 +226,8 @@ await page.keyboard.press('Escape');
 await page.waitForTimeout(300);
 check('и то и другое видно в переписке', await page.evaluate(() => {
     const lines = [...document.querySelectorAll('#chat-messages .message-system')].map(el => el.textContent);
-    return lines.some(t => t.includes('сменил(а) код')) && lines.some(t => t.includes('отключил(а) приглашение'));
+    // О себе — «Вы …»: себе строка в третьем лице читалась бы странно.
+    return lines.includes('Вы сменили код приглашения') && lines.includes('Вы отключили приглашение');
 }));
 
 /* ------------------------- цитата ответа ------------------------- */
@@ -257,8 +262,20 @@ async function deleteViaMenu(text) {
 }
 
 const firstId = await idOf('первое');
+// Записываем высоту пузыря на каждом кадре: сжимается плавно, а не скачком.
+await page.evaluate(id => {
+    const el = document.querySelector(`[data-message-id="${id}"]`);
+    window.__heights = [];
+    const tick = () => { window.__heights.push(el.hidden ? 0 : el.getBoundingClientRect().height); if (!el.hidden) requestAnimationFrame(tick); };
+    requestAnimationFrame(tick);
+}, firstId);
 await deleteViaMenu('первое');
-check('после «Удалить» сообщение сразу пропадает с экрана',
+await page.waitForTimeout(400);
+const heights = await page.evaluate(() => window.__heights);
+const full = heights[0];
+check('удалённое сжимается плавно (~150 мс), а не пропадает скачком',
+    heights.some(h => h > 0 && h < full - 1) && heights.at(-1) === 0, heights.map(h => Math.round(h)).join(' '));
+check('после «Удалить» сообщение пропадает с экрана',
     await page.evaluate(id => document.querySelector(`[data-message-id="${id}"]`).hidden, firstId));
 check('в тосте есть «Вернуть»', (await page.textContent('#toast')).includes('Вернуть'));
 await page.click('#toast .toast-action');
@@ -424,7 +441,7 @@ const botReply = page.locator('#chat-messages .message.received').last();
 const botBox = await botReply.boundingBox();
 await page.mouse.click(botBox.x + 20, botBox.y + 10, { button: 'right' });
 const botMenu = await page.evaluate(() =>
-    [...document.querySelectorAll('#message-menu .menu-item')].filter(b => b.offsetParent !== null).map(b => b.id));
+    [...document.querySelectorAll('#message-menu .menu-item[id]')].filter(b => b.offsetParent !== null).map(b => b.id));
 check('у ответа бота нет «Редактировать» и «Удалить»', JSON.stringify(botMenu) === '["reply-message-btn"]', JSON.stringify(botMenu));
 await page.keyboard.press('Escape');
 

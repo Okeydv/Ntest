@@ -27,9 +27,9 @@ LOGS=${TEST_LOGS:-$(mktemp -d)}
 mkdir -p "$LOGS"
 
 OFFLINE="test-e2ee-crypto test-metadata test-file-sandbox test-media-cleaning test-pdf-cleaning test-e2ee-crypto-browser"
-ONLINE="integration-test-access integration-test-migrations integration-test-security integration-test-devices
-integration-test-envelopes integration-test-uploads test-e2ee-files test-e2ee-safety test-e2ee-groups
-test-e2ee-sessions test-e2ee-local-data test-e2ee-qr test-device-link test-e2ee-ui test-ui-basics test-ui-dialogs"
+ONLINE="integration-test-access integration-test-migrations integration-test-security integration-test-server integration-test-devices
+integration-test-envelopes integration-test-uploads integration-test-plaintext-purge test-e2ee-files test-e2ee-safety test-e2ee-groups
+test-e2ee-sessions test-e2ee-local-data test-e2ee-qr test-device-link test-read-state test-two-tabs test-feed test-composer test-empty-room test-no-plaintext test-e2ee-ui test-ui-basics test-ui-dialogs"
 if [ $# -gt 0 ]; then
     SELECTED=" $* "
 else
@@ -81,7 +81,7 @@ start_servers() {
     DATABASE_URL="$TEST_DATABASE_URL" SESSION_SECRET=test-session-secret-at-least-32-chars-long \
         INTERNAL_KEY_SERVER_SECRET=$SECRET KEY_SERVER_URL=http://127.0.0.1:7422 \
         NODE_ENV=development PORT=3006 HOST=127.0.0.1 \
-        ALLOWED_ORIGINS=http://nyxotestaddress.onion ANON_SWEEP_INTERVAL_MS=2000 \
+        ALLOWED_ORIGINS=http://nyxotestaddress.onion ANON_SWEEP_INTERVAL_MS=2000 PLAINTEXT_PURGE_INTERVAL_MS=2000 \
         node server.js > "$LOGS/server.log" 2>&1 &
     PIDS+=($!)
     wait_for http://127.0.0.1:3006/ || { echo "сервер не поднялся, см. $LOGS/server.log" >&2; return 1; }

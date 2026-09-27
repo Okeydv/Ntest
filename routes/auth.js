@@ -3,14 +3,17 @@
 // Регистрация, вход, приватный режим, выход, профиль и смена пароля.
 
 const { log } = require('../lib/log');
+const { broadcastReceipts } = require('../lib/read-state');
+const { purgeMessageContent } = require('../lib/storage');
+const { recordSecurityEvent, listSecurityEvents } = require('../lib/security-events');
 const { pool, dbGet, dbAll, dbRun } = require('../lib/db');
 const { secureCookieFor } = require('../lib/cookie-security');
 const { addRandomDelay, generateSecureToken } = require('../lib/privacy');
 const e2eeProxy = require('../lib/e2ee-proxy');
 const { hashPassword, checkPassword, DUMMY_PASSWORD_HASH, PASSWORD_PREFIX } = require('../lib/passwords');
-const { loginLimiter, loginEmailLimiter, registerLimiter, passwordLimiter } = require('../lib/rate-limits');
+const { loginLimiter, loginEmailSlowdown, registerLimiter, passwordLimiter } = require('../lib/rate-limits');
 const {
-    getCurrentTime, normalizeAvatarColor, generateUniqueCodeAsync, generateAnonymousUsernameAsync,
+    onlyStrings, BAD_FIELDS, getCurrentTime, getSocketRoomKey, normalizeAvatarColor, generateUniqueCodeAsync, generateAnonymousUsernameAsync,
 } = require('../lib/helpers');
 
 
@@ -40,6 +43,7 @@ module.exports = function registerAuthRoutes(app, ctx) {
 
     app.post('/api/register', registerLimiter, async (req, res) => {
         const { username, email, password, confirmPassword } = req.body;
+        if (!onlyStrings(username, email, password, confirmPassword)) return res.status(400).json(BAD_FIELDS);
         if (!username || !email || !password || !confirmPassword)
             return res.json({ success: false, message: 'Заполните все поля' });
         if (username.length > 32)
@@ -77,10 +81,13 @@ module.exports = function registerAuthRoutes(app, ctx) {
                     [userId, 'Бот Помощник', 'Б', 1, 1]
                 );
                 const botChatId = botResult.rows[0].id;
-                await client.query(
-                    'INSERT INTO messages (chat_id, user_id, text, sent, time, status) VALUES ($1, $2, $3, $4, $5, $6)',
+                const greeting = await client.query(
+                    'INSERT INTO messages (chat_id, user_id, text, sent, time, status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
                     [botChatId, userId, 'Привет! Я бот-помощник. Чем могу помочь?', 0, getCurrentTime(), 'read']
                 );
+                // Приветствие не должно висеть непрочитанным.
+                await client.query('UPDATE chats SET last_read_id = $1, last_delivered_id = $1 WHERE id = $2',
+                    [greeting.rows[0].id, botChatId]);
                 await client.query('COMMIT');
             } catch (txErr) {
                 await client.query('ROLLBACK');
@@ -123,10 +130,13 @@ module.exports = function registerAuthRoutes(app, ctx) {
                     [userId, 'Бот Помощник', 'Б', 1, 1]
                 );
                 const botChatId = botResult.rows[0].id;
-                await client.query(
-                    'INSERT INTO messages (chat_id, user_id, text, sent, time, status) VALUES ($1, $2, $3, $4, $5, $6)',
+                const greeting = await client.query(
+                    'INSERT INTO messages (chat_id, user_id, text, sent, time, status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
                     [botChatId, userId, '🔒 Приватный режим активирован!\n\nВаши данные:\n• Хранятся только в этой сессии\n• Будут удалены при выходе\n• Не связаны с email или телефоном\n\nДля максимальной анонимности:\n• Используйте Tor Browser\n• Не делитесь личной информацией\n• Включите disappearing messages', 0, getCurrentTime(), 'read']
                 );
+                // Приветствие не должно висеть непрочитанным.
+                await client.query('UPDATE chats SET last_read_id = $1, last_delivered_id = $1 WHERE id = $2',
+                    [greeting.rows[0].id, botChatId]);
                 await client.query('COMMIT');
             } catch (txErr) {
                 await client.query('ROLLBACK');
@@ -161,8 +171,9 @@ module.exports = function registerAuthRoutes(app, ctx) {
         }
     });
 
-    app.post('/api/login', loginLimiter, loginEmailLimiter, async (req, res) => {
+    app.post('/api/login', loginLimiter, loginEmailSlowdown, async (req, res) => {
         const { email, password } = req.body;
+        if (!onlyStrings(email, password)) return res.status(400).json(BAD_FIELDS);
         if (!email || !password) return res.json({ success: false, message: 'Введите email и пароль' });
         if (email.length > 254 || password.length > 128) return res.json({ success: false, message: 'Неверный email или пароль' });
 
@@ -181,9 +192,11 @@ module.exports = function registerAuthRoutes(app, ctx) {
             await addRandomDelay(20, 80);
 
             if (!user || !user.password || !validPassword) {
+                if (user) await recordSecurityEvent(user.id, 'login_failed', { req });
                 return res.json({ success: false, message: 'Неверный email или пароль' });
             }
             res.locals.loggedIn = true;
+            await recordSecurityEvent(user.id, 'login', { req });
             if (!user.password.startsWith(PASSWORD_PREFIX)) {
                 await dbRun('UPDATE users SET password = $1 WHERE id = $2', [await hashPassword(password), user.id]);
             }
@@ -224,6 +237,17 @@ module.exports = function registerAuthRoutes(app, ctx) {
         }
         await e2eeProxy.revokeAllKeys(userId);
         await dbRun('DELETE FROM devices WHERE user_id = $1', [userId]);
+        // Его сообщения исчезают у собеседников сразу, а не после
+        // перезагрузки: как при обычном удалении — событием, и содержимое
+        // (файлы на диске, конверты) стирается по-настоящему.
+        const gone = await dbAll(
+            "SELECT id, chat_id, room_id FROM messages WHERE user_id = $1 AND message_type <> 'system'", [userId]);
+        for (const message of gone) {
+            await purgeMessageContent(message.id);
+            io.to(getSocketRoomKey(message.chat_id, message.room_id)).emit('messageDeleted', {
+                id: message.id, chat_id: message.chat_id, room_id: message.room_id,
+            });
+        }
         await dbRun('DELETE FROM messages WHERE user_id = $1', [userId]);
         await dbRun('DELETE FROM chats WHERE user_id = $1', [userId]);
         await dbRun('DELETE FROM room_participants WHERE user_id = $1', [userId]);
@@ -335,9 +359,9 @@ module.exports = function registerAuthRoutes(app, ctx) {
     app.get('/api/user', async (req, res) => {
         if (!req.session.userId) return res.json({ success: false });
         try {
-            const user = await dbGet('SELECT id, unique_code, username, email, avatar, created_at FROM users WHERE id = $1', [req.session.userId]);
+            const user = await dbGet('SELECT id, unique_code, username, email, avatar, created_at, send_read_receipts FROM users WHERE id = $1', [req.session.userId]);
             if (!user) return res.json({ success: false });
-            res.json({ success: true, user: { id: user.id, uniqueCode: user.unique_code, username: user.username, avatar: user.avatar || '', email: user.email, createdAt: user.created_at } });
+            res.json({ success: true, user: { id: user.id, uniqueCode: user.unique_code, username: user.username, avatar: user.avatar || '', email: user.email, createdAt: user.created_at, sendReadReceipts: user.send_read_receipts } });
         } catch (error) {
             res.json({ success: false });
         }
@@ -356,9 +380,39 @@ module.exports = function registerAuthRoutes(app, ctx) {
         }
     });
 
+    // Отправлять ли собеседникам отметки о прочтении. Выключивший их и сам
+    // не видит, прочитали ли его.
+    app.post('/api/user/read-receipts', async (req, res) => {
+        if (!req.session.userId) return res.status(401).json({ success: false, message: 'Не авторизован' });
+        if (typeof (req.body && req.body.enabled) !== 'boolean') {
+            return res.status(400).json({ success: false, message: 'Нужно enabled: true или false' });
+        }
+        try {
+            await dbRun('UPDATE users SET send_read_receipts = $1 WHERE id = $2', [req.body.enabled, req.session.userId]);
+            res.json({ success: true, enabled: req.body.enabled });
+            const rooms = await dbAll('SELECT room_id FROM chats WHERE user_id = $1 AND room_id IS NOT NULL', [req.session.userId]);
+            for (const { room_id: roomId } of rooms) await broadcastReceipts(io, roomId);
+        } catch (error) {
+            log.error({ err: error }, 'Read receipts setting error');
+            if (!res.headersSent) res.status(500).json({ success: false, message: 'Не удалось сохранить' });
+        }
+    });
+
+    // Журнал безопасности своего аккаунта — для профиля.
+    app.get('/api/security-events', async (req, res) => {
+        if (!req.session.userId) return res.status(401).json({ success: false, message: 'Не авторизован' });
+        try {
+            res.json({ success: true, events: await listSecurityEvents(req.session.userId) });
+        } catch (error) {
+            log.error({ err: error }, 'Security events error');
+            res.status(500).json({ success: false, message: 'Не удалось загрузить журнал' });
+        }
+    });
+
     app.post('/api/change-password', passwordLimiter, async (req, res) => {
         if (!req.session.userId) return res.json({ success: false, message: 'Не авторизован' });
         const { currentPassword, newPassword, confirmPassword } = req.body;
+        if (!onlyStrings(currentPassword, newPassword, confirmPassword)) return res.status(400).json(BAD_FIELDS);
         if (!currentPassword || !newPassword || !confirmPassword) return res.json({ success: false, message: 'Заполните все поля' });
         if (newPassword !== confirmPassword) return res.json({ success: false, message: 'Новые пароли не совпадают' });
         if (newPassword.length < 8) return res.json({ success: false, message: 'Пароль должен быть не менее 8 символов' });
@@ -376,6 +430,7 @@ module.exports = function registerAuthRoutes(app, ctx) {
             const userId = req.session.userId;
 
             await dbRun('UPDATE users SET password = $1 WHERE id = $2', [hashedPassword, userId]);
+            await recordSecurityEvent(req.session.userId, 'password_changed', { req });
             // Пароль меняют чаще всего, когда он утёк. Значит, выйти надо везде:
             // сессия, открытая по старому паролю, иначе живёт до истечения срока.
             await dbRun(`DELETE FROM "session" WHERE sess->>'userId' = $1`, [String(userId)]);

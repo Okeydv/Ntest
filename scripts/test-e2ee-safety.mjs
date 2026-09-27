@@ -227,6 +227,51 @@ const victim = await safety(bobPhone);
 check('жертва видит, что сервер раздаёт от её имени чужой ключ',
     victim.warnings.some(w => /от имени ваших устройств/.test(w)));
 
+/* ------------------------- подпись DH-ключа личности ------------------------- */
+
+// Ключи в базе — с подписью DH-ключа.
+const signedRows = (await db.query('SELECT count(*) FILTER (WHERE identity_dh_signature IS NULL) AS n FROM identity_keys')).rows[0];
+check('у всех устройств DH-ключ личности подписан', Number(signedRows.n) === 0, `без подписи: ${signedRows.n}`);
+
+// Устройство, заведённое до подписей, дописывает её при запуске.
+await db.query('UPDATE identity_keys SET identity_dh_signature = NULL WHERE user_id = $1 AND device_id = $2',
+    [bobInfo.userId, bobInfo.deviceId]);
+await bob.page.evaluate(async () => (await import('/crypto/store.js')).meta.set('identityDhSigned', false));
+await bob.page.reload({ waitUntil: 'networkidle' });
+await bob.page.waitForTimeout(2000);
+const upgraded = (await db.query('SELECT identity_dh_signature FROM identity_keys WHERE user_id = $1 AND device_id = $2',
+    [bobInfo.userId, bobInfo.deviceId])).rows[0].identity_dh_signature;
+check('старое устройство при запуске дописывает подпись', upgraded && upgraded.length === 64);
+
+// Новое устройство, у которого сервер подменил только DH-ключ: ключ
+// подписи настоящий, подпись — от настоящего DH-ключа.
+const bobTablet = await openApp('bob-tablet');
+const tabletInfo = await login(bobTablet, 'bob@example.com');
+await db.query('UPDATE identity_keys SET identity_dh_key = $1 WHERE user_id = $2 AND device_id = $3',
+    [raw(crypto.generateKeyPairSync('x25519').publicKey), bobInfo.userId, tabletInfo.deviceId]);
+await openRoom(alice);
+await send(alice, 'после подмены DH-ключа');
+const { rows: [lastDh] } = await db.query('SELECT max(id) AS id FROM messages WHERE room_id = $1', [roomId]);
+const dhRecipients = (await db.query('SELECT recipient_device_id FROM message_envelopes WHERE message_id = $1', [lastDh.id]))
+    .rows.map(r => Number(r.recipient_device_id));
+check('устройству с неподписанным DH-ключом конверт не зашифрован',
+    !dhRecipients.includes(tabletInfo.deviceId) && dhRecipients.includes(bobInfo.deviceId), JSON.stringify(dhRecipients));
+
+// Подпись пропала у устройства, которое уже подписывало: откат, а не
+// старое устройство.
+await db.query('UPDATE identity_keys SET identity_dh_signature = NULL WHERE user_id = $1 AND device_id = $2',
+    [bobInfo.userId, bobInfo.deviceId]);
+await alice.page.evaluate(async ([u, d]) => (await import('/crypto/store.js')).sessions.drop(u, d), [bobInfo.userId, bobInfo.deviceId]);
+const beforeStrip = Number((await db.query('SELECT max(id) AS id FROM messages WHERE room_id = $1', [roomId])).rows[0].id);
+const stripped = await send(alice, 'после пропажи подписи');
+// Все устройства Боба теперь отвергнуты — сообщение может не уйти вовсе;
+// главное, чтобы ноутбуку с пропавшей подписью конверта не было.
+const stripRecipients = (await db.query(
+    `SELECT e.recipient_device_id FROM message_envelopes e JOIN messages m ON m.id = e.message_id
+     WHERE m.room_id = $1 AND m.id > $2`, [roomId, beforeStrip])).rows.map(r => Number(r.recipient_device_id));
+check('подпись пропала у подписывавшего устройства — ему не шифруется',
+    !stripRecipients.includes(bobInfo.deviceId) && /не совпада|не сможет|ключ/i.test(stripped.toast), `${JSON.stringify(stripRecipients)} ${stripped.toast}`);
+
 /* ------------------------- перезапись identity ------------------------- */
 
 const overwrite = await alice.page.evaluate(async () => {
@@ -239,7 +284,7 @@ check('перезаписать identity своего устройства не�
 
 /* ------------------------- итог ------------------------- */
 
-const errors = [alice, bob, bobPhone].flatMap(a => a.errors);
+const errors = [alice, bob, bobPhone, bobTablet].flatMap(a => a.errors);
 check('ошибок на страницах нет', errors.length === 0, errors.join('; '));
 
 await finish(browser, fails);

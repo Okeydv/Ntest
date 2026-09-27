@@ -8,17 +8,18 @@
 // прогнать в тестах, подменив api().
 
 import {
-    generateIdentity, exportIdentityPublic, generateSignedPrekey, generateOneTimePrekeys,
+    generateIdentity, exportIdentityPublic, verifyIdentityBinding, generateSignedPrekey, generateOneTimePrekeys,
     initiateSession, acceptSession, encryptMessage, decryptToText,
     exportSession, importSession, parseHeader, toB64, fromB64,
-    ENVELOPE_PREKEY,
+    ENVELOPE_PREKEY, HEADER_VERSION,
 } from './e2ee.js';
 import * as store from './store.js';
 import { userFingerprint, combineFingerprints } from './safety.js';
 import {
     createSenderKey, senderKeyDistribution, encryptGroup,
-    importDistribution, distributionKey, decryptGroup, parseGroupHeader,
+    importDistribution, distributionKey, decryptGroup, parseGroupHeader, GROUP_VERSION,
 } from './group.js';
+import { NEWER_VERSION_MARK } from './attachments.js';
 
 // Пул одноразовых prekeys. Каждый входящий первый контакт съедает один,
 // поэтому пул пополняется заранее: пустой пул не ломает связь, но первое
@@ -37,13 +38,32 @@ let state = {
 
 /* ================================================================== */
 
-async function publishKeys() {
+// Ключи личности с подписью DH-ключа. Устройство, заведённое до подписей,
+// дописывает её так же — сервер при тех же ключах только добавит подпись.
+async function publishIdentity() {
     const identityPublic = await exportIdentityPublic(state.identity);
-    await state.api('/api/keys/identity', { method: 'PUT', body: JSON.stringify(identityPublic) });
-    await state.api('/api/keys/signed-prekey', {
+    const result = await state.api('/api/keys/identity', { method: 'PUT', body: JSON.stringify(identityPublic) });
+    if (result && result.success) await store.meta.set('identityDhSigned', true);
+    return result;
+}
+
+/*
+ * Опубликовать ключи устройства. Раньше ответы не проверялись: если сервер
+ * ключей их не принял, устройство всё равно считалось готовым — собеседники
+ * не могли под него шифровать, а повторить публикацию было некому (при
+ * следующем входе устройство просто привязывалось). Теперь неудача —
+ * исключение, а успех отмечается в meta: bootstrap без отметки публикует
+ * заново (сервер ключей принимает это повторно).
+ */
+async function publishKeys() {
+    const identity = await publishIdentity();
+    if (!identity || !identity.success) throw new Error((identity && identity.message) || 'ключи устройства не опубликованы');
+    const spk = await state.api('/api/keys/signed-prekey', {
         method: 'PUT',
         body: JSON.stringify(state.signedPrekey.upload),
     });
+    if (!spk || !spk.success) throw new Error((spk && spk.message) || 'ключи устройства не опубликованы');
+    await store.meta.set('keysPublished', true);
 }
 
 async function createOneTimePrekeys(count) {
@@ -61,7 +81,11 @@ async function createOneTimePrekeys(count) {
  * знает, сколько осталось, а локально они лежат до фактического
  * использования.
  */
-export async function replenishOneTimePrekeys() {
+export function replenishOneTimePrekeys() {
+    return serialized(replenishOneTimePrekeysNow);
+}
+
+async function replenishOneTimePrekeysNow() {
     if (!state.ready) return null;
     try {
         const info = await state.api('/api/keys/one-time-prekeys/count');
@@ -105,8 +129,16 @@ async function pruneRetiredSignedPrekeys(now) {
  * публикуется и только потом становится текущим: не удалась публикация —
  * остаётся прежний, и собеседники продолжают получать рабочий bundle.
  */
-export async function rotateSignedPrekeyIfDue(now = Date.now()) {
+export function rotateSignedPrekeyIfDue(now = Date.now()) {
+    return serialized(() => rotateSignedPrekeyIfDueNow(now));
+}
+
+async function rotateSignedPrekeyIfDueNow(now) {
     if (!state.ready) return false;
+    // Другая вкладка могла уже сменить ключ — берём текущий из базы.
+    const currentId = await store.meta.get('signedPrekeyId');
+    const current = currentId ? await store.signedPrekeys.load(currentId) : null;
+    if (current) state.signedPrekey = current;
     await pruneRetiredSignedPrekeys(now);
     // У устройств, заведённых до ротации, даты нет — их ключ меняем сразу.
     const createdAt = (await store.meta.get('signedPrekeyCreatedAt')) || 0;
@@ -164,7 +196,13 @@ async function registerFreshDevice(deviceName) {
  * устройство). Отсутствие E2EE не должно ломать приложение — вызывающий
  * просто остаётся на открытом пути.
  */
-export async function bootstrap({ api, userId, deviceName = 'Браузер' }) {
+export function bootstrap(options) {
+    // Под блокировкой устройства: две вкладки, открытые разом на новом
+    // профиле, иначе зарегистрировали бы два устройства.
+    return serialized(() => bootstrapNow(options));
+}
+
+async function bootstrapNow({ api, userId, deviceName = 'Браузер' }) {
     state.api = api;
     state.userId = userId;
     state.ready = false;
@@ -181,7 +219,13 @@ export async function bootstrap({ api, userId, deviceName = 'Браузер' }) 
                 state.deviceId = storedDeviceId;
                 state.identity = storedIdentity;
                 state.signedPrekey = storedSpk;
+                // Прошлая публикация не дошла — без неё под это устройство не
+                // зашифровать, и готовым оно не считается.
+                if (!(await store.meta.get('keysPublished'))) await publishKeys();
                 state.ready = true;
+                if (!(await store.meta.get('identityDhSigned'))) {
+                    await publishIdentity().catch(e => console.warn('[E2EE] подпись ключа личности не опубликована:', e.message));
+                }
                 replenishOneTimePrekeys();
                 rotateSignedPrekeyIfDue().catch(e => console.warn('[E2EE] signed prekey не обновлён:', e.message));
                 return { deviceId: state.deviceId, fresh: false };
@@ -199,11 +243,44 @@ export async function bootstrap({ api, userId, deviceName = 'Браузер' }) 
     } catch (e) {
         console.warn('[E2EE] шифрование недоступно:', e.message);
         state.ready = false;
+        state.lastError = e.message;
         return null;
     }
 }
 
 export const isReady = () => state.ready;
+// Почему шифрование не поднялось — клиент объясняет это человеку вместо
+// того, чтобы молча отправить открытым текстом.
+export const lastError = () => state.lastError || null;
+
+/* ------------------------------------------------------------------
+   Ждущие сообщения и пометки о недоставке
+   ------------------------------------------------------------------ */
+
+/*
+ * Сообщение, которому пока не для кого шифроваться (у собеседника нет ни
+ * одного устройства с ключами), ждёт здесь, на устройстве, и уходит, когда
+ * ключи появятся. Лежит там же, где расшифрованная переписка, и стирается
+ * вместе с ней при выходе.
+ */
+export const pending = {
+    list: async () => (await store.meta.get('pending')) || [],
+    save: list => store.meta.set('pending', list),
+};
+
+// «Не доставлено: Пётр — нет ключей» у своих сообщений. Знает об этом
+// только отправитель — пометка живёт у него на устройстве.
+const MAX_NOTES = 500;
+export async function rememberUndelivered(messageId, names) {
+    const notes = (await store.meta.get('undelivered')) || {};
+    notes[messageId] = names;
+    const ids = Object.keys(notes).map(Number).sort((a, b) => a - b);
+    for (const id of ids.slice(0, Math.max(0, ids.length - MAX_NOTES))) delete notes[id];
+    await store.meta.set('undelivered', notes);
+}
+export async function undeliveredNotes() {
+    return (await store.meta.get('undelivered')) || {};
+}
 export const currentDeviceId = () => state.deviceId;
 
 /* ================================================================== */
@@ -243,9 +320,30 @@ async function identityStatus(userId, deviceId, signingKey, dhKey) {
  * иначе мусорный конверт от имени устройства успел бы занять его место и
  * настоящий ключ потом выглядел бы подменой.
  */
-async function rememberIdentity(userId, deviceId, signingKey, dhKey) {
-    if (await store.identities.load(userId, deviceId)) return;
-    await store.identities.save(userId, deviceId, { signingKey, dhKey, firstSeen: Date.now() });
+async function rememberIdentity(userId, deviceId, signingKey, dhKey, dhSigned = false) {
+    const known = await store.identities.load(userId, deviceId);
+    if (known) {
+        // Устройство дописало подпись — запоминаем: пропадёт — подмена.
+        if (dhSigned && !known.dhSigned && known.signingKey === signingKey && known.dhKey === dhKey) {
+            await store.identities.save(userId, deviceId, { ...known, dhSigned: true });
+        }
+        return;
+    }
+    await store.identities.save(userId, deviceId, { signingKey, dhKey, dhSigned, firstSeen: Date.now() });
+}
+
+/*
+ * Подпись DH-ключа личности (см. exportIdentityPublic). 'ok' — подписан;
+ * 'legacy' — подписи нет, но устройство и не подписывало (заведено до
+ * подписей); 'bad' — подпись не сходится или пропала у устройства, которое
+ * раньше подписывало: так выглядит подмена сервером.
+ */
+async function identityBinding(userId, deviceId, rec) {
+    if (rec.identity_dh_signature) {
+        return (await verifyIdentityBinding(rec.identity_signing_key, rec.identity_dh_key, rec.identity_dh_signature)) ? 'ok' : 'bad';
+    }
+    const known = await store.identities.load(userId, deviceId);
+    return known && known.dhSigned ? 'bad' : 'legacy';
 }
 
 function verificationState(record, deviceIds) {
@@ -295,9 +393,27 @@ async function assertVerifiedTargets(targets) {
 // версию, и второй затёр бы сохранённое первым — сессия разошлась бы с
 // собеседником. Поэтому всё, что меняет это состояние, идёт строго по
 // одному, в порядке вызова.
+/*
+ * Всё, что читает и меняет состояние шифрования, идёт по очереди. Очередь
+ * внутри вкладки мало: две вкладки одного браузера делят одну IndexedDB,
+ * и обе брали бы из неё одно и то же состояние цепочки — один и тот же
+ * ключ сообщения и IV для AES-GCM, а это раскрывает текст обоих
+ * сообщений. Поэтому поверх очереди — блокировка Web Locks на всё
+ * устройство: пока одна вкладка шифрует или расшифровывает, другая ждёт и
+ * потом читает из базы уже сдвинутое состояние.
+ */
+const DEVICE_LOCK = 'nyxo-e2ee-device';
+function withDeviceLock(fn) {
+    if (typeof navigator !== 'undefined' && navigator.locks && navigator.locks.request) {
+        return navigator.locks.request(DEVICE_LOCK, () => fn());
+    }
+    // Без Web Locks (очень старый браузер) остаётся очередь вкладки.
+    return fn();
+}
+
 let queue = Promise.resolve();
 function serialized(fn) {
-    const run = queue.then(fn);
+    const run = queue.then(() => withDeviceLock(fn));
     queue = run.catch(() => {});
     return run;
 }
@@ -341,10 +457,16 @@ async function encryptPairwise(targets, plaintext) {
                 rejected.push(bundle.device_id);
                 continue;
             }
+            const binding = await identityBinding(userId, bundle.device_id, bundle);
+            if (binding === 'bad') {
+                console.error(`[E2EE] ключи устройства ${bundle.device_id} не подписаны им самим — подмена, устройство пропущено`);
+                rejected.push(bundle.device_id);
+                continue;
+            }
             try {
                 const session = await initiateSession({ identity: state.identity, bundle });
                 await rememberIdentity(userId, bundle.device_id,
-                    bundle.identity_signing_key, bundle.identity_dh_key);
+                    bundle.identity_signing_key, bundle.identity_dh_key, binding === 'ok');
                 live.set(target.device_id, { target, session });
             } catch (e) {
                 // Подменённый bundle — единственный случай, когда молчать
@@ -508,12 +630,14 @@ async function encryptForChatNow(chatId, plaintext) {
     if (!info || !info.success) throw new Error('не удалось получить список устройств чата');
 
     // Собственное устройство исключается: свой открытый текст кладётся в
-    // локальное хранилище, и конверт себе не нужен.
+    // локальное хранилище, и конверт себе не нужен. info уходит вызывающему:
+    // по участникам он видит, у кого из людей нет ни одного устройства,
+    // которое прочтёт сообщение (readerIds).
     const targets = info.devices.filter(d => d.device_id !== state.deviceId);
     if (targets.length === 0) {
         return {
             mode: 'none', envelopes: [], keyEnvelopes: [], group: null, targets,
-            rejected: [], undelivered: [], readers: 0, commit: noop,
+            rejected: [], undelivered: [], readers: 0, readerIds: [], info, commit: noop,
         };
     }
     // До запроса bundle: он расходует одноразовые prekeys, а отправка всё
@@ -522,13 +646,14 @@ async function encryptForChatNow(chatId, plaintext) {
 
     const users = new Set(info.devices.map(d => d.user_id));
     if (info.room_id && users.size >= GROUP_MIN_USERS) {
-        return encryptForGroup(info.room_id, targets, plaintext);
+        return { ...(await encryptForGroup(info.room_id, targets, plaintext)), info };
     }
 
     const { envelopes, rejected } = await encryptPairwise(targets, plaintext);
     return {
         mode: 'pairwise', envelopes, keyEnvelopes: [], group: null, targets,
-        rejected, undelivered: [], readers: envelopes.length, commit: noop,
+        rejected, undelivered: [], readers: envelopes.length,
+        readerIds: envelopes.map(e => e.recipientDeviceId), info, commit: noop,
     };
 }
 
@@ -569,9 +694,11 @@ async function encryptForGroup(roomId, targets, plaintext) {
     if (readers === 0) {
         return {
             mode: 'group', envelopes: [], keyEnvelopes: [], group: null, targets,
-            rejected, undelivered, readers: 0, commit: noop,
+            rejected, undelivered, readers: 0, readerIds: [], commit: noop,
         };
     }
+    const readerIds = targets.map(t => t.device_id)
+        .filter(id => senderKey.sentTo.includes(id) || delivered.includes(id));
 
     const encrypted = await encryptGroup(senderKey, plaintext);
     // Цепочка сохраняется ДО отправки — см. encryptGroup: повтор номера с
@@ -592,6 +719,7 @@ async function encryptForGroup(roomId, targets, plaintext) {
         rejected,
         undelivered,
         readers,
+        readerIds,
         commit: () => serialized(async () => {
             const current = await store.senderKeys.load(roomId);
             // Пока шла отправка, ключ мог смениться — тогда отметка не нужна.
@@ -711,8 +839,22 @@ export function decryptIncoming(message) {
     return serialized(() => decryptIncomingNow(message));
 }
 
+// Версию заголовка смотрим до расшифровки: новее нашей — не трогаем
+// сессию вовсе, чтобы после обновления страницы сообщение прочиталось.
+function fromNewerVersion(message) {
+    const first = b64 => { try { return fromB64(b64)[0]; } catch { return 0; } };
+    if (message.envelope && first(message.envelope.header) > HEADER_VERSION) return true;
+    if (message.group && first(message.group.header) > GROUP_VERSION) return true;
+    return false;
+}
+
 async function decryptIncomingNow(message) {
     if (!state.ready || !message) return null;
+    if (fromNewerVersion(message)) return NEWER_VERSION_MARK;
+    // Пока эта вкладка ждала блокировку, сообщение могла расшифровать
+    // другая: ключ сообщения одноразовый, второй раз не выйдет.
+    const already = await store.plaintext.load(message.id);
+    if (already != null) return already;
     const senderUserId = message.user_id;
 
     // По сокету конверт с ключом приходит вместе с сообщением. Он первым:
@@ -760,6 +902,7 @@ const conversationOfChat = chat => (chat.room_id ? `room:${chat.room_id}` : `cha
 
 async function rememberPlaintext(message, text) {
     await store.plaintext.save(message.id, text);
+    if (message.expires_at) await rememberExpiry(message);
     const key = conversationKey(message);
     const ids = await store.conversations.load(key);
     if (!ids.includes(message.id)) {
@@ -770,11 +913,49 @@ async function rememberPlaintext(message, text) {
 
 async function forgetNow(message) {
     await store.plaintext.drop(message.id);
+    const expiries = await store.meta.get(EXPIRIES_KEY);
+    if (expiries && expiries[message.id]) {
+        delete expiries[message.id];
+        await store.meta.set(EXPIRIES_KEY, expiries);
+    }
     const key = conversationKey(message);
     const ids = await store.conversations.load(key);
     if (ids.includes(message.id)) await store.conversations.save(key, ids.filter(id => id !== message.id));
     const preview = await store.previews.load(key);
     if (preview && preview.messageId === message.id) await store.previews.drop(key);
+}
+
+/*
+ * Исчезающие сообщения на устройстве. Сервер стирает сообщение в срок и
+ * сообщает об этом сокетом, но событие приходит только в открытый чат —
+ * в остальных расшифрованный текст и превью лежали бы в IndexedDB, пока
+ * чат не откроют. Поэтому срок хранится рядом с текстом, и устройство
+ * стирает истёкшее само: при запуске и по таймеру (sweepExpired).
+ */
+const EXPIRIES_KEY = 'expiries';
+
+async function rememberExpiry(message) {
+    const at = Date.parse(message.expires_at);
+    if (!Number.isFinite(at)) return;
+    const expiries = (await store.meta.get(EXPIRIES_KEY)) || {};
+    expiries[message.id] = { at, room_id: message.room_id || null, chat_id: message.chat_id || null };
+    await store.meta.set(EXPIRIES_KEY, expiries);
+}
+
+/** Стереть всё, у чего вышел срок. Возвращает id стёртых сообщений. */
+export function sweepExpired(now = Date.now()) {
+    return serialized(async () => {
+        const expiries = (await store.meta.get(EXPIRIES_KEY)) || {};
+        const gone = [];
+        for (const [id, entry] of Object.entries(expiries)) {
+            if (entry.at > now) continue;
+            await forgetNow({ id: Number(id), room_id: entry.room_id, chat_id: entry.chat_id });
+            delete expiries[id];
+            gone.push(Number(id));
+        }
+        if (gone.length) await store.meta.set(EXPIRIES_KEY, expiries);
+        return gone;
+    });
 }
 
 /** Своё отправленное: конверт себе не шлётся, текст кладём сами. */
@@ -898,15 +1079,14 @@ async function trustedDevices(userId) {
             continue;
         }
         const status = await identityStatus(userId, d.device_id, d.identity_signing_key, d.identity_dh_key);
-        if (status === 'changed') {
+        const binding = await identityBinding(userId, d.device_id, d);
+        if (status === 'changed' || binding === 'bad') {
             conflicts.push(d.device_id);
             const known = await store.identities.load(userId, d.device_id);
-            devices.push({ deviceId: d.device_id, signingKey: known.signingKey, dhKey: known.dhKey });
+            if (known) devices.push({ deviceId: d.device_id, signingKey: known.signingKey, dhKey: known.dhKey });
             continue;
         }
-        if (status === 'new') {
-            await rememberIdentity(userId, d.device_id, d.identity_signing_key, d.identity_dh_key);
-        }
+        await rememberIdentity(userId, d.device_id, d.identity_signing_key, d.identity_dh_key, binding === 'ok');
         devices.push({ deviceId: d.device_id, signingKey: d.identity_signing_key, dhKey: d.identity_dh_key });
     }
 

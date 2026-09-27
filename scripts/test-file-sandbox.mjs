@@ -8,7 +8,8 @@
 //     время отвечает;
 //   - одновременно работает не больше двух процессов;
 //   - имя ошибки доходит из процесса: «PDF повреждён» не превращается в
-//     безликую ошибку.
+//     безликую ошибку;
+//   - процессу не передаются секреты сервера (DATABASE_URL, SESSION_SECRET).
 //
 // Без сервера и без базы. Запуск: node scripts/test-file-sandbox.mjs
 
@@ -73,6 +74,15 @@ const spans = await Promise.all(Array.from({ length: 5 }, () => runLimited(nap, 
 let peak = 0;
 for (const [start] of spans) peak = Math.max(peak, spans.filter(([s, e]) => s <= start && start < e).length);
 check('одновременно не больше двух процессов', peak === 2, `пик ${peak}`);
+
+/* ------------------------- окружение ------------------------- */
+
+process.env.SESSION_SECRET = 'секрет-сервера';
+process.env.DATABASE_URL = 'postgres://user:пароль@db/nyxo';
+const envTask = task('env.js', `process.send({ ok: true, result: Object.keys(process.env) });`);
+const keys = await runLimited(envTask, {});
+check('процессу очистки не достаются секреты сервера',
+    !keys.includes('SESSION_SECRET') && !keys.includes('DATABASE_URL') && keys.includes('PATH'), keys.join(', '));
 
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(fails ? `\n${fails} проверок провалено` : '\nвсе проверки пройдены');

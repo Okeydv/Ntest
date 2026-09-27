@@ -84,6 +84,13 @@
     --accent-strong: #5b49f0;
     /* Низ своего пузыря: белое время на нём держит контраст 4,5+. */
     --accent-deep: #4a38dc;
+    /* Тост — противоположного теме цвета (см. .toast). */
+    --toast-bg: #f2f3f7;
+    --toast-ink: #12131a;
+    --toast-ink-2: #4a4d5c;
+    --toast-ok: #0a8566;
+    --toast-danger: #d01f39;
+    --toast-action: #4a38dc;
     --accent-2: #a86cf5;
     --accent-ink: #ffffff;
     --brand-from: #8b7bff;
@@ -141,6 +148,12 @@
 }
 
 [data-theme="light"] {
+    --toast-bg: #1b1b27;
+    --toast-ink: #f2f3f7;
+    --toast-ink-2: #b7b9c7;
+    --toast-ok: #2dd4a7;
+    --toast-danger: #ff7a8a;
+    --toast-action: #b3a8ff;
     color-scheme: light;
 
     --bg: #eef0f5;
@@ -898,8 +911,10 @@ input.is-invalid:focus {
     z-index: 1;
 }
 
+/* --sidebar-w ставит перетаскивание границы (setupSidebarResize). Больше
+   половины окна список не занимает, как его ни тяни. */
 .sidebar {
-    width: 21.25rem;
+    width: min(var(--sidebar-w, 21.25rem), 50vw);
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
@@ -1002,6 +1017,25 @@ input.is-invalid:focus {
     text-overflow: ellipsis;
 }
 
+.chat-item .chat-top {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    margin-bottom: 0.125rem;
+}
+.chat-item .chat-top .chat-name {
+    flex: 1;
+    min-width: 0;
+    margin-bottom: 0;
+}
+.chat-time {
+    flex: none;
+    font-size: var(--fs-xs);
+    font-variant-numeric: tabular-nums;
+    color: var(--text-3);
+}
+.chat-item.active .chat-time { color: var(--text-2); }
+
 .chat-item .chat-last {
     font-size: var(--fs-sm);
     line-height: 1.4;
@@ -1041,11 +1075,82 @@ input.is-invalid:focus {
     border-top: 1px solid var(--border);
 }
 
+/* Граница списка: полоска шире линии, чтобы в неё было легко попасть. */
+.sidebar-resizer {
+    position: relative;
+    z-index: 3;
+    flex: none;
+    width: 0.5rem;
+    margin-inline: -0.25rem;
+    cursor: col-resize;
+    touch-action: none;
+}
+.sidebar-resizer::after {
+    content: '';
+    position: absolute;
+    inset-block: 0;
+    left: calc(50% - 1px);
+    width: 2px;
+    transition: background var(--dur-1) var(--ease);
+}
+@media (hover: hover) {
+    .sidebar-resizer:hover::after { background: var(--accent-line); }
+}
+.sidebar-resizer:focus-visible { outline: none; }
+.sidebar-resizer:focus-visible::after,
+.is-resizing .sidebar-resizer::after { background: var(--accent); }
+.is-resizing { cursor: col-resize; user-select: none; }
+
+/* Компактный список — 76px, только аватары и счётчики. Название чата
+   остаётся для экранного диктора и всплывает подсказкой. */
+@media (min-width: 641px) {
+    .sidebar.is-compact .brand-word,
+    .sidebar.is-compact .search-container,
+    .sidebar.is-compact .btn-label { display: none; }
+    .sidebar.is-compact .sidebar-header {
+        flex-direction: column;
+        padding-inline: 0;
+    }
+    .sidebar.is-compact .chats-list { padding: 0.5rem 0.375rem; }
+    .sidebar.is-compact .chat-item {
+        position: relative;
+        justify-content: center;
+        padding: 0.5rem;
+    }
+    .sidebar.is-compact .chat-avatar-small {
+        width: 2.75rem;
+        height: 2.75rem;
+        font-size: 1rem;
+    }
+    .sidebar.is-compact .chat-item .chat-info {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+    }
+    .sidebar.is-compact .chat-badge {
+        position: absolute;
+        top: 0.125rem;
+        right: 0.125rem;
+    }
+    .sidebar.is-compact .sidebar-footer {
+        flex-direction: column;
+        padding-inline: 0;
+    }
+}
+
+@media (max-width: 640px) {
+    .sidebar-resizer { display: none; }
+}
+
 /* ============================================================================
    8. ЧАТ
    ========================================================================= */
 
 .main-content {
+    position: relative;
     flex: 1;
     min-width: 0;
     display: flex;
@@ -1230,6 +1335,14 @@ input.is-invalid:focus {
 
 /* Появляются только новые сообщения. История при открытии чата не
    анимируется: полсотни пузырей, въезжающих разом, — это не отклик, а шум. */
+.message.is-collapsing {
+    overflow: hidden;
+    opacity: 0;
+    padding-block: 0;
+    margin-block: 0;
+    transition: height 150ms var(--ease), opacity 150ms var(--ease), padding 150ms var(--ease);
+}
+
 .message.is-new {
     animation: messageIn var(--dur-2) var(--ease) both;
 }
@@ -1332,6 +1445,13 @@ input.is-invalid:focus {
 
 /* Системное сообщение — кто вошёл, вышел, сменил код. Не пузырь: это
    событие чата, а не чья-то реплика, и отвечать на него нечего. */
+.message-system .icon {
+    width: 0.8125rem;
+    height: 0.8125rem;
+    margin-right: 0.3125rem;
+    vertical-align: -0.125rem;
+}
+
 .message-system {
     align-self: center;
     max-width: 80%;
@@ -1396,6 +1516,8 @@ input.is-invalid:focus {
     aspect-ratio: 3 / 2;
     border-radius: var(--r-md);
 }
+/* Размеры известны (едут в данных вложения) — место ровно под картинку. */
+.attachment-skeleton.is-sized { max-width: 100%; }
 .message-status { font-weight: 600; }
 
 .message-image,
@@ -1408,6 +1530,7 @@ input.is-invalid:focus {
 }
 
 .message-image {
+    height: auto;
     cursor: pointer;
     transition: transform var(--dur-2) var(--ease);
 }
@@ -1462,6 +1585,135 @@ input.is-invalid:focus {
     background: var(--bubble-inset);
     font-size: var(--fs-sm);
     line-height: 1.4;
+}
+
+/* Ждёт ключей собеседника: пузырь бледнее, под ним — часы и «Отменить». */
+.message.is-pending { opacity: 0.75; }
+.message-pending {
+    justify-content: space-between;
+    gap: 0.75rem;
+    font-size: 0.75rem;
+}
+.message-pending span { display: inline-flex; align-items: center; gap: 0.3rem; }
+.message-pending .icon { width: 0.875rem; height: 0.875rem; }
+.message.sent .pending-cancel { color: inherit; font-weight: 600; }
+
+/* Кому в группе сообщение не ушло. */
+.message-undelivered {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    margin-top: 0.375rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+.message-undelivered .icon { width: 0.875rem; height: 0.875rem; flex: none; }
+
+/* Цитата ведёт к исходному сообщению. */
+.reply-to[data-reply-id] { cursor: pointer; }
+@media (hover: hover) {
+    .reply-to[data-reply-id]:hover { background: var(--bubble-inset-hover); }
+}
+
+/* Новая реакция чуть вырастает — 120 мс, без пружины. */
+.reaction.is-new { animation: reactionIn 120ms var(--ease) both; }
+@keyframes reactionIn {
+    from { opacity: 0; transform: scale(0.9); }
+    to { opacity: 1; transform: none; }
+}
+
+/* Подряд идущие сообщения одного автора — группа: ближе друг к другу,
+   углы со стороны автора скруглены меньше. */
+.message.is-continuation { margin-top: -0.5rem; }
+.message.sent.is-continuation { border-top-right-radius: var(--r-xs); }
+.message.received.is-continuation { border-top-left-radius: var(--r-xs); }
+
+/* Переход по цитате: исходное сообщение коротко подсвечивается. */
+.message.is-highlighted { animation: highlight 1.6s var(--ease); }
+@keyframes highlight {
+    0%, 40% { box-shadow: 0 0 0 3px var(--accent); }
+    100% { box-shadow: 0 0 0 3px transparent; }
+}
+
+.unread-separator {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    color: var(--accent);
+}
+.unread-separator::before,
+.unread-separator::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: currentColor;
+    opacity: 0.4;
+}
+
+/* «↓» к новым: висит над лентой у поля ввода и места в раскладке не
+   занимает (отрицательный отступ сверху равен его высоте с зазором). */
+.jump-down {
+    position: relative;
+    z-index: 2;
+    flex: none;
+    align-self: flex-end;
+    display: grid;
+    place-items: center;
+    width: 2.75rem;
+    height: 2.75rem;
+    margin: -3.5rem 1.25rem 0.75rem 0;
+    border: 1px solid var(--border);
+    border-radius: 50%;
+    background: var(--layer-3);
+    color: var(--text);
+    box-shadow: var(--sh-1);
+    cursor: pointer;
+    animation: fadeIn var(--dur-2) var(--ease) both;
+}
+.jump-down .icon { width: 1.25rem; height: 1.25rem; transform: rotate(-90deg); }
+.jump-down-count {
+    position: absolute;
+    top: -0.375rem;
+    right: -0.25rem;
+    min-width: 1.25rem;
+    padding: 0 0.3rem;
+    border-radius: var(--r-pill);
+    background: var(--accent-strong);
+    color: var(--accent-ink);
+    font-size: 0.6875rem;
+    font-weight: 700;
+    line-height: 1.25rem;
+    text-align: center;
+}
+.jump-down-count:empty { display: none; }
+
+/* Скелетон ленты, пока грузится история. */
+.message-skeleton {
+    width: var(--w, 50%);
+    max-width: min(70%, 34rem);
+    height: 2.75rem;
+    border-radius: var(--r-xl);
+    background: var(--skeleton-base);
+}
+.message-skeleton.received { align-self: flex-start; }
+.message-skeleton.sent { align-self: flex-end; }
+
+/* Реакции в меню сообщения — одной строкой под пунктами. */
+.reaction-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.125rem;
+    margin-top: 0.25rem;
+    padding-top: 0.25rem;
+    border-top: 1px solid var(--border);
+}
+.reaction-row .reaction-choice {
+    justify-content: center;
+    width: auto;
+    padding: 0.375rem 0.5rem;
+    font-size: 1.125rem;
 }
 
 .reply-to-author {
@@ -1542,13 +1794,121 @@ input.is-invalid:focus {
     white-space: nowrap;
 }
 
+/* Кнопки — у нижнего края: поле растёт вверх вместе с текстом. */
 .input-wrapper {
     display: flex;
-    align-items: center;
+    align-items: flex-end;
     gap: 0.625rem;
 }
 
-.input-wrapper input { flex: 1; min-width: 0; }
+.input-wrapper textarea {
+    flex: 1;
+    min-width: 0;
+    max-height: 10.5rem;
+    padding: 0.8125rem 1rem;
+    border: 1px solid var(--border-2);
+    border-radius: var(--r-md);
+    background: var(--field);
+    font-family: inherit;
+    font-size: var(--fs-body);
+    line-height: 1.4;
+    letter-spacing: var(--tr-body);
+    color: var(--text);
+    resize: none;
+    overflow-y: auto;
+    transition:
+        border-color var(--dur-2) var(--ease),
+        background var(--dur-2) var(--ease),
+        box-shadow var(--dur-2) var(--ease);
+}
+.input-wrapper textarea::placeholder { color: var(--text-3); }
+.input-wrapper textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+    background: var(--field-focus);
+    box-shadow: 0 0 0 3px var(--accent-ring);
+}
+@media (pointer: coarse), (max-width: 640px) {
+    .input-wrapper textarea { font-size: max(16px, var(--fs-body)); }
+}
+
+.upload-status {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    margin-bottom: 0.75rem;
+    padding: 0.5rem 0.625rem;
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    background: var(--layer-3);
+    font-size: var(--fs-sm);
+    color: var(--text-2);
+    animation: fadeIn var(--dur-1) var(--ease) both;
+}
+.upload-status > .icon { flex: none; width: 1rem; height: 1rem; color: var(--accent); }
+.upload-status-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.upload-progress {
+    flex: 0 1 8rem;
+    height: 0.375rem;
+    border: none;
+    border-radius: var(--r-pill);
+    background: var(--skeleton-base);
+    overflow: hidden;
+    appearance: none;
+}
+.upload-progress::-webkit-progress-bar { background: var(--skeleton-base); }
+.upload-progress::-webkit-progress-value { background: var(--accent-strong); }
+.upload-progress::-moz-progress-bar { background: var(--accent-strong); }
+.upload-status-percent {
+    flex: none;
+    min-width: 2.75rem;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-3);
+}
+
+/* Поверх переписки, пока над ней держат файл. Мышь проходит насквозь —
+   иначе dragleave срабатывал бы на самой подсказке. */
+.drop-zone {
+    position: absolute;
+    inset: 0.75rem;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    border: 2px dashed var(--accent);
+    border-radius: var(--r-xl);
+    background: color-mix(in srgb, var(--layer-1) 88%, transparent);
+    font-weight: 600;
+    color: var(--text);
+    pointer-events: none;
+    animation: fadeIn var(--dur-1) var(--ease) both;
+}
+.drop-zone .icon { width: 1.25rem; height: 1.25rem; color: var(--accent); }
+
+.send-files-list {
+    display: grid;
+    gap: 0.375rem;
+    max-height: 12rem;
+    margin: 0 0 1rem;
+    padding: 0;
+    overflow-y: auto;
+    list-style: none;
+    font-size: var(--fs-sm);
+    color: var(--text-2);
+}
+.send-files-list li {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 
 /* ============================================================================
    9. ПУСТОЙ ЭКРАН
@@ -1589,6 +1949,71 @@ input.is-invalid:focus {
     max-width: 22rem;
     color: var(--text-3);
     margin-bottom: 1.25rem;
+}
+
+.plaintext-notice {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.625rem 1.5rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--layer-2);
+    font-size: var(--fs-sm);
+    color: var(--text-2);
+}
+.plaintext-notice .icon { flex: none; width: 1rem; height: 1rem; color: var(--danger); }
+@media (max-width: 640px) {
+    .plaintext-notice { padding-inline: 1rem; }
+}
+
+/* Пустая группа: вместо ленты — приглашение. Если история уже есть,
+   приглашение встаёт полосой над полем ввода. */
+.room-empty {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    padding: 1.5rem;
+    text-align: center;
+}
+.room-empty-icon {
+    display: grid;
+    place-items: center;
+    width: 4rem;
+    height: 4rem;
+    border-radius: 50%;
+    background: var(--accent-soft);
+    color: var(--accent);
+}
+.room-empty-icon .icon { width: 1.75rem; height: 1.75rem; }
+.room-empty h2 { margin-bottom: 0.375rem; }
+.room-empty p {
+    max-width: 24rem;
+    color: var(--text-3);
+}
+.room-empty.is-strip {
+    flex: none;
+    flex-direction: row;
+    gap: 0.875rem;
+    padding: 0.75rem 1.5rem;
+    border-top: 1px solid var(--border);
+    background: var(--layer-2);
+    text-align: left;
+}
+.room-empty.is-strip .room-empty-icon { width: 2.5rem; height: 2.5rem; flex: none; }
+.room-empty.is-strip .room-empty-icon .icon { width: 1.25rem; height: 1.25rem; }
+.room-empty.is-strip .room-empty-text { flex: 1; min-width: 0; }
+.room-empty.is-strip h2 { margin: 0; font-size: var(--fs-body); }
+.room-empty.is-strip p { font-size: var(--fs-sm); }
+@media (max-width: 640px) {
+    .room-empty.is-strip { flex-wrap: wrap; padding-inline: 1rem; }
+}
+
+.input-wrapper textarea:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
 }
 
 /* ============================================================================
@@ -1834,7 +2259,73 @@ dialog.modal::backdrop {
 .invite-actions .btn { flex: 1 1 auto; }
 
 .link-body { text-align: center; }
-.link-body .logout-text { text-align: left; }
+.link-body /* Цвета палитры аватара — здесь, а не атрибутом style в разметке: CSP
+   больше не разрешает встроенные стили ('unsafe-inline'). */
+.color-option[data-color="#6D5EFC"] { background: #6D5EFC; }
+.color-option[data-color="#A86CF5"] { background: #A86CF5; }
+.color-option[data-color="#4FACFE"] { background: #4FACFE; }
+.color-option[data-color="#2DD4A7"] { background: #2DD4A7; }
+.color-option[data-color="#FA709A"] { background: #FA709A; }
+.color-option[data-color="#F5A524"] { background: #F5A524; }
+
+.security-list {
+    display: grid;
+    gap: 0.375rem;
+    max-height: 12rem;
+    overflow-y: auto;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+.security-item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    font-size: var(--fs-sm);
+}
+.security-item.is-warn .security-what { color: var(--danger); }
+.security-meta { font-size: var(--fs-xs); color: var(--text-3); }
+
+.toggle-row {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    font-size: var(--fs-body);
+    cursor: pointer;
+}
+.toggle-row input { width: 1.125rem; height: 1.125rem; accent-color: var(--accent); flex: none; }
+
+.connection-status {
+    position: fixed;
+    top: calc(0.75rem + env(safe-area-inset-top, 0px));
+    left: 50%;
+    z-index: 60;
+    transform: translateX(-50%);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.875rem;
+    border-radius: var(--r-pill);
+    background: var(--text);
+    color: var(--layer-1);
+    font-size: var(--fs-sm);
+    font-weight: 500;
+    box-shadow: var(--sh-2, 0 6px 18px rgba(0, 0, 0, 0.25));
+}
+.connection-status[hidden] { display: none; }
+.connection-dot {
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 50%;
+    background: var(--warn, #f5a524);
+    animation: connectionPulse 1.2s ease-in-out infinite;
+}
+@keyframes connectionPulse { 50% { opacity: 0.3; } }
+
+.logout-text { text-align: left; }
 .link-qr {
     display: block;
     width: min(16rem, 100%);
@@ -1982,12 +2473,12 @@ dialog.modal::backdrop {
     gap: 0.5rem;
     max-width: min(36rem, calc(100vw - 2.5rem));
     padding: 0.75rem 1.125rem;
-    border: 1px solid var(--border-2);
+    border: 0;
     border-radius: var(--r-md);
-    background: var(--layer-4);
+    background: var(--toast-bg);
     font-size: var(--fs-sm);
     font-weight: 500;
-    color: var(--text);
+    color: var(--toast-ink);
     box-shadow: var(--sh-3);
     animation: toastIn var(--dur-2) var(--ease) both;
 }
@@ -1996,9 +2487,9 @@ dialog.modal::backdrop {
    браузерное «закрытый popover не показывается». */
 .toast:popover-open { display: flex; }
 
-/* В открытом окне поле ввода недоступно, а поднятый тост закрывал бы
-   кнопки внизу окна — там он у самого края экрана. */
-dialog.modal .toast { bottom: calc(1.75rem + env(safe-area-inset-bottom, 0px)); }
+/* В открытом окне поле ввода недоступно, а тост внизу закрывал бы кнопки
+   окна — там он у верхнего края экрана. */
+dialog.modal .toast { top: calc(1rem + env(safe-area-inset-top, 0px)); bottom: auto; }
 
 .toast-text { min-width: 0; }
 
@@ -2011,7 +2502,7 @@ dialog.modal .toast { bottom: calc(1.75rem + env(safe-area-inset-bottom, 0px)); 
     background: none;
     font: inherit;
     font-weight: 600;
-    color: var(--accent);
+    color: var(--toast-action);
     cursor: pointer;
 }
 
@@ -2019,35 +2510,27 @@ dialog.modal .toast { bottom: calc(1.75rem + env(safe-area-inset-bottom, 0px)); 
     .toast-action:hover { background: var(--accent-soft); }
 }
 
-.toast-close { flex-shrink: 0; margin: -0.25rem -0.5rem -0.25rem 0; }
+.toast-close { flex-shrink: 0; margin: -0.25rem -0.5rem -0.25rem 0; color: var(--toast-ink-2); background: none; border-color: transparent; }
 
 @keyframes toastIn {
     from { opacity: 0; transform: translateY(1rem); }
     to { opacity: 1; transform: none; }
 }
 
-/* Тип тоста — цветная полоса слева, а не заливка всей плашки: текст остаётся
-   на нейтральном слое и читается одинаково в обеих темах. */
-.toast::before {
-    content: '';
-    width: 0.25rem;
-    align-self: stretch;
-    flex-shrink: 0;
-    margin: -0.75rem 0.25rem -0.75rem -0.5rem;
-    border-radius: var(--r-pill);
-    background: var(--accent);
-}
-
-.toast.success::before { background: var(--ok); }
-.toast.error::before { background: var(--danger); }
-.toast.info::before { background: var(--accent); }
+/* Тост — плашка противоположного теме цвета: на тёмной теме светлая, на
+   светлой тёмная. Её видно поверх любой переписки и окна. Тип — значком,
+   а не цветной полосой. */
+.toast-icon { width: 1.125rem; height: 1.125rem; flex: none; }
+.toast.success .toast-icon { color: var(--toast-ok); }
+.toast.error .toast-icon { color: var(--toast-danger); }
+.toast.info .toast-icon { color: var(--toast-ink-2); }
 
 /* ============================================================================
    13. АДАПТИВ
    ========================================================================= */
 
 @media (max-width: 860px) {
-    .sidebar { width: 17.5rem; }
+    .sidebar { width: min(var(--sidebar-w, 17.5rem), 50vw); }
     .chat-messages { padding: 1.125rem; }
 }
 
@@ -2102,18 +2585,43 @@ dialog.modal .toast { bottom: calc(1.75rem + env(safe-area-inset-bottom, 0px)); 
    14. НАСТРОЙКИ ДВИЖЕНИЯ
    ========================================================================= */
 
+/* «Уменьшить движение» убирает движение, а не плавность: сдвиги,
+   увеличения и прокрутка пропадают, а появление и исчезание остаются
+   короткими затуханиями — без них всё менялось бы скачком. */
 @media (prefers-reduced-motion: reduce) {
     *,
     *::before,
     *::after {
-        animation-duration: 0.01ms !important;
         animation-iteration-count: 1 !important;
-        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
     }
 
-    /* Блик скелетона — единственная анимация, которая несёт смысл
-       («данные грузятся»), поэтому вместо бега он просто гаснет. */
+    .message.is-new,
+    .reaction.is-new,
+    .auth-container,
+    .modal-content,
+    .context-menu,
+    .toast {
+        animation-name: fadeIn !important;
+        animation-duration: var(--dur-1) !important;
+    }
+
+    /* Нажатия и наведения больше не увеличивают и не сдвигают. */
+    .btn, .icon-btn, .message-image, .color-option, .reaction { transform: none !important; }
+    .message.is-highlighted { animation-duration: 1s; }
+
+    /* Блик скелетона — вместо бега он просто гаснет. */
     .skeleton::after { display: none; }
+}
+
+/* На телефоне список не уезжает вбок, а гаснет. */
+@media (prefers-reduced-motion: reduce) and (max-width: 640px) {
+    .sidebar { transition: opacity var(--dur-2) var(--ease), visibility 0s; }
+    .sidebar.hidden-mobile {
+        transform: none;
+        opacity: 0;
+        transition: opacity var(--dur-2) var(--ease), visibility 0s var(--dur-2);
+    }
 }
 
 /* ============================================================================

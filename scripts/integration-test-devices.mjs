@@ -64,8 +64,10 @@ async function uploadKeys(j, opkCount) {
   const dh = crypto.generateKeyPairSync('x25519');
   const spk = crypto.generateKeyPairSync('x25519');
   const spkPub = raw(spk.publicKey);
+  const dhPub = raw(dh.publicKey);
   const r1 = await req(j, 'PUT', '/api/keys/identity',
-    { identity_signing_key: b64(raw(id.publicKey)), identity_dh_key: b64(raw(dh.publicKey)) });
+    { identity_signing_key: b64(raw(id.publicKey)), identity_dh_key: b64(dhPub),
+      identity_dh_signature: b64(crypto.sign(null, Buffer.concat([Buffer.from('nyxo/identity-dh/v1'), dhPub]), id.privateKey)) });
   const r2 = await req(j, 'PUT', '/api/keys/signed-prekey',
     { key_id: 1, public_key: b64(spkPub), signature: b64(crypto.sign(null, spkPub, id.privateKey)) });
   const keys = Array.from({length:opkCount}, (_,i) => ({ key_id:i+1,
@@ -98,6 +100,16 @@ await req(a2, 'POST', '/api/login', { email:'alice@example.com', password:'passw
 const d2 = await req(a2, 'POST', '/api/devices', { name: 'Телефон' });
 check('устройство 2 зарегистрировано у того же аккаунта', d2.json?.success === true);
 check('ключи загружены с устройства 2', (await uploadKeys(a2, 3)).every(s => s === 200));
+
+// Подпись DH-ключа личности — от другого DH-ключа: сервер ключей не примет.
+{
+  const id = crypto.generateKeyPairSync('ed25519');
+  const signedDh = raw(crypto.generateKeyPairSync('x25519').publicKey);
+  const otherDh = raw(crypto.generateKeyPairSync('x25519').publicKey);
+  const r = await req(a2, 'PUT', '/api/keys/identity', { identity_signing_key: b64(raw(id.publicKey)), identity_dh_key: b64(otherDh),
+    identity_dh_signature: b64(crypto.sign(null, Buffer.concat([Buffer.from('nyxo/identity-dh/v1'), signedDh]), id.privateKey)) });
+  check('подпись не от этого DH-ключа — сервер ключей отказывает', r.status === 400, `${r.status} ${JSON.stringify(r.json).slice(0, 80)}`);
+}
 
 // --- пользователь B запрашивает bundle -------------------------------------
 const b = jar();

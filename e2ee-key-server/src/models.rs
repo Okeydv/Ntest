@@ -4,6 +4,10 @@ use serde::{Deserialize, Serialize};
 pub struct IdentityKeysRequest {
     pub identity_signing_key: String, // base64, Ed25519 pub, 32 bytes
     pub identity_dh_key: String,      // base64, X25519 pub, 32 bytes
+    /// base64, Ed25519-подпись IDENTITY_DH_CONTEXT || identity_dh_key.
+    /// Необязательна только для совместимости со старыми клиентами.
+    #[serde(default)]
+    pub identity_dh_signature: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -68,6 +72,7 @@ pub struct DeviceBundle {
     pub device_id: i64,
     pub identity_signing_key: String,
     pub identity_dh_key: String,
+    pub identity_dh_signature: Option<String>,
     pub signed_prekey: SignedPrekeyDto,
     /// None если у устройства временно кончились one-time prekeys.
     /// X3DH в этом случае деградирует (пропускается DH-шаг с OPK) —
@@ -94,6 +99,7 @@ pub struct DeviceIdentity {
     pub device_id: i64,
     pub identity_signing_key: String,
     pub identity_dh_key: String,
+    pub identity_dh_signature: Option<String>,
 }
 
 /// Ответ на запрос identity-ключей: по всем устройствам пользователя.

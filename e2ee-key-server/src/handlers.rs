@@ -27,6 +27,14 @@ pub async fn put_identity_keys(
 ) -> Result<Json<OkResponse>, AppError> {
     let signing_key = decode_pubkey("identity_signing_key", &req.identity_signing_key)?;
     let dh_key = decode_pubkey("identity_dh_key", &req.identity_dh_key)?;
+    let dh_signature = match req.identity_dh_signature.as_deref() {
+        Some(s) => {
+            let sig = decode_signature("identity_dh_signature", s)?;
+            crate::crypto::verify_identity_dh(&signing_key, &dh_key, &sig)?;
+            Some(sig)
+        }
+        None => None,
+    };
 
     match db::insert_identity_keys(
         &state.pool,
@@ -34,6 +42,7 @@ pub async fn put_identity_keys(
         device.device_id,
         &signing_key,
         &dh_key,
+        dh_signature.as_ref(),
     )
     .await?
     {
@@ -164,6 +173,7 @@ pub async fn get_bundle(
                 device_id: b.device_id,
                 identity_signing_key: encode_b64(&b.identity.identity_signing_key),
                 identity_dh_key: encode_b64(&b.identity.identity_dh_key),
+                identity_dh_signature: b.identity.identity_dh_signature.map(|s| encode_b64(&s)),
                 signed_prekey: SignedPrekeyDto {
                     key_id: b.signed_prekey.key_id,
                     public_key: encode_b64(&b.signed_prekey.public_key),
@@ -195,6 +205,7 @@ pub async fn get_identities(
                 device_id,
                 identity_signing_key: encode_b64(&identity.identity_signing_key),
                 identity_dh_key: encode_b64(&identity.identity_dh_key),
+                identity_dh_signature: identity.identity_dh_signature.map(|s| encode_b64(&s)),
             })
             .collect(),
     }))

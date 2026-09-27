@@ -12,6 +12,7 @@ const { pool, dbGet, dbAll, dbRun } = require('../lib/db');
 const { shared } = require('../lib/shared');
 const { stripMetadataInWorker } = require('../lib/metadata-stripper');
 const { getCurrentTime, getSocketRoomKey } = require('../lib/helpers');
+const { E2EE_REQUIRED, ROOM_EMPTY, canWriteTo } = require('../lib/rooms');
 const {
     BLOBS_DIR, BLOB_ID_RE, MAX_BLOB_BYTES, MIN_BLOB_BYTES, ORPHAN_BLOB_TTL_MS, blobPath,
 } = require('../lib/storage');
@@ -116,6 +117,7 @@ module.exports = function registerFileRoutes(app, ctx) {
                 const chat = await dbGet('SELECT id, room_id FROM chats WHERE id = $1 AND user_id = $2',
                     [chatId, req.session.userId]);
                 if (!chat) return res.status(404).json({ success: false, message: 'Чат не найден' });
+                if (!(await canWriteTo(chat, req.session.userId))) return res.status(409).json(ROOM_EMPTY);
 
                 const id = crypto.randomBytes(16).toString('hex');
                 await fs.promises.writeFile(blobPath(id), body, { flag: 'wx' });
@@ -244,6 +246,18 @@ module.exports = function registerFileRoutes(app, ctx) {
             cleanupUploadedFile(file);
             return res.status(400).json({ success: false, message: 'Указан чат' });
         }
+        // До разбора файла: открытый файл уходит только в чат с ботом.
+        try {
+            const target = await dbGet('SELECT is_bot FROM chats WHERE id = $1 AND user_id = $2', [chatId, req.session.userId]);
+            if (target && !target.is_bot) {
+                cleanupUploadedFile(file);
+                return res.status(409).json(E2EE_REQUIRED);
+            }
+        } catch (error) {
+            log.error({ err: error }, 'Room check error');
+            cleanupUploadedFile(file);
+            return res.status(500).json({ success: false, message: 'Ошибка сервера' });
+        }
 
         const uploadedFilePath = path.join(ROOT, 'uploads', file.filename);
         try {
@@ -320,12 +334,11 @@ module.exports = function registerFileRoutes(app, ctx) {
             const senderUsername = senderUser ? senderUser.username : '';
             const senderAvatar = senderUser ? (senderUser.avatar || '') : '';
 
-            // Без .catch сбой базы здесь был бы необработанным отказом промиса —
-            // а он роняет Node целиком.
-            const markStatus = status => dbRun('UPDATE messages SET status = $1 WHERE id = $2', [status, messageId])
-                .catch(err => log.error({ err: err }, 'File message status error'));
-            setTimeout(() => markStatus('delivered'), 1000);
-            setTimeout(() => markStatus('read'), 2000);
+            // «Доставлено» и «прочитано» больше не подделываются таймерами:
+            // их ставят отметки собеседников (lib/read-state.js).
+
+            // Срок чата — и для файлов: раньше они не исчезали вовсе.
+            const expiresAt = await ctx.applyExpiry(messageId, chatId, null);
 
             const fileMessage = {
                 id: messageId, chat_id: Number(chatId), room_id: roomId, user_id: req.session.userId,
@@ -334,6 +347,7 @@ module.exports = function registerFileRoutes(app, ctx) {
                 file_type: fileType, message_type: messageType, sent: true, time, status: 'sent',
                 // Без него получатель не знал дня и показывал время сервера.
                 created_at: createdAt,
+                expires_at: expiresAt,
             };
             io.to(socketRoomKey).emit('newMessage', fileMessage);
             res.json({ success: true, message: fileMessage });

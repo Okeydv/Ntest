@@ -23,6 +23,15 @@ const subtle = globalThis.crypto.subtle;
 // собеседник мог бы набрать текст, который клиент примет за файл. Здесь
 // набранный JSON просто окажется внутри body.
 const PAYLOAD_VERSION = 1;
+
+/*
+ * Сообщение из более новой версии Nyxo: версия заголовка или данных
+ * больше, чем умеет этот клиент. Такое не расшифровывается и не
+ * показывается кашей — только просьбой обновить страницу (ключ сообщения
+ * при этом не расходуется, после обновления оно прочитается).
+ * NEWER_VERSION_MARK — метка, которую возвращает расшифровка вместо текста.
+ */
+export const NEWER_VERSION_MARK = '\u0000nyxo:newer-version';
 const BLOB_ID_RE = /^[0-9a-f]{32}$/;
 const MAX_NAME = 255;
 
@@ -47,6 +56,8 @@ function validFile(p) {
     }
 }
 
+const validSide = n => Number.isInteger(n) && n > 0 && n <= 30000;
+
 /**
  * Разобрать расшифрованную строку.
  *
@@ -57,15 +68,24 @@ function validFile(p) {
  */
 export function decodePayload(str) {
     if (typeof str !== 'string') return null;
+    if (str === NEWER_VERSION_MARK) return { t: 'newer' };
     if (str.startsWith('{')) {
         let parsed = null;
         try { parsed = JSON.parse(str); } catch { /* не JSON — обычный текст */ }
+        if (parsed && Number.isInteger(parsed.v) && parsed.v > PAYLOAD_VERSION) return { t: 'newer' };
         if (parsed && parsed.v === PAYLOAD_VERSION) {
             if (parsed.t === 'text' && typeof parsed.body === 'string') return parsed;
             // Имя назначил отправитель — и его клиент мог быть каким угодно.
             // Расширение по типу и без символов направления текста: иначе
             // «photo‮gpj.exe» скачалось бы с тем, что в нём написано.
-            if (parsed.t === 'file') return validFile(parsed) ? { ...parsed, name: attachmentName(parsed.mime, parsed.name) } : { t: 'invalid' };
+            if (parsed.t === 'file') {
+                if (!validFile(parsed)) return { t: 'invalid' };
+                // Размеры картинки — только подсказка для места под неё:
+                // странные просто отбрасываются.
+                const { w, h, ...rest } = parsed;
+                const sized = validSide(w) && validSide(h) ? { w, h } : {};
+                return { ...rest, ...sized, name: attachmentName(parsed.mime, parsed.name) };
+            }
             return { t: 'invalid' };
         }
     }
@@ -76,6 +96,7 @@ export function decodePayload(str) {
 export function payloadPreview(p) {
     if (!p) return '';
     if (p.t === 'text') return p.body;
+    if (p.t === 'newer') return 'Сообщение из новой версии Nyxo';
     if (p.t === 'file') {
         if (IMAGE_TYPES.has(p.mime)) return 'Фото';
         if (VIDEO_TYPES.has(p.mime)) return 'Видео';
@@ -213,6 +234,7 @@ export async function prepareAttachment(file) {
 export async function encryptAttachment(file) {
     const { blob, mime, name } = await prepareAttachment(file);
     const plain = new Uint8Array(await blob.arrayBuffer());
+    const size = IMAGE_TYPES.has(mime) ? await imageSize(blob) : null;
 
     const key = await subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
     const iv = crypto.getRandomValues(new Uint8Array(12));
@@ -227,8 +249,24 @@ export async function encryptAttachment(file) {
             name: name.slice(0, MAX_NAME),
             mime,
             size: plain.length,
+            ...(size || {}),
         },
     };
+}
+
+// Размеры картинки едут вместе с ключом: получатель заранее оставляет под
+// неё место нужной формы, и лента не прыгает, когда картинка расшифруется.
+async function imageSize(blob) {
+    try {
+        const bitmap = await createImageBitmap(blob);
+        try {
+            return { w: bitmap.width, h: bitmap.height };
+        } finally {
+            bitmap.close();
+        }
+    } catch {
+        return null;
+    }
 }
 
 /* ========================================================================

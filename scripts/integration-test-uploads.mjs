@@ -1,5 +1,6 @@
-// Интеграционный тест незашифрованных вложений (чат с ботом и чаты, где
-// пока не для кого шифровать, идут этим путём).
+// Интеграционный тест незашифрованных вложений. Открытым файл уходит
+// только в чат с ботом; в любой другой чат — только зашифрованным, и сервер
+// открытый файл туда не принимает.
 //
 // Проверяется:
 //   - PDF после очистки цел (таблица xref указывает на объекты), без автора
@@ -70,7 +71,18 @@ async function upload(j, chatId, name, type, bytes) {
     const form = new FormData();
     form.append('file', new Blob([bytes], { type }), name);
     form.append('chatId', String(chatId));
-    const r = await fetch(`${BASE}/api/messages/file`, { method: 'POST', headers: { Cookie: j.header(), 'X-CSRF-Token': j.csrf() }, body: form });
+    const send = () => fetch(`${BASE}/api/messages/file`, { method: 'POST', headers: { Cookie: j.header(), 'X-CSRF-Token': j.csrf() }, body: form });
+    let r;
+    try {
+        r = await send();
+    } catch (error) {
+        // Пока тест синхронно гоняет ffmpeg, сервер закрывает простаивающее
+        // keep-alive соединение (5 с), и запись в него обрывается EPIPE. POST
+        // fetch сам не повторяет; сервер такой запрос не получил — повтор
+        // безопасен.
+        if (!['EPIPE', 'ECONNRESET'].includes(error.cause?.code)) throw error;
+        r = await send();
+    }
     return { status: r.status, json: await r.json().catch(() => null) };
 }
 async function download(j, url) {
@@ -119,11 +131,21 @@ async function pdfWithMetadata() {
 /* ------------------------- участники ------------------------- */
 
 const A = await user('alice');
-const chat = await req(A, 'POST', '/api/chats', { name: 'Документы' });
-const chatIdA = chat.json.chat.id;
-const code = (await req(A, 'GET', `/api/chats/invite/${chatIdA}`)).json.code;
-const B = await user('bob');
-const chatIdB = (await req(B, 'POST', '/api/chats/join', { code })).json.chat.id;
+// Открытые вложения — только в чате с ботом.
+const chatIdA = (await req(A, 'GET', '/api/chats')).json.chats.find(c => c.is_bot).id;
+const chatIdB = chatIdA;
+const B = A;
+
+// В комнату открытый файл не принимается, даже когда в ней есть собеседник.
+const room = await req(A, 'POST', '/api/chats', { name: 'Документы' });
+const roomCode = (await req(A, 'GET', `/api/chats/invite/${room.json.chat.id}`)).json.code;
+const bob = await user('bob');
+await req(bob, 'POST', '/api/chats/join', { code: roomCode });
+const inRoom = await upload(A, room.json.chat.id, 'note.txt', 'text/plain', Buffer.from('заметка'));
+check('открытый файл в комнату — отказ E2EE_REQUIRED', inRoom.status === 409 && inRoom.json?.code === 'E2EE_REQUIRED',
+    JSON.stringify(inRoom.json));
+const plainText = await req(A, 'POST', '/api/messages', { chatId: room.json.chat.id, text: 'открытым' });
+check('и открытый текст — тоже', plainText.status === 409 && plainText.json?.code === 'E2EE_REQUIRED', JSON.stringify(plainText.json));
 
 /* ------------------------- PDF ------------------------- */
 

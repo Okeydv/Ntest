@@ -6,7 +6,9 @@ const { log } = require('../lib/log');
 const { pool, dbGet, dbAll, dbRun } = require('../lib/db');
 const { normalizeExpiry, expiryLabel } = require('../lib/disappearing-messages');
 const { joinLimiter } = require('../lib/rate-limits');
-const { getCurrentTime, generateInviteCodeAsync } = require('../lib/helpers');
+const { onlyStrings, BAD_FIELDS, getCurrentTime, generateInviteCodeAsync } = require('../lib/helpers');
+const { SCOPE, UNREAD_COUNT_SQL, broadcastReceipts } = require('../lib/read-state');
+const { isOnline } = require('../lib/presence');
 
 
 module.exports = function registerChatRoutes(app, ctx) {
@@ -16,16 +18,40 @@ module.exports = function registerChatRoutes(app, ctx) {
         if (!req.session.userId) return res.json({ success: false, message: 'Не авторизован' });
         try {
             const chats = await dbAll(`
-                SELECT c.id, c.name, c.avatar, c.online, c.is_bot, c.room_id, r.code as invite_code,
+                SELECT c.id, c.name, c.avatar, c.is_bot, c.room_id, r.code as invite_code,
+                       (SELECT array_agg(rp.user_id) FROM room_participants rp
+                        WHERE rp.room_id = c.room_id AND rp.user_id <> c.user_id) AS peers,
                        (SELECT text FROM messages WHERE ((c.room_id IS NOT NULL AND room_id = c.room_id) OR (c.room_id IS NULL AND chat_id = c.id)) AND deleted = 0 ORDER BY id DESC LIMIT 1) as last_message,
                        (SELECT created_at FROM messages WHERE ((c.room_id IS NOT NULL AND room_id = c.room_id) OR (c.room_id IS NULL AND chat_id = c.id)) AND deleted = 0 ORDER BY id DESC LIMIT 1) as last_at,
-                       (SELECT COUNT(*) FROM messages m WHERE ((c.room_id IS NOT NULL AND m.room_id = c.room_id) OR (c.room_id IS NULL AND m.chat_id = c.id)) AND m.sent = 0 AND m.status != 'read') as unread
+                       ${UNREAD_COUNT_SQL} as unread, c.last_read_id
                 FROM chats c
                 LEFT JOIN rooms r ON c.room_id = r.id
                 WHERE c.user_id = $1
                 ORDER BY (SELECT MAX(id) FROM messages WHERE ((c.room_id IS NOT NULL AND room_id = c.room_id) OR (c.room_id IS NULL AND chat_id = c.id))) DESC NULLS LAST
             `, [req.session.userId]);
-            res.json({ success: true, chats: chats.map(c => ({ ...c, unread: Number(c.unread) })) });
+            // «В сети» — если в сети хоть кто-то из собеседников; сколько их
+            // всего — для подписи группы. Кто из них в сети сейчас — чтобы
+            // клиент дальше вёл статус по событиям presence.
+            res.json({ success: true, chats: chats.map(({ peers, ...c }) => ({
+                ...c,
+                unread: Number(c.unread),
+                peer_count: (peers || []).length,
+                online: (peers || []).some(isOnline) ? 1 : 0,
+                peer_ids: peers || [],
+                online_ids: (peers || []).filter(isOnline),
+            })) });
+
+            // Список чатов с превью на экране — значит, сообщения до этого
+            // устройства дошли: «доставлено» у собеседников.
+            const moved = await dbAll(
+                `WITH latest AS (
+                     SELECT c.id, (SELECT max(m.id) FROM messages m WHERE ${SCOPE}) AS top
+                     FROM chats c WHERE c.user_id = $1
+                 )
+                 UPDATE chats c SET last_delivered_id = l.top
+                 FROM latest l WHERE c.id = l.id AND l.top > c.last_delivered_id
+                 RETURNING c.room_id`, [req.session.userId]);
+            for (const { room_id: roomId } of moved) await broadcastReceipts(io, roomId);
         } catch (error) {
             log.error({ err: error }, 'Get chats error');
             res.status(500).json({ success: false, message: 'Ошибка загрузки чатов' });
@@ -83,12 +109,17 @@ module.exports = function registerChatRoutes(app, ctx) {
                 [req.params.chatId, req.session.userId]);
             if (!chat) return res.status(404).json({ success: false, message: 'Чат не найден' });
             const devices = await resolveEnvelopeRecipients(chat);
-            // Имена участников — для окна сверки ключей: код безопасности
-            // строится на каждого собеседника, и подписать его нужно по-человечески.
+            // Участники — все, а не только те, у кого есть устройства: иначе
+            // собеседник без ключей пропадал бы молча, и клиент не мог бы
+            // сказать «у Марии нет устройства с шифрованием». Имена — и для
+            // этого, и для окна сверки ключей.
+            const participants = chat.room_id
+                ? await dbAll(
+                    `SELECT u.id, u.username FROM room_participants rp JOIN users u ON u.id = rp.user_id
+                     WHERE rp.room_id = $1 ORDER BY rp.id`, [chat.room_id])
+                : chat.is_bot ? [] : await dbAll('SELECT id, username FROM users WHERE id = $1', [chat.user_id]);
             const userIds = [...new Set(devices.map(d => d.user_id))];
-            const users = userIds.length
-                ? await dbAll('SELECT id, username FROM users WHERE id = ANY($1::int[])', [userIds])
-                : [];
+            const users = participants.filter(u => userIds.includes(u.id));
             res.json({
                 success: true,
                 // room_id нужен клиенту для sender keys: у каждого участника своя
@@ -96,6 +127,7 @@ module.exports = function registerChatRoutes(app, ctx) {
                 room_id: chat.room_id || null,
                 devices: devices.map(d => ({ device_id: d.id, user_id: d.user_id })),
                 users: users.map(u => ({ user_id: u.id, username: u.username })),
+                participants: participants.map(u => ({ user_id: u.id, username: u.username })),
             });
         } catch (error) {
             log.error({ err: error }, 'Chat devices error');
@@ -110,6 +142,7 @@ module.exports = function registerChatRoutes(app, ctx) {
     app.post('/api/chats', async (req, res) => {
         if (!req.session.userId) return res.json({ success: false, message: 'Не авторизован' });
         const { name } = req.body;
+        if (!onlyStrings(name)) return res.status(400).json(BAD_FIELDS);
         if (!name) return res.json({ success: false, message: 'Введите имя чата' });
         if (name.length > 64) return res.json({ success: false, message: 'Название чата не может быть длиннее 64 символов' });
 
@@ -210,6 +243,7 @@ module.exports = function registerChatRoutes(app, ctx) {
         if (!req.session.userId) return res.json({ success: false, message: 'Не авторизован' });
         // Код вводят руками и копируют из переписки: регистр, пробелы и дефисы
         // («k7q2 mx», «K7Q-2MX») не должны мешать.
+        if (!onlyStrings(req.body && req.body.code)) return res.status(400).json(BAD_FIELDS);
         const code = String((req.body && req.body.code) || '').toUpperCase().replace(/[\s-]/g, '');
         if (!code) return res.json({ success: false, message: 'Введите код приглашения' });
 
@@ -229,11 +263,38 @@ module.exports = function registerChatRoutes(app, ctx) {
             const chatName = otherUser ? `Чат с ${otherUser.username}` : room.name;
             const avatar = chatName.charAt(0).toUpperCase();
 
-            await pool.query('INSERT INTO room_participants (room_id, user_id) VALUES ($1, $2)', [room.id, req.session.userId]);
-            const chatResult = await pool.query(
-                'INSERT INTO chats (user_id, room_id, name, avatar, online, is_bot) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
-                [req.session.userId, room.id, chatName, avatar, 0, 0]
-            );
+            // Участник и его запись чата — одной транзакцией, и участник не
+            // записывается дважды: двойное нажатие «Войти» раньше давало два.
+            const client = await pool.connect();
+            let chatResult;
+            try {
+                await client.query('BEGIN');
+                const added = await client.query(
+                    `INSERT INTO room_participants (room_id, user_id) VALUES ($1, $2)
+                     ON CONFLICT (room_id, user_id) DO NOTHING RETURNING id`, [room.id, req.session.userId]);
+                if (added.rowCount === 0) {
+                    // Второй запрос двойного нажатия: первый уже вошёл.
+                    await client.query('ROLLBACK');
+                    res.locals.joined = true;
+                    const existing = await dbGet('SELECT id FROM chats WHERE room_id = $1 AND user_id = $2', [room.id, req.session.userId]);
+                    return res.json(existing ? { success: true, chat: { id: existing.id } } : { success: false, message: 'Чат уже добавлен' });
+                }
+                // Всё, что было в комнате до входа, — не «непрочитанное»:
+                // прочитать это новое устройство всё равно не может.
+                chatResult = await client.query(
+                    `INSERT INTO chats (user_id, room_id, name, avatar, online, is_bot, last_read_id, last_delivered_id)
+                     SELECT $1, $2, $3, $4, $5, $6, top, top
+                     FROM (SELECT COALESCE(max(id), 0) AS top FROM messages WHERE room_id = $2) t
+                     RETURNING id`,
+                    [req.session.userId, room.id, chatName, avatar, 0, 0]
+                );
+                await client.query('COMMIT');
+            } catch (err) {
+                await client.query('ROLLBACK').catch(() => {});
+                throw err;
+            } finally {
+                client.release();
+            }
             res.locals.joined = true;
             await ctx.disappearingMessagesManager.copyRoomExpiry(chatResult.rows[0].id, room.id);
             const me = await dbGet('SELECT username FROM users WHERE id = $1', [req.session.userId]);
@@ -300,6 +361,7 @@ module.exports = function registerChatRoutes(app, ctx) {
 
     app.get('/api/search', async (req, res) => {
         if (!req.session.userId) return res.json({ success: false, message: 'Не авторизован' });
+        if (!onlyStrings(req.query.q)) return res.status(400).json(BAD_FIELDS);
         const query = req.query.q || '';
         // results всегда объект с chats: раньше на пустой запрос отдавался массив,
         // и форма ответа отличалась от успешного случая.
@@ -355,9 +417,10 @@ module.exports = function registerChatRoutes(app, ctx) {
             // Собеседники должны знать, что их сообщения теперь исчезают.
             if (chat.room_id && before !== seconds) {
                 const name = req.session.username || 'Участник';
-                await postSystemMessage({ roomId: chat.room_id, chatId: chat.id, text: seconds
-                    ? `${name} включил(а) исчезающие сообщения: ${expiryLabel(seconds)}`
-                    : `${name} выключил(а) исчезающие сообщения` });
+                const text = !seconds ? `${name} выключил(а) исчезающие сообщения`
+                    : before ? `${name} изменил(а) срок исчезающих сообщений: ${expiryLabel(seconds)}`
+                        : `${name} включил(а) исчезающие сообщения: ${expiryLabel(seconds)}`;
+                await postSystemMessage({ roomId: chat.room_id, chatId: chat.id, text });
                 io.to(`room:${chat.room_id}`).emit('chatExpiryChanged', { room_id: chat.room_id, expirySeconds: seconds });
             }
 
@@ -367,6 +430,44 @@ module.exports = function registerChatRoutes(app, ctx) {
             res.status(500).json({ success: false, message: 'Ошибка настройки автоудаления' });
         }
     });
+
+    /*
+     * Отметки: прочитано (чат открыт, конец переписки на экране) и
+     * доставлено (сообщение пришло на устройство). upTo — id последнего
+     * сообщения, дальше последнего в чате не сдвигается и назад не идёт.
+     */
+    for (const kind of ['read', 'delivered']) {
+        app.post(`/api/chats/:chatId/${kind}`, async (req, res) => {
+            if (!req.session.userId) return res.status(401).json({ success: false, message: 'Не авторизован' });
+            const upTo = Number(req.body && req.body.upTo);
+            if (!Number.isInteger(upTo) || upTo < 1 || upTo > 2147483647) {
+                return res.status(400).json({ success: false, message: 'Некорректный upTo' });
+            }
+            try {
+                const column = kind === 'read' ? 'last_read_id' : 'last_delivered_id';
+                // Прочитанное — заодно и доставленное.
+                const also = kind === 'read' ? ', last_delivered_id = GREATEST(c.last_delivered_id, t.capped)' : '';
+                const updated = await dbGet(
+                    `WITH t AS (
+                         SELECT LEAST($3::int, COALESCE((SELECT max(m.id) FROM messages m WHERE ${SCOPE}), 0)) AS capped
+                         FROM chats c WHERE c.id = $1 AND c.user_id = $2
+                     )
+                     UPDATE chats c SET ${column} = GREATEST(c.${column}, t.capped)${also}
+                     FROM t WHERE c.id = $1 AND c.user_id = $2
+                     RETURNING c.room_id, (SELECT COUNT(*) FROM messages m WHERE ${SCOPE} AND m.id > c.last_read_id
+                         AND m.deleted = 0 AND m.message_type <> 'system'
+                         AND NOT (m.user_id IS NOT DISTINCT FROM c.user_id AND m.sent <> 0))::int AS unread`,
+                    [req.params.chatId, req.session.userId, upTo]
+                );
+                if (!updated) return res.status(404).json({ success: false, message: 'Чат не найден' });
+                res.json({ success: true, unread: updated.unread });
+                await broadcastReceipts(io, updated.room_id);
+            } catch (error) {
+                log.error({ err: error }, 'Mark read error');
+                if (!res.headersSent) res.status(500).json({ success: false, message: 'Ошибка отметки' });
+            }
+        });
+    }
 
     app.get('/api/chats/:chatId/settings', async (req, res) => {
         if (!req.session.userId) return res.json({ success: false, message: 'Не авторизован' });

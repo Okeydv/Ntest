@@ -6,7 +6,10 @@ const { log } = require('../lib/log');
 const { pool, dbGet, dbAll, dbRun } = require('../lib/db');
 const { normalizeExpiry } = require('../lib/disappearing-messages');
 const { sanitizeText } = require('../lib/privacy');
-const { getCurrentTime, getSocketRoomKey } = require('../lib/helpers');
+const { onlyStrings, BAD_FIELDS, getCurrentTime, getSocketRoomKey } = require('../lib/helpers');
+const { receiptsFor, statusFor } = require('../lib/read-state');
+const { E2EE_REQUIRED, ROOM_EMPTY, canWriteTo } = require('../lib/rooms');
+const { plaintextNotice } = require('../lib/plaintext-purge');
 const { BLOB_ID_RE, MAX_BLOBS_PER_MESSAGE, purgeMessageContent } = require('../lib/storage');
 
 
@@ -113,7 +116,7 @@ module.exports = function registerMessageRoutes(app, ctx) {
     // чата. Возвращает момент исчезновения или null.
     async function applyExpiry(messageId, chatId, expiry) {
         const seconds = expiry || (await ctx.disappearingMessagesManager.getChatSettings(chatId))?.default_message_expiry;
-        return seconds ? ctx.disappearingMessagesManager.setMessageExpiry(messageId, seconds, false) : null;
+        return seconds ? ctx.disappearingMessagesManager.setMessageExpiry(messageId, seconds) : null;
     }
 
     function expiryFrom(value) {
@@ -175,6 +178,7 @@ module.exports = function registerMessageRoutes(app, ctx) {
         try {
             const chat = await dbGet('SELECT * FROM chats WHERE id = $1 AND user_id = $2', [chatId, req.session.userId]);
             if (!chat) return res.status(404).json({ success: false, message: 'Чат не найден' });
+            if (!(await canWriteTo(chat, req.session.userId))) return res.status(409).json(ROOM_EMPTY);
 
             if (groupPayload && !chat.room_id) {
                 return res.status(400).json({ success: false, message: 'Групповое шифрование — только для комнат' });
@@ -454,20 +458,23 @@ module.exports = function registerMessageRoutes(app, ctx) {
             const hasMore = messages.length > limit;
             messages = messages.slice(0, limit).reverse();
 
-            // Прочитанным чат отмечается, когда открыли его конец, а не когда
-            // долистали до старых сообщений.
-            const markRead = () => before === null && dbRun(chat.room_id
-                ? 'UPDATE messages SET status = $1 WHERE room_id = $2 AND sent = 0'
-                : 'UPDATE messages SET status = $1 WHERE chat_id = $2 AND sent = 0', ['read', selectParam]);
+            // Прочитанным чат отмечает клиент (POST /api/chats/:id/read), когда
+            // конец переписки у него на экране, — открыть историю ещё не
+            // значит прочитать. Статусы своих сообщений — по отметкам
+            // собеседников (lib/read-state.js). С ботом отвечает сервер —
+            // значит, прочитано.
+            const receipts = chat.room_id ? await receiptsFor(chat.room_id, req.session.userId)
+                : chat.is_bot ? { read: 2147483647, delivered: 2147483647 } : null;
 
             // Срок исчезающих сообщений чата — вместе с первой страницей.
             const expirySeconds = before === null
                 ? (await ctx.disappearingMessagesManager.getChatSettings(chat.id))?.default_message_expiry || null
                 : undefined;
+            // Старый открытый текст в комнате ждёт чистки — плашка в чате.
+            const plaintextPurge = before === null ? await plaintextNotice(chat.room_id) : undefined;
 
             if (messages.length === 0) {
-                await markRead();
-                return res.json({ success: true, messages: [], hasMore: false, chat, expirySeconds });
+                return res.json({ success: true, messages: [], hasMore: false, chat, expirySeconds, plaintextPurge });
             }
 
             const messageIds = messages.map(m => m.id);
@@ -541,6 +548,7 @@ module.exports = function registerMessageRoutes(app, ctx) {
 
             messages = messages.map(m => ({
                 ...m,
+                status: statusFor(m.id, receipts),
                 reactions: reactionsMap[m.id] || [],
                 group: m.encrypted ? (groupMap[m.id] || null) : undefined,
                 // Для зашифрованного сообщения без конверта клиент обязан
@@ -551,9 +559,7 @@ module.exports = function registerMessageRoutes(app, ctx) {
                 reply_to: m.reply_to_id ? { id: m.reply_to_id, text: m.reply_to_text, deleted: Number(m.reply_to_deleted) === 1, sender_username: m.reply_to_sender_username, sender_avatar: m.reply_to_sender_avatar } : null
             }));
 
-            await markRead();
-
-            res.json({ success: true, messages, hasMore, chat, keyEnvelopes, expirySeconds });
+            res.json({ success: true, messages, hasMore, chat, keyEnvelopes, expirySeconds, plaintextPurge });
         } catch (error) {
             log.error({ err: error }, 'Get messages error');
             res.status(500).json({ success: false, message: 'Ошибка загрузки сообщений' });
@@ -563,12 +569,14 @@ module.exports = function registerMessageRoutes(app, ctx) {
     app.post('/api/messages', async (req, res) => {
         if (!req.session.userId) return res.json({ success: false, message: 'Не авторизован' });
         const { chatId, text, replyToId, expirySeconds } = req.body;
+        if (!onlyStrings(text)) return res.status(400).json(BAD_FIELDS);
         if (!text || text.trim() === '' || !chatId) return res.json({ success: false, message: 'Введите текст сообщения' });
         if (text.length > 4000) return res.json({ success: false, message: 'Сообщение не может быть длиннее 4000 символов' });
 
         try {
             const chat = await dbGet('SELECT * FROM chats WHERE id = $1 AND user_id = $2', [chatId, req.session.userId]);
             if (!chat) return res.json({ success: false, message: 'Чат не найден' });
+            if (!chat.is_bot) return res.status(409).json(E2EE_REQUIRED);
             const reply = await replyTargetFor(chat, replyToId);
             if (reply.error) return res.json({ success: false, message: reply.error });
             const replyTo = reply.id;
@@ -597,6 +605,8 @@ module.exports = function registerMessageRoutes(app, ctx) {
 
             const messageForSocket = {
                 ...fullMessage, sender_username: fullMessage.username, sender_avatar: fullMessage.user_avatar, expires_at: expiresAt,
+                // Бот читает сразу; в остальных чатах статус сдвинут отметки.
+                status: chat.is_bot ? 'read' : 'sent',
             };
             io.to(socketRoomKey).emit('newMessage', messageForSocket);
             res.json({ success: true, message: messageForSocket });
@@ -639,6 +649,7 @@ module.exports = function registerMessageRoutes(app, ctx) {
         if (!req.session.userId) return res.json({ success: false, message: 'Не авторизован' });
         const { messageId } = req.params;
         const { text } = req.body;
+        if (!onlyStrings(text)) return res.status(400).json(BAD_FIELDS);
         if (!text || text.trim() === '') return res.json({ success: false, message: 'Текст не может быть пустым' });
         if (text.length > 4000) return res.json({ success: false, message: 'Сообщение не может быть длиннее 4000 символов' });
 
@@ -654,6 +665,10 @@ module.exports = function registerMessageRoutes(app, ctx) {
             if (message.encrypted) {
                 return res.status(409).json({ success: false, message: 'Зашифрованные сообщения нельзя редактировать' });
             }
+            // Новый текст — открытый: править так можно только в чате с ботом.
+            // Старое открытое сообщение в комнате (до шифрования) не правится.
+            const where = await dbGet('SELECT is_bot FROM chats WHERE id = $1', [message.chat_id]);
+            if (message.room_id || !where || !where.is_bot) return res.status(409).json(E2EE_REQUIRED);
             const editedAt = new Date().toISOString();
             const trimmedText = text.trim();
             await dbRun('UPDATE messages SET text = $1, edited_at = $2 WHERE id = $3', [trimmedText, editedAt, messageId]);
@@ -743,6 +758,17 @@ module.exports = function registerMessageRoutes(app, ctx) {
     // эмодзи из этого списка.
     const ALLOWED_REACTION_EMOJIS = new Set(['👍', '❤️', '😂', '😢', '🔥']);
 
+    // Реакции сообщения — всем в его чате: раньше они менялись только у
+    // поставившего и то после перезагрузки.
+    async function broadcastReactions(messageId) {
+        const message = await dbGet('SELECT chat_id, room_id FROM messages WHERE id = $1', [messageId]);
+        if (!message) return;
+        const rows = await dbAll('SELECT DISTINCT emoji FROM reactions WHERE message_id = $1', [messageId]);
+        io.to(getSocketRoomKey(message.chat_id, message.room_id)).emit('reactionsChanged', {
+            id: Number(messageId), chat_id: message.chat_id, room_id: message.room_id, reactions: rows.map(r => r.emoji),
+        });
+    }
+
     app.post('/api/reactions', async (req, res) => {
         if (!req.session.userId) return res.json({ success: false, message: 'Не авторизован' });
         const { messageId, emoji } = req.body;
@@ -755,6 +781,7 @@ module.exports = function registerMessageRoutes(app, ctx) {
             }
             await pool.query('INSERT INTO reactions (message_id, user_id, emoji) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING', [messageId, req.session.userId, emoji]);
             res.json({ success: true });
+            await broadcastReactions(messageId);
         } catch (error) {
             log.error({ err: error }, 'Add reaction error');
             res.status(500).json({ success: false, message: 'Ошибка добавления реакции' });
@@ -773,11 +800,12 @@ module.exports = function registerMessageRoutes(app, ctx) {
             if (!(await userCanAccessMessage(req.session.userId, messageId))) {
                 return res.json({ success: false, message: 'Сообщение недоступно' });
             }
-            await dbRun(
+            const removed = await dbRun(
                 'DELETE FROM reactions WHERE message_id = $1 AND user_id = $2 AND emoji = $3',
                 [messageId, req.session.userId, emoji]
             );
-            res.json({ success: true });
+            res.json({ success: true, removed: removed.rowCount > 0 });
+            if (removed.rowCount > 0) await broadcastReactions(messageId);
         } catch (error) {
             log.error({ err: error }, 'Remove reaction error');
             res.status(500).json({ success: false, message: 'Ошибка удаления реакции' });
@@ -788,7 +816,7 @@ module.exports = function registerMessageRoutes(app, ctx) {
     app.post('/api/messages/:messageId/set-expiry', async (req, res) => {
         if (!req.session.userId) return res.json({ success: false, message: 'Не авторизован' });
         const messageId = Number(req.params.messageId);
-        const { expirySeconds, autoDeleteOnRead } = req.body;
+        const { expirySeconds } = req.body;
 
         if (!Number.isFinite(messageId) || normalizeExpiry(expirySeconds) === null) {
             return res.json({ success: false, message: 'Неверные параметры' });
@@ -803,11 +831,7 @@ module.exports = function registerMessageRoutes(app, ctx) {
                 return res.json({ success: false, message: 'Сообщение не найдено или нет доступа' });
             }
 
-            await ctx.disappearingMessagesManager.setMessageExpiry(
-                messageId,
-                expirySeconds,
-                autoDeleteOnRead || false
-            );
+            await ctx.disappearingMessagesManager.setMessageExpiry(messageId, expirySeconds);
 
             res.json({ success: true, message: 'Таймер самоуничтожения установлен' });
         } catch (error) {
@@ -816,5 +840,5 @@ module.exports = function registerMessageRoutes(app, ctx) {
         }
     });
 
-    return { userCanAccessMessage };
+    return { userCanAccessMessage, applyExpiry };
 };

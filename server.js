@@ -31,6 +31,9 @@ const { UPLOADS_DIR, ORPHAN_UPLOAD_TTL_MS, purgeMessageContent } = require('./li
 const { createSocketServer } = require('./lib/sockets');
 const e2eeProxy = require('./lib/e2ee-proxy');
 const { createDevicesRouter } = require('./lib/devices');
+const { recordSecurityEvent } = require('./lib/security-events');
+const { emitToPeers } = require('./lib/presence');
+const { startPlaintextPurge } = require('./lib/plaintext-purge');
 const {
     checkTorConnection,
     getTorHiddenServiceConfig,
@@ -160,7 +163,9 @@ async function initDatabase() {
     log.info('База данных инициализирована');
 }
 
-initDatabase().catch(err => {
+// Порт открывается только после миграций: раньше сервер принимал запросы
+// сразу, и первые из них падали с 500 на ещё не созданных таблицах.
+const databaseReady = initDatabase().catch(err => {
     log.error({ err: err }, 'Ошибка инициализации БД');
     process.exit(1);
 });
@@ -270,7 +275,7 @@ app.use((req, res, next) => {
     // connect-src — только свой origin: 'self' покрывает и ws/wss того же
     // хоста. Было 'self' ws: wss: — то есть сокет на любой адрес, и
     // внедрённый скрипт мог бы вынести переписку через WebSocket.
-    res.set('Content-Security-Policy', `default-src 'self'; script-src 'self' 'nonce-${nonce}'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'`);
+    res.set('Content-Security-Policy', `default-src 'self'; script-src 'self' 'nonce-${nonce}'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'`);
     // HSTS — только по HTTPS (по HTTP браузер заголовок игнорирует). Без
     // includeSubDomains: на соседних поддоменах может жить то, что по HTTPS
     // не открывается. У .onion HTTPS нет, и там запрос сюда не попадёт.
@@ -348,10 +353,17 @@ app.use(createDevicesRouter({
     dbRun,
     revokeDeviceKeys: e2eeProxy.revokeDeviceKeys,
     // Всем открытым сокетам аккаунта — и тем, что на других устройствах.
-    onDeviceAdded: (userId, device) => io.to(`user:${userId}`).emit('deviceAdded', {
-        id: device.id, name: device.name, created_at: device.created_at,
-    }),
+    onDeviceAdded: (userId, device) => {
+        io.to(`user:${userId}`).emit('deviceAdded', { id: device.id, name: device.name, created_at: device.created_at });
+        recordSecurityEvent(userId, 'device_added', { label: device.name });
+    },
+    onDeviceRevoked: (userId, device) => recordSecurityEvent(userId, 'device_revoked', { label: device.name }),
 }));
+
+// У собеседника появилось устройство с ключами — пусть его клиенты отправят
+// то, что ждало (public/script.js, «Ждёт ключей собеседника»).
+e2eeProxy.setKeysPublished((userId, deviceId) =>
+    emitToPeers(io, userId, 'peerKeysReady', { user_id: userId, device_id: deviceId }));
 
 // Ключи собеседника — только при общем чате (см. requirePeer в e2ee-proxy).
 e2eeProxy.setPeerCheck(async (userId, otherUserId) => Boolean(await dbGet(
@@ -397,7 +409,7 @@ app.use((err, req, res, next) => {
     res.status(500).json({ success: false, message: 'Внутренняя ошибка сервера' });
 });
 
-server.listen(PORT, HOST, async () => {
+databaseReady.then(() => server.listen(PORT, HOST, async () => {
     log.info({ port: PORT, addresses: getLocalAddresses().map(addr => `http://${addr}:${PORT}`) }, 'Nyxo запущен');
 
     if (ENABLE_TOR_ROUTING) {
@@ -415,4 +427,7 @@ server.listen(PORT, HOST, async () => {
     const sweepUploads = () => sweepOrphanUploads(UPLOADS_DIR, { dbAll, ttlMs: ORPHAN_UPLOAD_TTL_MS })
         .catch(error => log.error({ err: error }, 'Uploads sweep error'));
     setInterval(sweepUploads, ORPHAN_UPLOAD_TTL_MS).unref();
-});
+
+    // Старый открытый текст в комнатах — по сроку из migrations/009.
+    startPlaintextPurge(io);
+}));
