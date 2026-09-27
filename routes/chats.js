@@ -22,6 +22,9 @@ module.exports = function registerChatRoutes(app, ctx) {
             const chats = await dbAll(`
                 SELECT c.id, c.name, c.avatar, c.is_bot, c.room_id, r.kind, me.role AS my_role,
                        -- Сколько ждут одобрения — только администраторам.
+                       CASE WHEN r.kind = 'direct' THEN EXISTS (SELECT 1 FROM blocks b
+                            JOIN room_participants o ON o.room_id = c.room_id AND o.user_id <> c.user_id
+                            WHERE b.blocker_id = c.user_id AND b.blocked_id = o.user_id) END AS peer_blocked,
                        CASE WHEN me.role = 'admin' THEN (SELECT count(*)::int FROM join_requests jr
                             WHERE jr.room_id = c.room_id AND jr.status = 'pending') END AS pending_requests,
                        (SELECT array_agg(rp.user_id) FROM room_participants rp

@@ -1146,6 +1146,32 @@ export async function markVerified(userId, devices) {
 
 export const clearVerified = userId => store.verified.drop(userId);
 
+/*
+ * QR при встрече: в нём отпечаток ключей всех устройств показывающего —
+ * тот же, из которого складывается 60-значный код сверки.
+ */
+export async function ownFingerprint() {
+    if (!state.ready) throw new Error('E2EE не инициализирован');
+    const mine = await trustedDevices(state.userId);
+    return userFingerprint(state.userId, mine.devices);
+}
+
+/*
+ * Сверить отпечаток из QR с ключами собеседника, которые отдаёт сервер.
+ * Совпал — собеседник отмечается сверенным ровно по этому набору
+ * устройств. Конфликт ключей (сервер отдаёт не тот ключ, что мы уже
+ * знаем) — не совпадение, даже если отпечаток сошёлся.
+ */
+export async function checkMeetingFingerprint(userId, fingerprint) {
+    if (!state.ready) throw new Error('E2EE не инициализирован');
+    const theirs = await trustedDevices(userId);
+    if (theirs.devices.length === 0) return { match: false, reason: 'no-devices' };
+    if (theirs.conflicts.length > 0) return { match: false, reason: 'conflict' };
+    if (await userFingerprint(userId, theirs.devices) !== fingerprint) return { match: false, reason: 'mismatch' };
+    await markVerified(userId, theirs.devices);
+    return { match: true };
+}
+
 /**
  * Состояние сверки по участникам чата — для шапки. Без сети и без
  * хэширования: только сравнение списка устройств с отметкой.

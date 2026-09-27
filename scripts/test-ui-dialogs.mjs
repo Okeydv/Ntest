@@ -216,7 +216,7 @@ await page.click('#get-chat-code-btn');
 await page.waitForFunction(() => document.getElementById('invite-modal').open);
 const shownCode = await page.textContent('#invite-code-display');
 check('ссылка-приглашение с QR-кодом и условиями', await page.evaluate(() =>
-    !document.getElementById('invite-qr').hidden && document.getElementById('invite-qr').width > 100
+    !document.getElementById('invite-qr').hidden && document.getElementById('invite-qr').width === document.getElementById('invite-qr').height
     && document.getElementById('invite-terms').textContent === 'Бессрочная · вход без одобрения'),
     await page.textContent('#invite-terms'));
 await page.selectOption('#invite-expiry', '86400');

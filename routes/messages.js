@@ -8,7 +8,7 @@ const { normalizeExpiry } = require('../lib/disappearing-messages');
 const { sanitizeText } = require('../lib/privacy');
 const { onlyStrings, BAD_FIELDS, getCurrentTime, getSocketRoomKey } = require('../lib/helpers');
 const { receiptsFor, statusFor } = require('../lib/read-state');
-const { E2EE_REQUIRED, ROOM_EMPTY, canWriteTo } = require('../lib/rooms');
+const { E2EE_REQUIRED, ROOM_EMPTY, BLOCKED, canWriteTo, directBlock } = require('../lib/rooms');
 const { plaintextNotice } = require('../lib/plaintext-purge');
 const EMOJI_SET = require('../public/emoji/set.json');
 const { BLOB_ID_RE, MAX_BLOBS_PER_MESSAGE, purgeMessageContent } = require('../lib/storage');
@@ -230,6 +230,8 @@ module.exports = function registerMessageRoutes(app, ctx) {
             const chat = await dbGet('SELECT * FROM chats WHERE id = $1 AND user_id = $2', [chatId, req.session.userId]);
             if (!chat) return res.status(404).json({ success: false, message: 'Чат не найден' });
             if (!(await canWriteTo(chat, req.session.userId))) return res.status(409).json(ROOM_EMPTY);
+            const blocked = await directBlock(chat, req.session.userId);
+            if (blocked) return res.status(403).json(BLOCKED[blocked]);
             // Повтор уже принятого: ни второго сообщения, ни второй рассылки.
             const stored = await storedByClientId(req.session.userId, clientId);
             if (stored) return res.json({ success: true, duplicate: true, message: encryptedView(stored), missingDeviceIds: [] });

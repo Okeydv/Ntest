@@ -372,15 +372,21 @@ e2eeProxy.setKeysPublished((userId, deviceId) =>
     emitToPeers(io, userId, 'peerKeysReady', { user_id: userId, device_id: deviceId }));
 
 // Ключи собеседника — только при общем чате (см. requirePeer в e2ee-proxy).
-e2eeProxy.setPeerCheck(async (userId, otherUserId) => Boolean(await dbGet(
+e2eeProxy.setPeerCheck(async (userId, otherUserId, { identities = false } = {}) => Boolean(await dbGet(
     `SELECT 1 FROM room_participants mine
      JOIN room_participants theirs ON theirs.room_id = mine.room_id
-     WHERE mine.user_id = $1 AND theirs.user_id = $2 LIMIT 1`,
-    [userId, otherUserId])));
+     WHERE mine.user_id = $1 AND theirs.user_id = $2
+     UNION ALL
+     SELECT 1 FROM direct_requests
+     WHERE $3 AND status IN ('pending', 'declined')
+       AND ((from_user_id = $1 AND to_user_id = $2) OR (from_user_id = $2 AND to_user_id = $1))
+     LIMIT 1`,
+    [userId, otherUserId, identities])));
 app.use(e2eeProxy.router);
 
 Object.assign(ctx, require('./routes/auth')(app, ctx));
 Object.assign(ctx, require('./routes/chats')(app, ctx));
+Object.assign(ctx, require('./routes/contacts')(app, ctx));
 Object.assign(ctx, require('./routes/messages')(app, ctx));
 Object.assign(ctx, require('./routes/files')(app, ctx));
 require('./routes/link')(app, ctx);

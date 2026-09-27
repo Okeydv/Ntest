@@ -12,7 +12,7 @@ const { pool, dbGet, dbAll, dbRun } = require('../lib/db');
 const { shared } = require('../lib/shared');
 const { stripMetadataInWorker } = require('../lib/metadata-stripper');
 const { getCurrentTime, getSocketRoomKey } = require('../lib/helpers');
-const { E2EE_REQUIRED, ROOM_EMPTY, canWriteTo } = require('../lib/rooms');
+const { E2EE_REQUIRED, ROOM_EMPTY, BLOCKED, canWriteTo, directBlock } = require('../lib/rooms');
 const {
     BLOBS_DIR, BLOB_ID_RE, MAX_BLOB_BYTES, MIN_BLOB_BYTES, ORPHAN_BLOB_TTL_MS, blobPath,
 } = require('../lib/storage');
@@ -118,6 +118,8 @@ module.exports = function registerFileRoutes(app, ctx) {
                     [chatId, req.session.userId]);
                 if (!chat) return res.status(404).json({ success: false, message: 'Чат не найден' });
                 if (!(await canWriteTo(chat, req.session.userId))) return res.status(409).json(ROOM_EMPTY);
+                const blocked = await directBlock(chat, req.session.userId);
+                if (blocked) return res.status(403).json(BLOCKED[blocked]);
 
                 const id = crypto.randomBytes(16).toString('hex');
                 await fs.promises.writeFile(blobPath(id), body, { flag: 'wx' });

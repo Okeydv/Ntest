@@ -59,7 +59,7 @@ const choice = await alice.evaluate(() => ({
     focus: document.activeElement.dataset.path,
 }));
 check('«Новый чат» начинается с выбора пути, фокус на первой карточке',
-    choice.cards.join() === 'group,join' && choice.back && choice.focus === 'group', JSON.stringify(choice));
+    choice.cards.join() === 'direct,group,join' && choice.back && choice.focus === 'direct', JSON.stringify(choice));
 await alice.click('.choice-card[data-path="group"]');
 check('шаг группы: заголовок, «Назад», фокус в поле названия', await alice.evaluate(() =>
     document.getElementById('new-chat-modal-title').textContent === 'Новая группа'

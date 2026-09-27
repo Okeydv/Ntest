@@ -393,7 +393,7 @@
             </div>
             <div class="modal-body">
                 <div id="new-chat-choice" class="new-chat-choice" data-pane="choice">
-                    <button class="choice-card" data-path="direct" type="button" hidden>
+                    <button class="choice-card" data-path="direct" type="button">
                         <span class="choice-icon" aria-hidden="true"><svg class="icon"><use href="#i-user"/></svg></span>
                         <span class="choice-text">
                             <strong>Личный чат</strong>
@@ -414,6 +414,25 @@
                             <span>Ссылка вида …/join#K7Q2MX9A4TZB</span>
                         </span>
                     </button>
+                </div>
+
+                <div data-pane="direct" hidden>
+                    <div class="field">
+                        <label class="field-label" for="direct-code">Код пользователя</label>
+                        <input type="text" id="direct-code" class="input-code" placeholder="K7Q2-MX9A-4TZB" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="20" enterkeyhint="go">
+                        <p class="field-msg" data-msg-for="direct-code"></p>
+                        <p class="field-hint">Код человек найдёт у себя в профиле. Запрос уходит без текста: он увидит только ваше имя и решит, начинать ли переписку.</p>
+                    </div>
+                    <div id="direct-preview" class="join-preview" hidden>
+                        <div id="direct-preview-avatar" class="chat-avatar" aria-hidden="true"></div>
+                        <div class="join-preview-text">
+                            <strong id="direct-preview-name"></strong>
+                            <span id="direct-preview-meta"></span>
+                        </div>
+                    </div>
+                    <button id="direct-find-btn" class="btn btn-primary btn-block" type="button">Найти</button>
+                    <div class="divider"><span class="divider-label">или</span></div>
+                    <button id="direct-meet-btn" class="btn btn-secondary btn-block" type="button">QR при встрече</button>
                 </div>
 
                 <div data-pane="group" hidden>
@@ -484,6 +503,10 @@
                     <svg class="icon" aria-hidden="true"><use href="#i-link"/></svg>
                     Ссылка-приглашение
                 </button>
+                <button id="block-peer-btn" class="btn btn-secondary btn-block" type="button" hidden>
+                    <svg class="icon" aria-hidden="true"><use href="#i-alert"/></svg>
+                    <span id="block-peer-label">Заблокировать</span>
+                </button>
                 <button id="delete-chat-btn" class="btn btn-danger btn-block" type="button">
                     <svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg>
                     <span id="delete-chat-label">Удалить чат</span>
@@ -506,7 +529,6 @@
                     <div class="profile-details">
                         <h4 id="profile-username"></h4>
                         <p id="profile-email"></p>
-                        <p id="profile-code" class="profile-code"></p>
                         <span id="profile-anon-badge" class="anon-badge hidden">
                             <svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg>
                             Приватный режим
@@ -524,6 +546,30 @@
                         <button class="color-option" data-color="#F5A524" aria-label="Янтарный" type="button"></button>
                     </div>
                 </div>
+                <!-- Код пользователя: по нему присылают запросы на личную переписку. -->
+                <section class="devices-section" aria-labelledby="user-code-title">
+                    <h4 id="user-code-title" class="field-label">Ваш код</h4>
+                    <div class="invite-code-container">
+                        <code id="user-code-display"></code>
+                        <button id="copy-user-code-btn" class="icon-btn icon-btn-sm" title="Скопировать" aria-label="Скопировать код" type="button">
+                            <svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg>
+                        </button>
+                    </div>
+                    <p class="field-hint">По этому коду вам могут прислать запрос на личную переписку. Сменили код — прежний больше никого к вам не приведёт.</p>
+                    <div class="invite-actions">
+                        <button id="rotate-user-code-btn" class="btn btn-secondary" type="button">Сменить код</button>
+                        <button id="profile-meet-btn" class="btn btn-ghost" type="button">QR при встрече</button>
+                    </div>
+                    <label class="toggle-row">
+                        <input type="checkbox" id="code-requests-toggle">
+                        <span>Запросы по коду</span>
+                    </label>
+                    <p class="field-hint">Если выключить, по коду вас не найти: ищущий увидит то же, что и при неверном коде.</p>
+                </section>
+                <section id="blocked-section" class="devices-section" aria-labelledby="blocked-title" hidden>
+                    <h4 id="blocked-title" class="field-label">Заблокированные</h4>
+                    <ul id="blocked-list" class="devices-list"></ul>
+                </section>
                 <!-- Все устройства, на которых открыт аккаунт. Незнакомое — повод сменить
                      пароль и отозвать его: у него есть ключи и к новым сообщениям. -->
                 <section id="devices-section" class="devices-section" aria-labelledby="devices-title">
@@ -700,6 +746,28 @@
                     <svg class="icon" aria-hidden="true"><use href="#i-link"/></svg>
                     Ссылка-приглашение
                 </button>
+            </div>
+        </div>
+    </dialog>
+
+    <!-- QR при встрече: в нём код пользователя и отпечаток ключей всех его
+         устройств. Второй сканирует камерой — совпало, значит, ключи сверены. -->
+    <dialog id="meet-modal" class="modal" aria-labelledby="meet-modal-title">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="meet-modal-title">QR при встрече</h3>
+                <button class="icon-btn icon-btn-sm icon-btn-quiet close-modal" aria-label="Закрыть" type="button">
+                    <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <p class="field-hint">Покажите этот QR собеседнику или отсканируйте его QR. Так и запрос уйдёт, и ключи сверятся сразу — без 60 цифр.</p>
+                <canvas id="meet-qr" class="invite-qr" role="img" aria-label="QR-код с вашим кодом и отпечатком ключей"></canvas>
+                <p class="meet-code">Ваш код: <code id="meet-code"></code></p>
+                <p class="field-hint">Не пересылайте снимок этого QR через Nyxo: если сервер подменяет ключи, он подменит и снимок.</p>
+                <div id="meet-result" class="meet-result" role="status" hidden></div>
+                <div id="meet-scan" class="safety-scan" hidden></div>
+                <button id="meet-scan-btn" class="btn btn-primary btn-block" type="button">Сканировать камерой</button>
             </div>
         </div>
     </dialog>

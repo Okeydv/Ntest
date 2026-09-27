@@ -145,6 +145,28 @@ const elements = {
     requestsList: document.getElementById('requests-list'),
     groupNameInput: document.getElementById('group-name-input'),
     groupNameSave: document.getElementById('group-name-save'),
+    directCode: document.getElementById('direct-code'),
+    directPreview: document.getElementById('direct-preview'),
+    directPreviewAvatar: document.getElementById('direct-preview-avatar'),
+    directPreviewName: document.getElementById('direct-preview-name'),
+    directPreviewMeta: document.getElementById('direct-preview-meta'),
+    directFindBtn: document.getElementById('direct-find-btn'),
+    directMeetBtn: document.getElementById('direct-meet-btn'),
+    userCodeDisplay: document.getElementById('user-code-display'),
+    copyUserCodeBtn: document.getElementById('copy-user-code-btn'),
+    rotateUserCodeBtn: document.getElementById('rotate-user-code-btn'),
+    profileMeetBtn: document.getElementById('profile-meet-btn'),
+    codeRequestsToggle: document.getElementById('code-requests-toggle'),
+    blockedSection: document.getElementById('blocked-section'),
+    blockedList: document.getElementById('blocked-list'),
+    blockPeerBtn: document.getElementById('block-peer-btn'),
+    blockPeerLabel: document.getElementById('block-peer-label'),
+    meetModal: document.getElementById('meet-modal'),
+    meetQr: document.getElementById('meet-qr'),
+    meetCode: document.getElementById('meet-code'),
+    meetResult: document.getElementById('meet-result'),
+    meetScan: document.getElementById('meet-scan'),
+    meetScanBtn: document.getElementById('meet-scan-btn'),
     messageMenu: document.getElementById('message-menu'),
     replyMessageBtn: document.getElementById('reply-message-btn'),
     editMessageBtn: document.getElementById('edit-message-btn'),
@@ -155,7 +177,6 @@ const elements = {
     toast: document.getElementById('toast'),
     profileUsername: document.getElementById('profile-username'),
     profileEmail: document.getElementById('profile-email'),
-    profileCode: document.getElementById('profile-code'),
     profileAvatar: document.getElementById('profile-avatar'),
     profileAnonBadge: document.getElementById('profile-anon-badge'),
     devicesList: document.getElementById('devices-list'),
@@ -1065,6 +1086,7 @@ function showApp() {
     elements.authScreen.classList.add('hidden');
     elements.app.classList.remove('hidden');
     loadMyRequests();
+    loadDirectRequests();
     setTimeout(offerJoinFromUrl);
 }
 
@@ -1399,6 +1421,52 @@ function setupEventListeners() {
         if (await cancelJoinRequest(sentRequestId)) closeModal(elements.newChatModal);
     }));
     elements.joinSentClose.addEventListener('click', () => closeModal(elements.newChatModal));
+    elements.directFindBtn.addEventListener('click', () => withBusy(elements.directFindBtn, findDirect));
+    elements.directCode.addEventListener('input', resetDirectLookup);
+    elements.directCode.addEventListener('keydown', event => {
+        if (event.key === 'Enter' && !event.isComposing) withBusy(elements.directFindBtn, findDirect);
+    });
+    for (const button of [elements.directMeetBtn, elements.profileMeetBtn]) {
+        button.addEventListener('click', () => {
+            closeModal(button.closest('dialog'));
+            openMeetModal();
+        });
+    }
+    elements.meetScanBtn.addEventListener('click', () => withBusy(elements.meetScanBtn, scanMeetQr));
+
+    elements.copyUserCodeBtn.addEventListener('click', async () => {
+        try {
+            await navigator.clipboard.writeText(elements.userCodeDisplay.textContent);
+            showToast('Код скопирован', 'success');
+        } catch {
+            window.getSelection().selectAllChildren(elements.userCodeDisplay);
+            showToast('Скопируйте выделенный код', 'info');
+        }
+    });
+    elements.rotateUserCodeBtn.addEventListener('click', () => withBusy(elements.rotateUserCodeBtn, async () => {
+        if (!confirm('Сменить код? По прежнему вас больше не найдут.')) return;
+        const data = await api('/api/user/code', { method: 'POST' });
+        if (!data.success) return showToast(data.message, 'error');
+        elements.userCodeDisplay.textContent = data.code;
+        showToast('Код сменён, прежний больше не действует', 'success');
+    }));
+    elements.codeRequestsToggle.addEventListener('change', async () => {
+        const toggle = elements.codeRequestsToggle;
+        toggle.disabled = true;
+        const data = await api('/api/user/code-requests', { method: 'POST', body: JSON.stringify({ enabled: toggle.checked }) });
+        toggle.disabled = false;
+        if (!data.success) {
+            toggle.checked = !toggle.checked;
+            return showToast(data.message, 'error');
+        }
+        showToast(data.requestsEnabled ? 'По коду вас снова можно найти' : 'По коду вас больше не найти', 'success');
+    });
+    elements.blockPeerBtn.addEventListener('click', () => withBusy(elements.blockPeerBtn, async () => {
+        const chat = currentChatMeta();
+        const peer = chat && chat.peer_ids && chat.peer_ids[0];
+        if (!peer) return;
+        if (await setBlocked(Number(peer), chat.name, !chat.peer_blocked)) closeModal(elements.chatMenuModal);
+    }));
 
     elements.chatMenuBtn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -1468,7 +1536,6 @@ function setupEventListeners() {
         if (data.success) {
             elements.profileUsername.textContent = data.user.username;
             elements.profileEmail.textContent = data.user.email || 'Нет email (приватный режим)';
-            elements.profileCode.textContent = `Код: ${data.user.uniqueCode}`;
             const avatarColor = data.user.avatar || DEFAULT_AVATAR;
             elements.profileAvatar.style.background = avatarColor;
             elements.profileAvatar.textContent = data.user.username.charAt(0).toUpperCase();
@@ -1487,6 +1554,8 @@ function setupEventListeners() {
             elements.readReceiptsToggle.checked = data.user.sendReadReceipts !== false;
             elements.hidePresenceToggle.checked = Boolean(data.user.hidePresence);
             elements.notifyToggle.checked = notificationsOn();
+            await renderUserCode();
+            await renderBlocked();
             await renderDevices();
             await renderSecurityEvents();
             openModal(elements.profileModal);
@@ -1754,6 +1823,8 @@ function setupEventListeners() {
     });
 
     socket.on('joinRequestDecided', onJoinRequestDecided);
+    socket.on('directRequestsChanged', loadDirectRequests);
+    socket.on('directRequestAccepted', onDirectRequestAccepted);
     socket.on('joinRequestsChanged', onJoinRequestsChanged);
     socket.on('membersChanged', onMembersChanged);
     socket.on('removedFromChat', onRemovedFromChat);
@@ -2090,6 +2161,9 @@ function applyRoomState() {
     elements.chatMenuInviteBtn.hidden = !admin;
     elements.roomEmptyInvite.hidden = !admin;
     elements.chatMenuMembersBtn.hidden = !group;
+    const direct = Boolean(meta && meta.kind === 'direct');
+    elements.blockPeerBtn.hidden = !direct || !meta.peer_count;
+    elements.blockPeerLabel.textContent = direct && meta.peer_blocked ? 'Разблокировать' : 'Заблокировать';
     elements.deleteChatLabel.textContent = group ? 'Выйти из группы' : 'Удалить чат';
     const pending = admin ? Number(meta.pending_requests) || 0 : 0;
     elements.joinRequestsBar.hidden = pending === 0;
@@ -2105,8 +2179,10 @@ function applyRoomState() {
     elements.roomEmpty.hidden = !empty;
     elements.roomEmpty.classList.toggle('is-strip', history);
     elements.chatMessages.hidden = empty && !history;
-    for (const control of [elements.messageInput, elements.attachBtn, elements.sendBtn]) control.disabled = empty;
-    elements.messageInput.placeholder = empty ? 'Сначала пригласите участников' : 'Введите сообщение';
+    const blocked = Boolean(meta && meta.kind === 'direct' && meta.peer_blocked);
+    for (const control of [elements.messageInput, elements.attachBtn, elements.sendBtn]) control.disabled = empty || blocked;
+    elements.messageInput.placeholder = empty ? 'Сначала пригласите участников'
+        : blocked ? 'Вы заблокировали собеседника' : 'Введите сообщение';
     if (empty) {
         clearReply();
         editingMessageId = null;
@@ -4671,7 +4747,7 @@ function showNewChatPane(pane) {
     elements.newChatBack.hidden = pane === 'choice' || pane === 'sent';
     elements.newChatTitle.textContent = NEW_CHAT_TITLES[pane];
     clearFieldErrors(elements.newChatModal);
-    const focus = pane === 'group' ? elements.newChatName
+    const focus = pane === 'direct' ? elements.directCode : pane === 'group' ? elements.newChatName
         : pane === 'join' ? elements.joinChatCode
             : pane === 'sent' ? elements.joinSentClose
                 : elements.newChatModal.querySelector('.choice-card:not([hidden])');
@@ -4680,6 +4756,7 @@ function showNewChatPane(pane) {
 
 function openNewChat(pane = 'choice') {
     resetJoinPreview();
+    resetDirectLookup();
     openModal(elements.newChatModal);
     showNewChatPane(pane);
 }
@@ -4806,29 +4883,24 @@ async function loadMyRequests() {
 
 function renderMyRequests() {
     const box = elements.myRequests;
-    box.hidden = myRequests.length === 0;
+    const rows = [
+        ...directRequests.incoming.map(request => requestRowElement('i-user-plus', request.username, 'хочет переписываться', [
+            { label: 'Принять', aria: `Принять запрос: ${request.username}`, kind: 'btn-primary', run: () => decideDirectRequest(request, 'accept') },
+            { label: 'Отклонить', aria: `Отклонить запрос: ${request.username}`, run: () => decideDirectRequest(request, 'decline') },
+            { label: 'Заблокировать', aria: `Заблокировать: ${request.username}`, run: () => decideDirectRequest(request, 'block') },
+        ])),
+        ...directRequests.outgoing.map(request => requestRowElement('i-timer', request.username, 'запрос на переписку отправлен', [
+            { label: 'Отменить', aria: `Отменить запрос: ${request.username}`, run: () => cancelDirectRequest(request) },
+        ])),
+        ...myRequests.map(request => requestRowElement('i-timer', request.room_name, 'ждёт одобрения', [
+            { label: 'Отменить', aria: `Отменить запрос в «${request.room_name}»`, run: () => cancelJoinRequest(request.id) },
+        ])),
+    ];
+    box.hidden = rows.length === 0;
     const title = document.createElement('h4');
     title.className = 'my-requests-title';
-    title.textContent = 'Запросы на вход';
-    box.replaceChildren(title, ...myRequests.map(request => {
-        const row = document.createElement('div');
-        row.className = 'my-request';
-        const text = document.createElement('span');
-        text.className = 'my-request-text';
-        const name = document.createElement('strong');
-        name.textContent = request.room_name;
-        const note = document.createElement('span');
-        note.textContent = 'ждёт одобрения';
-        text.append(name, note);
-        const cancel = document.createElement('button');
-        cancel.type = 'button';
-        cancel.className = 'btn btn-ghost btn-sm';
-        cancel.textContent = 'Отменить';
-        cancel.setAttribute('aria-label', `Отменить запрос в «${request.room_name}»`);
-        cancel.addEventListener('click', () => withBusy(cancel, () => cancelJoinRequest(request.id)));
-        row.append(createIcon('i-timer'), text, cancel);
-        return row;
-    }));
+    title.textContent = 'Запросы';
+    box.replaceChildren(title, ...rows);
 }
 
 async function cancelJoinRequest(id) {
@@ -4855,6 +4927,251 @@ async function onJoinRequestDecided({ request_id: requestId, status, room_name: 
     showToast(`Вас впустили в «${roomName}»`, 'success', chat && !waiting ? {
         duration: 8000, action: { label: 'Открыть', onClick: () => openChatById(chat.id) },
     } : {});
+}
+
+/* --- Личный чат: код пользователя ------------------------------------------
+   Личный чат начинается с запроса по коду человека (K7Q2-MX9A-4TZB) или по
+   QR при встрече. Сначала «Найти» — показать, кто это, — потом «Отправить
+   запрос». Если чат с ним уже есть, он просто открывается. */
+
+let directLookupFor = null;
+
+function resetDirectLookup() {
+    directLookupFor = null;
+    elements.directPreview.hidden = true;
+    elements.directFindBtn.textContent = 'Найти';
+}
+
+async function findDirect() {
+    clearFieldErrors(elements.newChatModal);
+    const code = elements.directCode.value.trim();
+    if (!code) return setFieldError('direct-code', 'Введите код пользователя');
+    if (directLookupFor !== code) {
+        const data = await api('/api/contacts/lookup', { method: 'POST', body: JSON.stringify({ code }) });
+        if (!data.success) return setFieldError('direct-code', data.message);
+        directLookupFor = code;
+        elements.directPreviewAvatar.textContent = data.user.username.charAt(0).toUpperCase();
+        elements.directPreviewName.textContent = data.user.username;
+        elements.directPreviewMeta.textContent = data.chat ? 'чат с ним уже есть' : 'запрос уйдёт без текста — только ваше имя';
+        elements.directPreview.hidden = false;
+        elements.directFindBtn.textContent = data.chat ? 'Открыть чат' : 'Отправить запрос';
+        return;
+    }
+    const data = await sendDirectRequest(code);
+    if (!data) return;
+    elements.directCode.value = '';
+    resetDirectLookup();
+}
+
+// Запрос по коду. Возвращает ответ сервера или null при ошибке (она уже
+// показана). Чат, который уже есть (или появился сразу: человек сам
+// просил о том же), открывается.
+async function sendDirectRequest(code, { fieldId = 'direct-code' } = {}) {
+    const data = await api('/api/direct-requests', { method: 'POST', body: JSON.stringify({ code }) });
+    if (!data.success) {
+        if (fieldId && elements.newChatModal.open) setFieldError(fieldId, data.message);
+        else showToast(data.message, 'error');
+        return null;
+    }
+    closeModal(elements.newChatModal);
+    if (data.chat) {
+        await loadChats();
+        openChatById(data.chat.id);
+        return data;
+    }
+    showToast(`Запрос отправлен: ${data.request.username} увидит его в списке чатов`, 'success');
+    loadDirectRequests();
+    return data;
+}
+
+/* --- Запросы над списком чатов ---------------------------------------------
+   Входящие запросы на переписку — с кнопками «Принять», «Отклонить»,
+   «Заблокировать»; свои — «ждёт ответа» с «Отменить»; свои запросы на
+   вход в группы — «ждёт одобрения». Отклонённый свой запрос выглядит так
+   же, как ждущий: отправитель не узнаёт, видели ли его. */
+
+let directRequests = { incoming: [], outgoing: [] };
+
+async function loadDirectRequests() {
+    const data = await api('/api/direct-requests');
+    if (!data.success) return;
+    directRequests = { incoming: data.incoming, outgoing: data.outgoing };
+    renderMyRequests();
+}
+
+function requestRowElement(icon, title, note, buttons) {
+    const row = document.createElement('div');
+    row.className = 'my-request';
+    const text = document.createElement('span');
+    text.className = 'my-request-text';
+    const name = document.createElement('strong');
+    name.textContent = title;
+    const small = document.createElement('span');
+    small.textContent = note;
+    text.append(name, small);
+    const actions = document.createElement('span');
+    actions.className = 'my-request-actions';
+    for (const { label, aria, kind = 'btn-ghost', run } of buttons) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = `btn btn-sm ${kind}`;
+        button.textContent = label;
+        button.setAttribute('aria-label', aria);
+        button.addEventListener('click', () => withBusy(button, run));
+        actions.appendChild(button);
+    }
+    row.append(createIcon(icon), text, actions);
+    return row;
+}
+
+async function decideDirectRequest(request, action) {
+    if (action === 'block' && !confirm(`Заблокировать ${request.username}? Он не сможет присылать вам ни запросы, ни сообщения.`)) return;
+    const data = await api(`/api/direct-requests/${request.id}`, { method: 'POST', body: JSON.stringify({ action }) });
+    if (!data.success) return showToast(data.message, 'error');
+    directRequests.incoming = directRequests.incoming.filter(r => r.id !== request.id);
+    renderMyRequests();
+    if (action === 'accept') {
+        await loadChats();
+        openChatById(data.chat.id);
+    } else {
+        showToast(action === 'block' ? `${request.username} заблокирован(а)` : 'Запрос отклонён', 'success');
+    }
+}
+
+async function cancelDirectRequest(request) {
+    const data = await api(`/api/direct-requests/${request.id}`, { method: 'DELETE' });
+    if (!data.success) return showToast(data.message, 'error');
+    directRequests.outgoing = directRequests.outgoing.filter(r => r.id !== request.id);
+    renderMyRequests();
+    showToast('Запрос отменён', 'success');
+}
+
+async function onDirectRequestAccepted({ request_id: requestId, chat }) {
+    const request = directRequests.outgoing.find(r => r.id === requestId);
+    directRequests.outgoing = directRequests.outgoing.filter(r => r.id !== requestId);
+    renderMyRequests();
+    await loadChats();
+    if (request) {
+        showToast(`${request.username} принял(а) запрос — можно писать`, 'success', chat ? {
+            duration: 8000, action: { label: 'Открыть', onClick: () => openChatById(chat.id) },
+        } : {});
+    }
+}
+
+/* --- Блокировка ------------------------------------------------------------ */
+
+async function setBlocked(userId, username, blocked) {
+    if (blocked && !confirm(`Заблокировать ${username}? Он не сможет присылать вам ни запросы, ни сообщения.`)) return false;
+    const data = blocked
+        ? await api('/api/blocks', { method: 'POST', body: JSON.stringify({ userId }) })
+        : await api(`/api/blocks/${userId}`, { method: 'DELETE' });
+    if (!data.success) {
+        showToast(data.message, 'error');
+        return false;
+    }
+    showToast(blocked ? `${username} заблокирован(а)` : `${username} разблокирован(а)`, 'success');
+    await loadChats();
+    applyRoomState();
+    return true;
+}
+
+async function renderBlocked() {
+    const data = await api('/api/blocks');
+    const list = (data.success && data.blocked) || [];
+    elements.blockedSection.hidden = list.length === 0;
+    elements.blockedList.replaceChildren(...list.map(user => {
+        const li = document.createElement('li');
+        li.className = 'device-item';
+        const info = document.createElement('div');
+        info.className = 'device-info';
+        const name = document.createElement('div');
+        name.className = 'device-name';
+        name.textContent = user.username;
+        info.appendChild(name);
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'btn btn-secondary';
+        button.textContent = 'Разблокировать';
+        button.addEventListener('click', () => withBusy(button, async () => {
+            if (await setBlocked(user.user_id, user.username, false)) await renderBlocked();
+        }));
+        li.append(info, button);
+        return li;
+    }));
+}
+
+/* --- Свой код в профиле ---------------------------------------------------- */
+
+async function renderUserCode() {
+    const data = await api('/api/user/code');
+    if (!data.success) return;
+    elements.userCodeDisplay.textContent = data.code;
+    elements.codeRequestsToggle.checked = data.requestsEnabled;
+}
+
+/* --- QR при встрече ---------------------------------------------------------
+   В QR — код пользователя и отпечаток ключей всех его устройств:
+   NYXOUSER1:<код>:<30 цифр>. Второй сканирует его камерой (только камерой:
+   снимок могли прислать через тот же сервер, который подменяет ключи),
+   находит человека по коду, считает отпечаток по ключам, которые отдал
+   сервер, и сравнивает. Совпал — собеседник сразу помечен «ключи сверены
+   при встрече»; не совпал — предупреждение, и отметки нет. */
+
+const MEET_QR_PREFIX = 'NYXOUSER1:';
+
+async function openMeetModal() {
+    if (!e2ee || !e2ee.isReady()) return showToast('Шифрование на этом устройстве не работает — QR не построить', 'error');
+    elements.meetResult.hidden = true;
+    elements.meetScan.hidden = true;
+    elements.meetScanBtn.hidden = !(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+    openModal(elements.meetModal);
+    try {
+        const [code, fingerprint] = await Promise.all([api('/api/user/code'), e2ee.ownFingerprint()]);
+        elements.meetCode.textContent = code.code;
+        await drawQr(elements.meetQr, [[`${MEET_QR_PREFIX}${code.code.replace(/-/g, '')}:${fingerprint}`, 'Alphanumeric']]);
+        elements.meetQr.hidden = false;
+    } catch {
+        elements.meetQr.hidden = true;
+        showToast('Не удалось построить QR', 'error');
+    }
+}
+
+function showMeetResult(kind, text) {
+    elements.meetResult.className = `meet-result is-${kind}`;
+    elements.meetResult.replaceChildren(createIcon(kind === 'ok' ? 'i-shield-check' : 'i-alert'), text);
+    elements.meetResult.hidden = false;
+}
+
+async function scanMeetQr() {
+    let value;
+    try {
+        value = await scanWithCamera(elements.meetScan);
+    } catch {
+        return showMeetResult('warn', 'Камера недоступна. Сканировать QR при встрече можно только камерой.');
+    }
+    if (value === null) return;
+    const match = /^NYXOUSER1:([A-Z0-9]{12}):(\d{30})$/.exec(value || '');
+    if (!match) return showMeetResult('warn', 'Это не QR пользователя Nyxo.');
+    const lookup = await api('/api/contacts/lookup', { method: 'POST', body: JSON.stringify({ code: match[1] }) });
+    if (!lookup.success) return showMeetResult('warn', lookup.message);
+    // Сначала запрос (или чат, если он уже есть): ключи человека сервер
+    // отдаёт только тем, с кем у него чат или запрос на переписку.
+    const request = await api('/api/direct-requests', { method: 'POST', body: JSON.stringify({ code: match[1] }) });
+    if (!request.success) return showMeetResult('warn', request.message);
+    const name = lookup.user.username;
+    const result = await e2ee.checkMeetingFingerprint(lookup.user.id, match[2]).catch(() => ({ match: false }));
+    if (request.pending) loadDirectRequests();
+    if (!result.match) {
+        return showMeetResult('warn', result.reason === 'no-devices'
+            ? `У ${name} пока нет устройства с шифрованием — сверить нечего. Запрос на переписку отправлен.`
+            : `Ключи ${name} не совпали с тем, что отдал сервер. Отметки «сверено» нет: не пишите ничего важного, пока не разберётесь.`);
+    }
+    closeModal(elements.meetModal);
+    if (request.chat) {
+        await loadChats();
+        openChatById(request.chat.id);
+    }
+    showToast(request.chat ? `Ключи сверены при встрече: ${name}` : `Ключи сверены при встрече, запрос отправлен: ${name}`, 'success');
 }
 
 /* --- Ссылка-приглашение ----------------------------------------------------
