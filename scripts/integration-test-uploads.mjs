@@ -138,7 +138,7 @@ const B = A;
 
 // В комнату открытый файл не принимается, даже когда в ней есть собеседник.
 const room = await req(A, 'POST', '/api/chats', { name: 'Документы' });
-const roomCode = (await req(A, 'GET', `/api/chats/invite/${room.json.chat.id}`)).json.code;
+const roomCode = (await req(A, 'POST', `/api/chats/${room.json.chat.id}/link`, { requireApproval: false })).json.code;
 const bob = await user('bob');
 await req(bob, 'POST', '/api/chats/join', { code: roomCode });
 const inRoom = await upload(A, room.json.chat.id, 'note.txt', 'text/plain', Buffer.from('заметка'));

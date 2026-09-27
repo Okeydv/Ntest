@@ -78,19 +78,19 @@ check('двойной клик по «Зарегистрироваться» —
 const loggedIn = await alice.page.evaluate(() => Boolean(currentUser));
 check('и регистрация прошла без ошибки', loggedIn);
 
-/* ------------------------- код приглашения ------------------------- */
+/* ------------------------- ссылка-приглашение ------------------------- */
 
 const code = await alice.page.evaluate(async () => {
     const c = await api('/api/chats', { method: 'POST', body: JSON.stringify({ name: 'Время' }) });
-    return (await api(`/api/chats/invite/${c.chat.id}`)).code;
+    return (await api(`/api/chats/${c.chat.id}/link`, { method: 'POST', body: JSON.stringify({ requireApproval: false }) })).code;
 });
 const bob = await openApp('bob', 'Asia/Tokyo');
 await register(bob, 'bob');
 const messy = ` ${code.slice(0, 3).toLowerCase()}-${code.slice(3).toLowerCase()} `;
 const joined = await bob.page.evaluate(c => api('/api/chats/join', { method: 'POST', body: JSON.stringify({ code: c }) }), messy);
-check('код приглашения принимается в нижнем регистре, с пробелами и дефисом', joined.success === true, `«${messy}»`);
+check('код ссылки принимается в нижнем регистре, с пробелами и дефисом', joined.success === true, `«${messy}»`);
 const placeholder = await bob.page.getAttribute('#join-chat-code', 'placeholder');
-check('пример в поле — 6 символов, как настоящий код', placeholder.length === 6 && code.length === 6, placeholder);
+check('пример в поле — ссылка /join# с кодом из 12 знаков, как настоящая', /\/join#[A-Z0-9]{12}$/.test(placeholder) && code.length === 12, placeholder);
 
 /* ------------------------- время в поясе читающего ------------------------- */
 
@@ -252,19 +252,126 @@ await phone.waitForTimeout(1200);
 await phone.locator('.chat-item[data-room-id]:not([data-room-id=""])').first().click();
 await phone.waitForTimeout(1200);
 
+// Старые сообщения этому (новому) устройству не прочитать — пишем своё.
+await phone.fill('#message-input', 'с телефона');
+await phone.click('#send-btn');
+await phone.waitForTimeout(1500);
+
+// На сенсорном экране «⋯» не нужна: меню открывает долгое нажатие.
 const touch = await phone.evaluate(() => {
     const more = [...document.querySelectorAll('#chat-messages .message-more')].at(-1);
-    const r = more.getBoundingClientRect();
-    const zone = getComputedStyle(more, '::before');
-    const width = r.width - parseFloat(zone.left) - parseFloat(zone.right);
-    const height = r.height - parseFloat(zone.top) - parseFloat(zone.bottom);
-    // Точка за краем видимой кнопки, но внутри зоны нажатия.
-    const away = more.closest('.message').classList.contains('sent') ? -1 : 1;
-    const hit = document.elementFromPoint(r.left + r.width / 2 + away * 20, r.top + r.height / 2);
-    return { width, height, hit: Boolean(hit && hit.closest('.message-more') === more) };
+    const style = getComputedStyle(more);
+    return { opacity: style.opacity, pointer: style.pointerEvents };
 });
-check('зона нажатия «⋯» на тач-экране — не меньше 44×44',
-    touch.width >= 44 && touch.height >= 44 && touch.hit, JSON.stringify(touch));
+check('«⋯» на тач-экране скрыта и не ловит нажатия', touch.opacity === '0' && touch.pointer === 'none', JSON.stringify(touch));
+const bubbleBox = await phone.evaluate(() => {
+    const bubble = [...document.querySelectorAll('#chat-messages .message')]
+        .filter(b => (b.querySelector('.message-text')?.textContent || '').trim().length > 0).at(-1);
+    bubble.scrollIntoView({ block: 'center' });
+    const r = bubble.getBoundingClientRect();
+    return { x: r.left, y: r.top, width: r.width, height: r.height };
+});
+await phone.evaluate(([x, y]) => {
+    const target = document.elementFromPoint(x, y);
+    const touch = new Touch({ identifier: 1, target, clientX: x, clientY: y });
+    target.dispatchEvent(new TouchEvent('touchstart', { touches: [touch], targetTouches: [touch], changedTouches: [touch], bubbles: true }));
+}, [bubbleBox.x + 20, bubbleBox.y + 10]);
+await phone.waitForTimeout(550);
+const longPress = await phone.evaluate(() => ({
+    open: document.getElementById('message-menu').matches(':popover-open'),
+    select: !document.getElementById('select-text-btn').hidden,
+    userSelect: getComputedStyle(document.querySelector('#chat-messages .message')).userSelect,
+}));
+check('долгое нажатие (400 мс) открывает меню, в нём — «Выделить текст»', longPress.open && longPress.select, JSON.stringify(longPress));
+check('текст в пузыре не выделяется сам', longPress.userSelect === 'none', JSON.stringify(longPress));
+await phone.evaluate(([x, y]) => {
+    const target = document.elementFromPoint(x, y);
+    target.dispatchEvent(new TouchEvent('touchend', { bubbles: true }));
+    target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 30, clientY: 30 }));
+}, [bubbleBox.x + 20, bubbleBox.y + 10]);
+await phone.waitForTimeout(200);
+check('системный contextmenu вслед за долгим нажатием меню второй раз не открывает (Android)',
+    await phone.evaluate(() => document.getElementById('message-menu').style.left) !== '30px');
+await phone.click('#select-text-btn');
+const selected = await phone.evaluate(() => ({
+    text: window.getSelection().toString(),
+    selectable: Boolean(document.querySelector('#chat-messages .message.is-selectable')),
+}));
+check('«Выделить текст» выделяет текст сообщения', selected.text.length > 0 && selected.selectable, JSON.stringify(selected));
+await phone.evaluate(() => window.getSelection().removeAllRanges());
+
+const enter = await phone.evaluate(() => {
+    const input = document.getElementById('message-input');
+    input.value = 'строка';
+    const e = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    input.dispatchEvent(e);
+    const result = { prevented: e.defaultPrevented, hint: input.enterKeyHint, value: input.value };
+    input.value = '';
+    return result;
+});
+check('на телефоне Enter — перенос строки, отправка — кнопкой', !enter.prevented && enter.hint === 'enter' && enter.value === 'строка',
+    JSON.stringify(enter));
+const swipe = await phone.evaluate(() => {
+    const bubble = [...document.querySelectorAll('#chat-messages .message')].at(-1);
+    const r = bubble.getBoundingClientRect();
+    const at = (x, y) => new Touch({ identifier: 2, target: bubble, clientX: x, clientY: y });
+    const x = r.left + 10, y = r.top + r.height / 2;
+    bubble.dispatchEvent(new TouchEvent('touchstart', { touches: [at(x, y)], changedTouches: [at(x, y)], bubbles: true }));
+    for (const dx of [15, 35, 60, 70]) {
+        bubble.dispatchEvent(new TouchEvent('touchmove', { touches: [at(x + dx, y + 2)], changedTouches: [at(x + dx, y + 2)], bubbles: true }));
+    }
+    bubble.dispatchEvent(new TouchEvent('touchend', { changedTouches: [at(x + 70, y + 2)], bubbles: true }));
+    return {
+        reply: !document.getElementById('reply-preview').classList.contains('hidden'),
+        text: document.getElementById('reply-preview-text').textContent,
+        menu: document.getElementById('message-menu').matches(':popover-open'),
+    };
+});
+check('свайп вправо по сообщению — ответ на него', swipe.reply && swipe.text.length > 0 && !swipe.menu, JSON.stringify(swipe));
+await phone.click('#cancel-reply-btn');
+const inline = await phone.evaluate(() => {
+    const bubble = [...document.querySelectorAll('#chat-messages .message.inline-meta')].find(b => b.querySelector('.message-text').textContent.length < 20);
+    if (!bubble) return null;
+    const text = bubble.querySelector('.message-text').getBoundingClientRect();
+    const meta = bubble.querySelector('.message-meta').getBoundingClientRect();
+    return { sameLine: Math.abs(meta.bottom - text.bottom) < 6, height: Math.round(bubble.getBoundingClientRect().height) };
+});
+check('время — в конце строки короткого сообщения, пузырь в одну строку', inline && inline.sameLine && inline.height < 56, JSON.stringify(inline));
+await phone.evaluate(() => {
+    const bubble = [...document.querySelectorAll('#chat-messages .message')]
+        .filter(b => (b.querySelector('.message-text')?.textContent || '').trim()).at(-1);
+    const text = bubble.querySelector('.message-text');
+    const r = text.getBoundingClientRect();
+    const at = () => new Touch({ identifier: 3, target: text, clientX: r.left + 5, clientY: r.top + 5 });
+    for (let i = 0; i < 2; i++) {
+        text.dispatchEvent(new TouchEvent('touchstart', { touches: [at()], changedTouches: [at()], bubbles: true }));
+        text.dispatchEvent(new TouchEvent('touchend', { changedTouches: [at()], bubbles: true }));
+    }
+});
+await phone.waitForTimeout(1200);
+check('двойной тап по сообщению — ❤️', await phone.locator('#chat-messages .message .reaction.mine[data-emoji="❤️"]').count() === 1);
+
+const phoneLayout = await phone.evaluate(() => {
+    const back = document.getElementById('chat-back-btn');
+    const r = back.getBoundingClientRect();
+    const style = getComputedStyle(back);
+    return {
+        back: { w: Math.round(r.width), h: Math.round(r.height), display: style.display, bg: style.backgroundColor, border: style.borderTopWidth },
+        invite: getComputedStyle(document.getElementById('get-chat-code-btn')).display,
+        short: document.querySelector('#chat-encryption .encryption-badge-short')?.textContent,
+        overscroll: [getComputedStyle(document.getElementById('chat-messages')).overscrollBehaviorY,
+            getComputedStyle(document.getElementById('chats-list')).overscrollBehaviorY],
+        manifest: document.querySelector('link[rel="manifest"]')?.getAttribute('href'),
+    };
+});
+check('«назад» — стрелка без круга, зона 44×44', phoneLayout.back.w === 44 && phoneLayout.back.h === 44 && phoneLayout.back.display === 'grid'
+    && phoneLayout.back.border === '0px' && phoneLayout.back.bg === 'rgba(0, 0, 0, 0)', JSON.stringify(phoneLayout.back));
+check('кнопки приглашения в шапке телефона нет (она в меню чата)', phoneLayout.invite === 'none', phoneLayout.invite);
+check('статус шифрования — коротким словом', Boolean(phoneLayout.short), String(phoneLayout.short));
+check('потянуть список или ленту — не перезагрузка страницы', phoneLayout.overscroll.every(v => v === 'contain'), JSON.stringify(phoneLayout.overscroll));
+const manifest = await (await fetch('http://127.0.0.1:3006/manifest.webmanifest')).json();
+check('манифест: standalone и иконки', phoneLayout.manifest === '/manifest.webmanifest' && manifest.display === 'standalone'
+    && manifest.icons.some(i => i.sizes === '512x512'), JSON.stringify(manifest.icons?.map(i => i.sizes)));
 
 const subline = await phone.evaluate(() => {
     const text = document.querySelector('#chat-encryption .encryption-badge-text');

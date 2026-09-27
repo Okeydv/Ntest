@@ -46,7 +46,7 @@ const bobDevice = await bob.evaluate(async () => {
 });
 const room = await tab1.evaluate(async () => {
     const c = await api('/api/chats', { method: 'POST', body: JSON.stringify({ name: 'Вкладки' }) });
-    return { chatId: c.chat.id, roomId: c.chat.room_id, code: (await api(`/api/chats/invite/${c.chat.id}`)).code };
+    return { chatId: c.chat.id, roomId: c.chat.room_id, code: (await api(`/api/chats/${c.chat.id}/link`, { method: 'POST', body: JSON.stringify({ requireApproval: false }) })).code };
 });
 await bob.evaluate(c => api('/api/chats/join', { method: 'POST', body: JSON.stringify({ code: c }) }), room.code);
 

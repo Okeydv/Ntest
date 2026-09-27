@@ -70,7 +70,7 @@ const bob = await register('bob');
 const created = await alice.req('POST', '/api/chats', { name: 'Давний' });
 const chatId = created.json.chat.id;
 const roomId = created.json.chat.room_id;
-const code = (await alice.req('GET', `/api/chats/invite/${chatId}`)).json.code;
+const code = (await alice.req('POST', `/api/chats/${chatId}/link`, { requireApproval: false })).json.code;
 await bob.req('POST', '/api/chats/join', { code });
 
 /* ------------------------- время входа ------------------------- */

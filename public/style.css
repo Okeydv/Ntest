@@ -253,6 +253,12 @@ body::before {
    [hidden] { display: none } слабее любого авторского. */
 [hidden] { display: none !important; }
 
+/* Своё состояние нажатия вместо серой вспышки браузера на телефоне. */
+html { -webkit-tap-highlight-color: transparent; }
+body { overscroll-behavior: none; }
+.chat-item:active,
+.menu-item:active { background: var(--accent-soft); }
+
 .icon-sprite {
     position: absolute;
     width: 0;
@@ -579,7 +585,8 @@ code, .input-code, .mono {
 
 input[type="text"],
 input[type="email"],
-input[type="password"] {
+input[type="password"],
+input[type="number"] {
     width: 100%;
     padding: 0.8125rem 1rem;
     border: 1px solid var(--border-2);
@@ -601,7 +608,8 @@ input[type="password"] {
 @media (pointer: coarse), (max-width: 640px) {
     input[type="text"]:not(.input-code),
     input[type="email"],
-    input[type="password"] {
+    input[type="password"],
+    input[type="number"] {
         font-size: max(16px, var(--fs-body));
     }
 }
@@ -631,7 +639,8 @@ input::placeholder { color: var(--text-3); }
    светлой теме, и отличается от состояния ошибки не только цветом. */
 input[type="text"]:focus,
 input[type="email"]:focus,
-input[type="password"]:focus {
+input[type="password"]:focus,
+input[type="number"]:focus {
     outline: none;
     border-color: var(--accent);
     background: var(--field-focus);
@@ -953,6 +962,8 @@ input.is-invalid:focus {
 .chats-list {
     flex: 1;
     overflow-y: auto;
+    /* Потянуть список вниз — не перезагрузка страницы (Chrome на Android). */
+    overscroll-behavior: contain;
     padding: 0.25rem 0.75rem 0.75rem;
 }
 
@@ -983,6 +994,43 @@ input.is-invalid:focus {
    проседает до 4.29:1. Заодно это правильнее по смыслу: у открытого чата
    вторая строка должна быть заметнее, а не такой же, как у остальных. */
 .chat-item.active .chat-last { color: var(--text-2); }
+
+/* Узкий список: выбранный чат — в кольце; подсказка «Название · время». */
+@media (min-width: 641px) {
+    .sidebar.is-compact .chat-item.active { background: none; border-color: transparent; }
+    .sidebar.is-compact .chat-item.active .chat-avatar-small {
+        box-shadow: 0 0 0 2px var(--layer-2), 0 0 0 4px var(--accent);
+    }
+}
+.compact-tip {
+    position: fixed;
+    z-index: 70;
+    padding: 0.375rem 0.625rem;
+    border-radius: var(--r-md);
+    background: var(--text);
+    color: var(--layer-1);
+    font-size: var(--fs-sm);
+    white-space: nowrap;
+    pointer-events: none;
+    box-shadow: var(--sh-2, 0 6px 18px rgba(0, 0, 0, 0.25));
+}
+.chat-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* Зелёная точка «в сети» на аватаре. */
+.chat-avatar-small,
+#chat-avatar { position: relative; }
+.chat-avatar-small.is-online::after,
+#chat-avatar.is-online::after {
+    content: '';
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    width: 0.8rem;
+    height: 0.8rem;
+    border: 2px solid var(--layer-2);
+    border-radius: 50%;
+    background: var(--ok);
+}
 
 .chat-avatar-small {
     display: grid;
@@ -1035,6 +1083,11 @@ input.is-invalid:focus {
     color: var(--text-3);
 }
 .chat-item.active .chat-time { color: var(--text-2); }
+.chat-time.has-unread,
+.chat-item.active .chat-time.has-unread { color: var(--accent); font-weight: 600; }
+.chat-last-status { margin-right: 0.25rem; font-weight: 600; color: var(--text-3); }
+.chat-last-status.is-read { color: var(--accent); }
+.chat-last-author { color: var(--text-2); }
 
 .chat-item .chat-last {
     font-size: var(--fs-sm);
@@ -1250,6 +1303,7 @@ input.is-invalid:focus {
 .encryption-badge.is-on { color: var(--ok); }
 .encryption-badge.is-off { color: var(--text-3); }
 .encryption-badge.is-warn { color: var(--danger); }
+.encryption-badge-short { display: none; }
 
 /* Срок исчезающих сообщений в шапке: нажатие открывает меню чата. */
 .expiry-badge {
@@ -1272,6 +1326,24 @@ input.is-invalid:focus {
     .expiry-badge:hover { text-decoration: underline; text-underline-offset: 0.2em; }
 }
 .expiry-badge .icon { flex: none; width: 0.8125rem; height: 0.8125rem; }
+
+/* Срок исчезающих сообщений в меню чата — радиокнопками. */
+.expiry-options { margin: 0 0 1rem; padding: 0; border: 0; }
+.expiry-options legend { padding: 0; margin-bottom: 0.375rem; }
+.radio-row {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    min-height: 44px;
+    padding: 0 0.5rem;
+    border-radius: var(--r-md);
+    cursor: pointer;
+}
+.radio-row input { width: 1.125rem; height: 1.125rem; margin: 0; accent-color: var(--accent); }
+@media (hover: hover) {
+    .radio-row:hover { background: var(--accent-soft); }
+}
+.radio-row:has(input:checked) { font-weight: 600; }
 .expiry-badge-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 /* Совсем мало места (узкий телефон): у шифрования и срока остаются
    значки, текст — в подсказке, у диктора и в меню чата. На ширине
@@ -1320,6 +1392,7 @@ input.is-invalid:focus {
 .chat-messages {
     flex: 1;
     overflow-y: auto;
+    overscroll-behavior: contain;
     display: flex;
     flex-direction: column;
     gap: 0.75rem;
@@ -1361,7 +1434,6 @@ input.is-invalid:focus {
        на светлом начале прежнего градиента он не дотягивал до 4,5:1. */
     background: linear-gradient(140deg, var(--accent-strong) 0%, var(--accent-deep) 100%);
     color: var(--accent-ink);
-    border-bottom-right-radius: var(--r-xs);
     box-shadow: var(--sh-accent);
 }
 
@@ -1372,7 +1444,6 @@ input.is-invalid:focus {
     align-self: flex-start;
     background: var(--layer-3);
     border: 1px solid var(--border);
-    border-bottom-left-radius: var(--r-xs);
     box-shadow: var(--sh-1);
 }
 
@@ -1424,13 +1495,17 @@ input.is-invalid:focus {
 }
 
 .message-more .icon { width: 0.875rem; height: 0.875rem; }
-.message:focus-within .message-more { opacity: 1; }
 @media (hover: hover) {
-    .message:hover .message-more { opacity: 1; }
+    .message:hover .message-more,
+    .message:focus-within .message-more { opacity: 1; }
 }
 
+/* На сенсорном экране меню открывает долгое нажатие, «⋯» не нужна и только
+   занимает место у пузыря. Видна лишь при фокусе с клавиатуры. */
 @media (hover: none) {
-    .message-more { opacity: 0.7; }
+    .message-more { pointer-events: none; }
+    .message:focus-visible .message-more,
+    .message-more:focus-visible { opacity: 1; pointer-events: auto; }
 }
 
 /* На тач-экране палец больше курсора: кнопка выглядит так же, но
@@ -1564,14 +1639,32 @@ input.is-invalid:focus {
     margin-top: 0.5rem;
 }
 
+.emoji { display: block; width: 1.25rem; height: 1.25rem; }
+
 .reaction {
-    padding: 0.125rem 0.5rem;
-    border-radius: var(--r-sm);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    min-height: 1.75rem;
+    padding: 0.125rem 0.5rem 0.125rem 0.375rem;
+    border: 1px solid transparent;
+    border-radius: var(--r-pill);
     background: var(--bubble-inset);
     font-size: var(--fs-sm);
+    color: inherit;
     cursor: pointer;
-    transition: transform var(--dur-1) var(--ease), background var(--dur-2) var(--ease);
+    transition: transform var(--dur-1) var(--ease), background var(--dur-2) var(--ease), border-color var(--dur-2) var(--ease);
 }
+.reaction .emoji { width: 1.125rem; height: 1.125rem; }
+.reaction-count { min-width: 0.5rem; font-size: 0.75rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.reaction-count.count-bump { animation: countBump 200ms var(--ease); }
+@keyframes countBump {
+    from { opacity: 0; transform: translateY(-40%); }
+    to { opacity: 1; transform: none; }
+}
+/* Своя реакция — с обводкой. */
+.reaction.mine { border-color: var(--accent); background: var(--accent-soft); }
+.message.sent .reaction.mine { border-color: rgba(255, 255, 255, 0.75); background: rgba(255, 255, 255, 0.18); }
 
 @media (hover: hover) {
     .reaction:hover { background: var(--bubble-inset-hover); transform: scale(1.08); }
@@ -1609,24 +1702,91 @@ input.is-invalid:focus {
 }
 .message-undelivered .icon { width: 0.875rem; height: 0.875rem; flex: none; }
 
+/* Телефон: долгое нажатие открывает меню, а не выделяет текст и не
+   показывает системное меню. Выделить — пунктом «Выделить текст». */
+@media (pointer: coarse) {
+    .message {
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-touch-callout: none;
+    }
+    .message.is-selectable {
+        -webkit-user-select: text;
+        user-select: text;
+    }
+}
+.message { transition: transform var(--dur-1) var(--ease); }
+.message.is-swipe-ready { box-shadow: -3px 0 0 var(--accent); }
+
+/* Время в конце последней строки: строка времени — в правом нижнем углу,
+   распорка в тексте держит под неё место. */
+.meta-spacer { display: none; }
+.message.inline-meta .meta-spacer {
+    display: inline-block;
+    width: var(--meta-w, 3.5rem);
+    height: 1px;
+}
+.message.inline-meta .message-meta {
+    position: absolute;
+    right: 1rem;
+    bottom: 0.625rem;
+    margin-top: 0;
+}
+
+/* Разделитель не прячется под прилипшей датой дня. */
+.unread-separator { scroll-margin-top: 3rem; }
+
 /* Цитата ведёт к исходному сообщению. */
 .reply-to[data-reply-id] { cursor: pointer; }
 @media (hover: hover) {
     .reply-to[data-reply-id]:hover { background: var(--bubble-inset-hover); }
 }
 
-/* Новая реакция чуть вырастает — 120 мс, без пружины. */
-.reaction.is-new { animation: reactionIn 120ms var(--ease) both; }
+/* Новая реакция всплывает с небольшим «переростом»: 0.9 → 1.1 → 1. */
+.reaction.is-new { animation: reactionIn 240ms var(--ease) both; }
 @keyframes reactionIn {
-    from { opacity: 0; transform: scale(0.9); }
-    to { opacity: 1; transform: none; }
+    0% { opacity: 0; transform: scale(0.9); }
+    60% { opacity: 1; transform: scale(1.1); }
+    100% { opacity: 1; transform: none; }
 }
 
-/* Подряд идущие сообщения одного автора — группа: ближе друг к другу,
-   углы со стороны автора скруглены меньше. */
-.message.is-continuation { margin-top: -0.5rem; }
-.message.sent.is-continuation { border-top-right-radius: var(--r-xs); }
-.message.received.is-continuation { border-top-left-radius: var(--r-xs); }
+/* Подряд идущие сообщения одного автора — группа: 3 px между пузырями,
+   углы со стороны автора внутри группы скруглены меньше, «хвостик» (самый
+   острый угол) — только у последнего. */
+.message.is-continuation { margin-top: calc(3px - 0.75rem); }
+.message.sent.group-end { border-bottom-right-radius: var(--r-xs); }
+.message.received.group-end { border-bottom-left-radius: var(--r-xs); }
+.message.sent:not(.group-end) { border-bottom-right-radius: var(--r-sm); }
+.message.received:not(.group-end) { border-bottom-left-radius: var(--r-sm); }
+.message.sent.is-continuation { border-top-right-radius: var(--r-sm); }
+.message.received.is-continuation { border-top-left-radius: var(--r-sm); }
+
+/* В группе: имя автора — один раз сверху, аватар — у последнего. */
+.message-author,
+.message-avatar { display: none; }
+.chat-messages.is-group .message.received { margin-left: 2.25rem; }
+.chat-messages.is-group .message.received:not(.is-continuation) .message-author {
+    display: block;
+    margin-bottom: 0.125rem;
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    color: var(--author-color, var(--accent));
+    filter: brightness(1.25);
+}
+.chat-messages.is-group .message.received.group-end .message-avatar {
+    position: absolute;
+    left: -2.25rem;
+    bottom: 0;
+    display: grid;
+    place-items: center;
+    width: 1.75rem;
+    height: 1.75rem;
+    border-radius: 50%;
+    background: var(--author-color, var(--accent));
+    color: #fff;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
 
 /* Переход по цитате: исходное сообщение коротко подсвечивается. */
 .message.is-highlighted { animation: highlight 1.6s var(--ease); }
@@ -1698,23 +1858,63 @@ input.is-invalid:focus {
     background: var(--skeleton-base);
 }
 .message-skeleton.received { align-self: flex-start; }
+.history-skeleton { display: flex; flex-direction: column; gap: 0.75rem; padding-bottom: 0.75rem; }
 .message-skeleton.sent { align-self: flex-end; }
 
-/* Реакции в меню сообщения — одной строкой под пунктами. */
+/* Реакции в меню сообщения — строкой сверху, кнопки 44×44. */
 .reaction-row {
     display: flex;
     justify-content: space-between;
     gap: 0.125rem;
-    margin-top: 0.25rem;
-    padding-top: 0.25rem;
-    border-top: 1px solid var(--border);
+    margin-bottom: 0.25rem;
+    padding-bottom: 0.25rem;
+    border-bottom: 1px solid var(--border);
 }
-.reaction-row .reaction-choice {
+.reaction-row .reaction-choice,
+.reaction-row .reaction-more {
     justify-content: center;
-    width: auto;
-    padding: 0.375rem 0.5rem;
-    font-size: 1.125rem;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border-radius: 50%;
 }
+.reaction-row .emoji { width: 1.625rem; height: 1.625rem; }
+.reaction-row .reaction-more .icon { width: 1.25rem; height: 1.25rem; }
+
+/* Весь набор. */
+.reaction-picker {
+    display: none;
+    grid-template-columns: repeat(6, 44px);
+    gap: 0.125rem;
+    max-height: 16rem;
+    overflow-y: auto;
+}
+.reaction-picker:popover-open { display: grid; }
+.reaction-pick {
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    border: none;
+    border-radius: 50%;
+    background: none;
+    cursor: pointer;
+}
+.reaction-pick .emoji { width: 1.625rem; height: 1.625rem; }
+@media (hover: hover) {
+    .reaction-pick:hover { background: var(--accent-soft); }
+}
+
+.reaction-who { min-width: 10rem; max-width: 16rem; }
+.reaction-who-title {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.375rem 0.5rem;
+    font-weight: 600;
+}
+.reaction-who ul { margin: 0; padding: 0 0.5rem 0.375rem; list-style: none; font-size: var(--fs-sm); }
+.reaction-who li { padding: 0.25rem 0; }
 
 .reply-to-author {
     display: block;
@@ -1846,13 +2046,20 @@ input.is-invalid:focus {
     animation: fadeIn var(--dur-1) var(--ease) both;
 }
 .upload-status > .icon { flex: none; width: 1rem; height: 1rem; color: var(--accent); }
-.upload-status-name {
+.upload-status-text {
+    display: flex;
     flex: 1 1 auto;
+    flex-direction: column;
     min-width: 0;
+}
+.upload-status-name,
+.upload-status-note {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+.upload-status-note { font-size: var(--fs-xs); color: var(--text-3); }
+.upload-status-note:empty { display: none; }
 .upload-progress {
     flex: 0 1 8rem;
     height: 0.375rem;
@@ -1891,6 +2098,9 @@ input.is-invalid:focus {
     pointer-events: none;
     animation: fadeIn var(--dur-1) var(--ease) both;
 }
+.drop-zone { flex-direction: column; }
+.drop-zone-title { display: inline-flex; align-items: center; gap: 0.5rem; }
+.drop-zone-note { font-size: var(--fs-sm); font-weight: 400; color: var(--text-2); }
 .drop-zone .icon { width: 1.25rem; height: 1.25rem; color: var(--accent); }
 
 .send-files-list {
@@ -2009,6 +2219,30 @@ input.is-invalid:focus {
 .room-empty.is-strip p { font-size: var(--fs-sm); }
 @media (max-width: 640px) {
     .room-empty.is-strip { flex-wrap: wrap; padding-inline: 1rem; }
+}
+
+/* Подсказка под полем, пока оно в фокусе (не на телефоне). Место под неё
+   есть всегда — поле не прыгает. */
+.composer-hint {
+    margin-top: 0.375rem;
+    font-size: var(--fs-xs);
+    color: var(--text-3);
+    visibility: hidden;
+}
+.message-input-container:focus-within .composer-hint { visibility: visible; }
+@media (pointer: coarse) {
+    .composer-hint { display: none; }
+}
+.reply-preview-hint { flex: none; font-size: var(--fs-xs); color: var(--text-3); }
+@media (pointer: coarse) {
+    .reply-preview-hint { display: none; }
+}
+.reply-preview .reply-cancel {
+    width: 44px;
+    height: 44px;
+    margin: -0.5rem -0.375rem -0.5rem 0;
+    border: none;
+    background: none;
 }
 
 .input-wrapper textarea:disabled {
@@ -2309,23 +2543,49 @@ dialog.modal::backdrop {
     gap: 0.5rem;
     padding: 0.5rem 0.875rem;
     border-radius: var(--r-pill);
-    background: var(--text);
-    color: var(--layer-1);
+    background: var(--warn, #f5a524);
+    color: #1b1b27;
     font-size: var(--fs-sm);
     font-weight: 500;
     box-shadow: var(--sh-2, 0 6px 18px rgba(0, 0, 0, 0.25));
 }
 .connection-status[hidden] { display: none; }
-.connection-dot {
-    width: 0.5rem;
-    height: 0.5rem;
+/* «Соединение…» — жёлтая плашка с кружком загрузки. */
+.connection-spinner {
+    width: 0.875rem;
+    height: 0.875rem;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
     border-radius: 50%;
-    background: var(--warn, #f5a524);
-    animation: connectionPulse 1.2s ease-in-out infinite;
+    animation: connectionSpin 0.9s linear infinite;
+}
+@keyframes connectionSpin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+    .connection-spinner { animation: connectionPulse 1.2s ease-in-out infinite; }
 }
 @keyframes connectionPulse { 50% { opacity: 0.3; } }
 
 .logout-text { text-align: left; }
+/* Подключение устройства на телефоне — окном снизу экрана. */
+@media (max-width: 640px) {
+    #link-scan-modal,
+    #link-login-modal { margin: auto 0 0; width: 100%; }
+    #link-scan-modal .modal-content,
+    #link-login-modal .modal-content {
+        width: 100%;
+        max-height: 85vh;
+        border-radius: var(--r-2xl) var(--r-2xl) 0 0;
+        border-bottom: 0;
+        padding-bottom: env(safe-area-inset-bottom, 0px);
+        animation: sheetIn var(--dur-2) var(--ease) both;
+    }
+}
+@keyframes sheetIn {
+    from { transform: translateY(100%); }
+    to { transform: none; }
+}
+.link-server-note { font-style: italic; }
+
 .link-qr {
     display: block;
     width: min(16rem, 100%);
@@ -2400,6 +2660,278 @@ dialog.modal::backdrop {
     color: var(--text);
     overflow-wrap: anywhere;
 }
+
+/* --- Группы: новый чат, ссылка, запросы, участники ----------------------- */
+
+.btn-sm {
+    flex: 0 0 auto;
+    padding: 0.4375rem 0.75rem;
+    border-radius: var(--r-md);
+    font-size: var(--fs-xs);
+}
+
+/* «Новый чат»: три пути карточками. */
+.new-chat-choice { display: grid; gap: 0.5rem; }
+
+.choice-card {
+    display: flex;
+    align-items: center;
+    gap: 0.875rem;
+    width: 100%;
+    padding: 0.875rem 1rem;
+    border: 1px solid var(--border-2);
+    border-radius: var(--r-lg);
+    background: var(--control);
+    color: var(--text);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: border-color var(--dur-2) var(--ease), background var(--dur-2) var(--ease);
+}
+@media (hover: hover) {
+    .choice-card:hover { border-color: var(--accent-line); background: var(--control-hover); }
+}
+.choice-icon {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 2.5rem;
+    height: 2.5rem;
+    border-radius: var(--r-pill);
+    background: var(--accent-soft);
+    color: var(--accent);
+}
+.choice-icon .icon { width: 1.25rem; height: 1.25rem; }
+.choice-text { display: grid; gap: 0.125rem; min-width: 0; }
+.choice-text strong { font-weight: 600; }
+.choice-text span { font-size: var(--fs-sm); color: var(--text-3); }
+
+/* Кнопка «Назад» в шапке окна — слева от заголовка. */
+#new-chat-modal .modal-header { justify-content: flex-start; }
+#new-chat-modal .modal-header h3 { flex: 1; }
+
+/* Куда ведёт ссылка — до входа. */
+.join-preview {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+    padding: 0.75rem 0.875rem;
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+}
+.join-preview .chat-avatar { background: linear-gradient(140deg, var(--brand-from), var(--brand-to)); }
+.join-preview-text { display: grid; gap: 0.125rem; min-width: 0; }
+.join-preview-text strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.join-preview-text span { font-size: var(--fs-sm); color: var(--text-3); }
+
+.join-sent { text-align: center; }
+.join-sent-icon {
+    display: inline-grid;
+    place-items: center;
+    width: 3rem;
+    height: 3rem;
+    margin-bottom: 0.75rem;
+    border-radius: var(--r-pill);
+    background: var(--accent-soft);
+    color: var(--accent);
+}
+.join-sent-icon .icon { width: 1.5rem; height: 1.5rem; }
+.join-sent h4 { margin-bottom: 0.5rem; font-size: var(--fs-h3, 1.125rem); }
+.join-sent p { margin-bottom: 1.25rem; font-size: var(--fs-sm); color: var(--text-2); }
+
+/* Свои запросы на вход — над списком чатов. */
+.my-requests {
+    display: grid;
+    gap: 0.375rem;
+    margin: 0 0.75rem 0.5rem;
+    padding: 0.625rem 0.75rem;
+    border: 1px solid var(--accent-line);
+    border-radius: var(--r-md);
+    background: var(--accent-soft);
+}
+.my-requests-title {
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    letter-spacing: var(--tr-label);
+    text-transform: uppercase;
+    color: var(--text-2);
+}
+.my-request { display: flex; flex-wrap: wrap; align-items: center; gap: 0.375rem 0.5rem; }
+.my-request-actions { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-left: auto; }
+.my-request > .icon { flex: none; width: 1rem; height: 1rem; color: var(--accent); }
+.my-request-text { display: grid; flex: 1; min-width: 0; font-size: var(--fs-sm); }
+.my-request-text strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.my-request-text span { font-size: var(--fs-xs); color: var(--text-3); }
+@media (min-width: 641px) {
+    .sidebar.is-compact .my-requests { display: none; }
+}
+
+/* Администратору в чате: кто ждёт одобрения. */
+.join-requests-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+    padding: 0.625rem 1.5rem;
+    border: 0;
+    border-bottom: 1px solid var(--border);
+    background: var(--accent-soft);
+    color: var(--text);
+    font: inherit;
+    font-size: var(--fs-sm);
+    text-align: left;
+    cursor: pointer;
+}
+.join-requests-bar[hidden] { display: none; }
+.join-requests-bar .icon { flex: none; width: 1rem; height: 1rem; color: var(--accent); }
+.join-requests-bar span:first-of-type { flex: 1; }
+.join-requests-bar-action { font-weight: 600; color: var(--accent); }
+@media (max-width: 640px) {
+    .join-requests-bar { padding-inline: 1rem; }
+}
+
+.chat-badge.is-requests {
+    display: inline-flex;
+    gap: 0.1875rem;
+    background: var(--control);
+    color: var(--accent);
+    border: 1px solid var(--accent-line);
+    box-shadow: none;
+}
+.chat-badge.is-requests .icon { width: 0.8125rem; height: 0.8125rem; }
+
+/* Ссылка-приглашение: адрес, условия, QR. */
+.invite-link-box { display: grid; gap: 0.5rem; margin-bottom: 1.25rem; }
+.invite-link-box .invite-code-container code {
+    font-family: var(--f-mono);
+    font-size: var(--fs-sm);
+    font-weight: 500;
+    letter-spacing: 0;
+}
+.invite-qr {
+    justify-self: center;
+    width: min(12rem, 60vw);
+    height: auto;
+    border-radius: var(--r-md);
+    image-rendering: pixelated;
+}
+.invite-settings { display: grid; gap: 0.625rem; margin-bottom: 1.25rem; border: 0; padding: 0; }
+.invite-setting {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    font-size: var(--fs-sm);
+}
+.invite-setting select,
+.invite-setting input { width: 10rem; flex: none; padding-block: 0.5rem; }
+
+/* Закреплённые, «Без звука», архив. */
+.chat-marks { display: inline-flex; gap: 0.25rem; flex: none; color: var(--text-3); }
+.chat-marks .icon { width: 0.875rem; height: 0.875rem; }
+.chat-item.is-dragging { opacity: 0.5; }
+.chat-item.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.chat-item.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+/* Черта между закреплёнными и остальными — и в узком списке. */
+.chats-separator { height: 1px; margin: 0.375rem 0.75rem; background: var(--border-2); }
+.chat-badge.is-muted { background: var(--control); color: var(--text-2); box-shadow: none; }
+.archive-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    width: calc(100% - 1rem);
+    margin: 0.25rem 0.5rem;
+    padding: 0.625rem 0.75rem;
+    border: 1px dashed var(--border-2);
+    border-radius: var(--r-md);
+    background: none;
+    color: var(--text-2);
+    font: inherit;
+    font-size: var(--fs-sm);
+    cursor: pointer;
+}
+.archive-toggle .icon { width: 1rem; height: 1rem; }
+@media (min-width: 641px) {
+    .sidebar.is-compact .archive-toggle span { display: none; }
+    .sidebar.is-compact .chat-marks { display: none; }
+}
+.chat-menu-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; margin-bottom: 0.75rem; }
+.chat-menu-row .btn { flex-direction: column; gap: 0.25rem; padding: 0.625rem 0.25rem; font-size: var(--fs-xs); white-space: normal; }
+.icon-up { transform: rotate(90deg); }
+.icon-down { transform: rotate(-90deg); }
+
+/* Приватный режим: когда удалится аккаунт. */
+.anon-note {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0;
+    padding: 0.5rem 1.125rem;
+    border-top: 1px solid var(--border);
+    font-size: var(--fs-xs);
+    color: var(--text-2);
+}
+.anon-note[hidden] { display: none; }
+.anon-note .icon { flex: none; width: 0.9375rem; height: 0.9375rem; color: var(--accent); }
+@media (min-width: 641px) {
+    .sidebar.is-compact .anon-note span { display: none; }
+}
+
+/* QR при встрече. */
+#meet-modal .modal-body { display: grid; gap: 0.75rem; }
+#meet-modal .field-hint { margin: 0; }
+.meet-code { text-align: center; font-size: var(--fs-sm); color: var(--text-2); }
+.meet-code code { font-family: var(--f-mono); color: var(--text); letter-spacing: 0.06em; }
+.meet-result {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    padding: 0.625rem 0.75rem;
+    border-radius: var(--r-md);
+    font-size: var(--fs-sm);
+}
+.meet-result[hidden] { display: none; }
+.meet-result .icon { flex: none; width: 1.125rem; height: 1.125rem; }
+.meet-result.is-ok { background: var(--ok-ring); color: var(--text); }
+.meet-result.is-ok .icon { color: var(--ok); }
+.meet-result.is-warn { background: var(--danger-soft); color: var(--text); }
+.meet-result.is-warn .icon { color: var(--danger); }
+
+/* Группа: название, запросы, участники. */
+.inline-field { display: flex; gap: 0.5rem; }
+.inline-field input { flex: 1; min-width: 0; }
+.inline-field .btn { flex: none; padding-block: 0.625rem; }
+
+.members-section { margin-bottom: 1.25rem; }
+.devices-section > .toggle-row { margin-top: 0.875rem; }
+.members-section .field-label { margin-bottom: 0.5rem; }
+.members-list { display: grid; gap: 0.25rem; margin: 0; padding: 0; list-style: none; }
+.members-skeleton { height: 3rem; border-radius: var(--r-md); }
+
+.member-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 0.625rem;
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+}
+.member-row .chat-avatar-small {
+    width: 2.25rem;
+    height: 2.25rem;
+    font-size: 0.9375rem;
+    background: linear-gradient(140deg, var(--brand-from), var(--brand-to));
+}
+.member-text { display: grid; flex: 1; min-width: 0; }
+.member-text strong { overflow: hidden; font-size: var(--fs-sm); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.member-meta { font-size: var(--fs-xs); color: var(--text-3); }
+.member-verified { flex: none; width: 1.125rem; height: 1.125rem; color: var(--ok); }
+.member-actions,
+.request-actions { display: flex; flex-wrap: wrap; gap: 0.375rem; }
+.member-actions { flex-basis: 100%; justify-content: flex-end; }
+.member-actions[hidden] { display: none; }
 
 /* ============================================================================
    12. КОНТЕКСТНОЕ МЕНЮ, ТОСТЫ
@@ -2491,7 +3023,24 @@ dialog.modal::backdrop {
    окна — там он у верхнего края экрана. */
 dialog.modal .toast { top: calc(1rem + env(safe-area-inset-top, 0px)); bottom: auto; }
 
-.toast-text { min-width: 0; }
+.toast-text { min-width: 0; white-space: pre-line; }
+/* Сколько осталось до конца (например, до удаления): полоска тает. */
+.toast-progress {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 3px;
+    border-radius: 0 0 var(--r-lg) var(--r-lg);
+    background: currentColor;
+    opacity: 0.45;
+    transform-origin: left;
+    animation: toastProgress var(--toast-duration, 5s) linear forwards;
+}
+@keyframes toastProgress {
+    from { transform: scaleX(1); }
+    to { transform: scaleX(0); }
+}
 
 .toast-action {
     flex-shrink: 0;
@@ -2553,7 +3102,29 @@ dialog.modal .toast { top: calc(1rem + env(safe-area-inset-top, 0px)); bottom: a
         transition: transform var(--dur-3) var(--ease), visibility 0s var(--dur-3);
     }
 
-    .chat-back { display: inline-flex; margin-left: -0.5rem; }
+    /* Простая стрелка без круга; нажимается квадрат 44×44. */
+    .chat-back {
+        display: grid;
+        place-items: center;
+        width: 44px;
+        height: 44px;
+        border: none;
+        background: none;
+    }
+    .chat-back .icon { width: 1.375rem; height: 1.375rem; }
+    /* Приглашение — в меню чата: в шапке телефона ему нет места. */
+    #get-chat-code-btn { display: none; }
+    /* Полная подпись — только для экранного диктора, на экране — короткое
+       слово вместо одинокого значка. */
+    .encryption-badge .encryption-badge-text {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+    }
+    .encryption-badge .encryption-badge-short { display: inline; white-space: nowrap; }
 
     .main-content { width: 100%; }
     .message { max-width: 86%; }
@@ -2598,6 +3169,7 @@ dialog.modal .toast { top: calc(1rem + env(safe-area-inset-top, 0px)); bottom: a
 
     .message.is-new,
     .reaction.is-new,
+    .reaction-count.count-bump,
     .auth-container,
     .modal-content,
     .context-menu,

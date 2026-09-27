@@ -2,7 +2,10 @@
 <html lang="ru" data-theme="dark">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
+    <!-- Nyxo можно поставить на главный экран: манифест и иконки. -->
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="apple-touch-icon" href="/icons/icon-192.png">
     <meta name="color-scheme" content="dark light">
     <meta name="theme-color" content="#08080e" media="(prefers-color-scheme: dark)">
     <meta name="theme-color" content="#f4f4f7" media="(prefers-color-scheme: light)">
@@ -71,6 +74,18 @@
         </symbol>
         <symbol id="i-user-plus" viewBox="0 0 24 24">
             <circle cx="10" cy="8" r="3.6"/><path d="M3.5 20.5v-1a4.2 4.2 0 0 1 4.2-4.2h4.6a4.2 4.2 0 0 1 4.2 4.2v1M18.5 7.5v6M15.5 10.5h6"/>
+        </symbol>
+        <symbol id="i-users" viewBox="0 0 24 24">
+            <circle cx="9" cy="8" r="3.4"/><path d="M2.5 20v-.8A4 4 0 0 1 6.5 15.2h5a4 4 0 0 1 4 4v.8"/><path d="M15.5 4.9a3.4 3.4 0 0 1 0 6.2M18 15.3a4 4 0 0 1 3.5 3.9v.8"/>
+        </symbol>
+        <symbol id="i-pin" viewBox="0 0 24 24">
+            <path d="M9 3.5h6M10 3.5v6.2L6.5 14h11L14 9.7V3.5M12 14v6.5"/>
+        </symbol>
+        <symbol id="i-bell-off" viewBox="0 0 24 24">
+            <path d="M8.6 5.2A5.5 5.5 0 0 1 17.5 9.5c0 3.3.8 5.3 1.7 6.5H9.5M6.6 8.4c-.1.4-.1.7-.1 1.1 0 3.3-.8 5.3-1.7 6.5h5M10 19.5a2.2 2.2 0 0 0 4 0M3.5 3.5l17 17"/>
+        </symbol>
+        <symbol id="i-archive" viewBox="0 0 24 24">
+            <rect x="3.5" y="4.5" width="17" height="4.5" rx="1.2"/><path d="M5 9v9.5a1.5 1.5 0 0 0 1.5 1.5h11a1.5 1.5 0 0 0 1.5-1.5V9M10 13h4"/>
         </symbol>
         <symbol id="i-logout" viewBox="0 0 24 24">
             <path d="M9.5 20.5H6a2 2 0 0 1-2-2v-13a2 2 0 0 1 2-2h3.5"/><path d="M16 16.5l4.5-4.5L16 7.5"/><path d="M20.5 12H9.5"/>
@@ -156,7 +171,7 @@
                     <svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg>
                     Войти в приватном режиме
                 </button>
-                <p class="field-hint field-hint-center">Без email и пароля. Данные удалятся при выходе.</p>
+                <p class="field-hint field-hint-center">Без email и пароля. Аккаунт удалится при выходе или после выбранного срока.</p>
                 <button id="link-login-btn" class="btn btn-ghost btn-block" type="button">Войти по QR-коду с другого устройства</button>
             </div>
 
@@ -207,7 +222,16 @@
                 </div>
             </div>
 
+            <!-- Свои запросы на вход в группы: ждут одобрения администратора. -->
+            <section id="my-requests" class="my-requests" aria-label="Запросы на вход" hidden></section>
+
             <div id="chats-list" class="chats-list"></div>
+
+            <!-- Приватный режим: когда аккаунт удалится. -->
+            <p id="anon-note" class="anon-note" hidden>
+                <svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg>
+                <span id="anon-note-text"></span>
+            </p>
 
             <div class="sidebar-footer">
                 <button id="profile-btn" class="btn btn-ghost" type="button">
@@ -253,7 +277,7 @@
                     </div>
                 </div>
                 <div class="chat-actions">
-                    <button id="get-chat-code-btn" class="icon-btn" title="Код приглашения" aria-label="Код приглашения" type="button">
+                    <button id="get-chat-code-btn" class="icon-btn" title="Ссылка-приглашение" aria-label="Ссылка-приглашение" type="button" hidden>
                         <svg class="icon" aria-hidden="true"><use href="#i-link"/></svg>
                     </button>
                     <button id="chat-menu-btn" class="icon-btn" title="Меню чата" aria-label="Меню чата" type="button">
@@ -264,6 +288,12 @@
 
             <!-- Старые сообщения без шифрования в этом чате будут стёрты с сервера. -->
             <div id="plaintext-notice" class="plaintext-notice" role="status" hidden></div>
+            <!-- Администратору группы: кто ждёт одобрения. -->
+            <button id="join-requests-bar" class="join-requests-bar" type="button" hidden>
+                <svg class="icon" aria-hidden="true"><use href="#i-user-plus"/></svg>
+                <span id="join-requests-bar-text"></span>
+                <span class="join-requests-bar-action">Посмотреть</span>
+            </button>
             <div id="chat-messages" class="chat-messages"></div>
             <!-- Группа, где пока только вы: писать некому, и сервер такое не примет —
                  шифровать не для кого, текст лёг бы на него открытым. -->
@@ -277,13 +307,16 @@
                 </div>
                 <button id="room-empty-invite" class="btn btn-primary" type="button">
                     <svg class="icon" aria-hidden="true"><use href="#i-link"/></svg>
-                    Код приглашения
+                    Ссылка-приглашение
                 </button>
             </div>
             <!-- Файл, который тащат в окно: куда его можно бросить. -->
             <div id="drop-zone" class="drop-zone" hidden>
-                <svg class="icon" aria-hidden="true"><use href="#i-attach"/></svg>
-                Отпустите, чтобы отправить
+                <span class="drop-zone-title">
+                    <svg class="icon" aria-hidden="true"><use href="#i-attach"/></svg>
+                    <span id="drop-zone-count">Отпустите, чтобы отправить</span>
+                </span>
+                <span class="drop-zone-note">Автор, дата и место съёмки будут удалены из файлов</span>
             </div>
             <!-- Новое, пока читаешь историю: не прокручиваем, а показываем кнопку. -->
             <button id="jump-down" class="jump-down" type="button" aria-label="К новым сообщениям" hidden>
@@ -292,22 +325,26 @@
             </button>
             <!-- Обрыв сокета: пока его нет, новые сообщения не приходят — это должно быть видно. -->
             <div id="connection-status" class="connection-status" role="status" hidden>
-                <span class="connection-dot" aria-hidden="true"></span>
-                Нет соединения. Переподключаемся…
+                <span class="connection-spinner" aria-hidden="true"></span>
+                <span id="connection-status-text">Соединение…</span>
             </div>
 
             <div id="message-input-container" class="message-input-container hidden">
                 <div id="reply-preview" class="reply-preview hidden">
                     <svg class="icon reply-preview-icon" aria-hidden="true"><use href="#i-reply"/></svg>
                     <span id="reply-preview-text"></span>
-                    <button id="cancel-reply-btn" class="icon-btn icon-btn-sm icon-btn-quiet" title="Отменить ответ" aria-label="Отменить ответ" type="button">
+                    <span class="reply-preview-hint" aria-hidden="true">Esc — отменить</span>
+                    <button id="cancel-reply-btn" class="icon-btn icon-btn-quiet reply-cancel" title="Отменить ответ" aria-label="Отменить ответ" type="button">
                         <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
                     </button>
                 </div>
                 <!-- Файл шифруется и загружается: сколько осталось, и можно отменить. -->
                 <div id="upload-status" class="upload-status" hidden>
                     <svg class="icon" aria-hidden="true"><use href="#i-attach"/></svg>
-                    <span id="upload-status-name" class="upload-status-name"></span>
+                    <span class="upload-status-text">
+                        <span id="upload-status-name" class="upload-status-name"></span>
+                        <span id="upload-status-note" class="upload-status-note"></span>
+                    </span>
                     <progress id="upload-progress" class="upload-progress" max="100" aria-labelledby="upload-status-name"></progress>
                     <span id="upload-status-percent" class="upload-status-percent" aria-hidden="true"></span>
                     <button id="upload-cancel-btn" class="icon-btn icon-btn-sm icon-btn-quiet" title="Отменить отправку" aria-label="Отменить отправку" type="button">
@@ -324,6 +361,8 @@
                         <svg class="icon" aria-hidden="true"><use href="#i-send"/></svg>
                     </button>
                 </div>
+                <!-- Пока поле в фокусе: как отправить и как перенести строку. -->
+                <p class="composer-hint" aria-hidden="true">Enter — отправить · Shift+Enter — новая строка</p>
                 <input type="file" id="file-input" class="hidden" accept="image/*,video/*,.pdf,.txt" multiple>
             </div>
 
@@ -354,30 +393,123 @@
         </div>
     </div>
 
+    <!-- Три пути: личный чат, группа, вход по приглашению. Сначала выбор,
+         потом шаг выбранного пути; «Назад» возвращает к выбору. -->
+    <!-- Приватный режим: сколько хранить аккаунт без активности. -->
+    <dialog id="anon-modal" class="modal" aria-labelledby="anon-modal-title">
+        <div class="modal-content modal-content-sm">
+            <div class="modal-header">
+                <h3 id="anon-modal-title">Приватный режим</h3>
+                <button class="icon-btn icon-btn-sm icon-btn-quiet close-modal" aria-label="Закрыть" type="button">
+                    <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <fieldset class="field expiry-options">
+                    <legend class="field-label">Сколько хранить аккаунт</legend>
+                    <label class="radio-row"><input type="radio" name="anon-lifetime" value="tab" checked> Пока открыта вкладка</label>
+                    <label class="radio-row"><input type="radio" name="anon-lifetime" value="day"> 1 день без активности</label>
+                    <label class="radio-row"><input type="radio" name="anon-lifetime" value="week"> 7 дней без активности</label>
+                    <p class="field-hint">Срок считается от последней активности: пока вкладка открыта, аккаунт жив. «Пока открыта вкладка» — удаление через 30 минут после того, как её закрыли. В любом случае не дольше 7 дней. Удаляется аккаунт вместе с перепиской: ваши сообщения исчезнут и у собеседников.</p>
+                </fieldset>
+                <button id="anon-confirm-btn" class="btn btn-primary btn-block" type="button">Войти</button>
+            </div>
+        </div>
+    </dialog>
+
     <dialog id="new-chat-modal" class="modal" aria-labelledby="new-chat-modal-title">
         <div class="modal-content">
             <div class="modal-header">
+                <button id="new-chat-back" class="icon-btn icon-btn-sm icon-btn-quiet" aria-label="Назад" type="button" hidden>
+                    <svg class="icon" aria-hidden="true"><use href="#i-back"/></svg>
+                </button>
                 <h3 id="new-chat-modal-title">Новый чат</h3>
                 <button class="icon-btn icon-btn-sm icon-btn-quiet close-modal" aria-label="Закрыть" type="button">
                     <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
                 </button>
             </div>
             <div class="modal-body">
-                <div class="field">
-                    <label class="field-label" for="new-chat-name">Название чата</label>
-                    <input type="text" id="new-chat-name" placeholder="Например, «Проект Nyxo»" maxlength="64">
-                    <p class="field-msg" data-msg-for="new-chat-name"></p>
+                <div id="new-chat-choice" class="new-chat-choice" data-pane="choice">
+                    <button class="choice-card" data-path="direct" type="button">
+                        <span class="choice-icon" aria-hidden="true"><svg class="icon"><use href="#i-user"/></svg></span>
+                        <span class="choice-text">
+                            <strong>Личный чат</strong>
+                            <span>С одним человеком — по его коду или QR при встрече</span>
+                        </span>
+                    </button>
+                    <button class="choice-card" data-path="group" type="button">
+                        <span class="choice-icon" aria-hidden="true"><svg class="icon"><use href="#i-users"/></svg></span>
+                        <span class="choice-text">
+                            <strong>Группа</strong>
+                            <span>Общее название, участники входят по ссылке</span>
+                        </span>
+                    </button>
+                    <button class="choice-card" data-path="join" type="button">
+                        <span class="choice-icon" aria-hidden="true"><svg class="icon"><use href="#i-link"/></svg></span>
+                        <span class="choice-text">
+                            <strong>У меня есть приглашение</strong>
+                            <span>Ссылка вида …/join#K7Q2MX9A4TZB</span>
+                        </span>
+                    </button>
                 </div>
-                <button id="create-chat-btn" class="btn btn-primary btn-block" type="button">Создать чат</button>
 
-                <div class="divider"><span class="divider-label">или</span></div>
-
-                <div class="field">
-                    <label class="field-label" for="join-chat-code">Код приглашения</label>
-                    <input type="text" id="join-chat-code" class="input-code" placeholder="K7Q2MX" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="12" enterkeyhint="go">
-                    <p class="field-msg" data-msg-for="join-chat-code"></p>
+                <div data-pane="direct" hidden>
+                    <div class="field">
+                        <label class="field-label" for="direct-code">Код пользователя</label>
+                        <input type="text" id="direct-code" class="input-code" placeholder="K7Q2-MX9A-4TZB" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="20" enterkeyhint="go">
+                        <p class="field-msg" data-msg-for="direct-code"></p>
+                        <p class="field-hint">Код человек найдёт у себя в профиле. Запрос уходит без текста: он увидит только ваше имя и решит, начинать ли переписку.</p>
+                    </div>
+                    <div id="direct-preview" class="join-preview" hidden>
+                        <div id="direct-preview-avatar" class="chat-avatar" aria-hidden="true"></div>
+                        <div class="join-preview-text">
+                            <strong id="direct-preview-name"></strong>
+                            <span id="direct-preview-meta"></span>
+                        </div>
+                    </div>
+                    <button id="direct-find-btn" class="btn btn-primary btn-block" type="button">Найти</button>
+                    <div class="divider"><span class="divider-label">или</span></div>
+                    <button id="direct-meet-btn" class="btn btn-secondary btn-block" type="button">QR при встрече</button>
                 </div>
-                <button id="join-chat-btn" class="btn btn-secondary btn-block" type="button">Присоединиться</button>
+
+                <div data-pane="group" hidden>
+                    <div class="field">
+                        <label class="field-label" for="new-chat-name">Название группы</label>
+                        <input type="text" id="new-chat-name" placeholder="Например, «Проект Nyxo»" maxlength="64" enterkeyhint="done">
+                        <p class="field-msg" data-msg-for="new-chat-name"></p>
+                        <p class="field-hint">Название видят все участники, и сменить его может любой из них. Вы станете администратором: создадите ссылку и будете решать, кого впустить.</p>
+                    </div>
+                    <button id="create-chat-btn" class="btn btn-primary btn-block" type="button">Создать группу</button>
+                </div>
+
+                <div data-pane="join" hidden>
+                    <div class="field">
+                        <label class="field-label" for="join-chat-code">Ссылка-приглашение</label>
+                        <input type="text" id="join-chat-code" class="input-code" placeholder="…/join#K7Q2MX9A4TZB" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="200" enterkeyhint="go">
+                        <p class="field-msg" data-msg-for="join-chat-code"></p>
+                    </div>
+                    <!-- Куда ведёт ссылка — до входа: название, сколько участников, нужно ли одобрение. -->
+                    <div id="join-preview" class="join-preview" hidden>
+                        <div id="join-preview-avatar" class="chat-avatar" aria-hidden="true"></div>
+                        <div class="join-preview-text">
+                            <strong id="join-preview-name"></strong>
+                            <span id="join-preview-meta"></span>
+                        </div>
+                    </div>
+                    <button id="join-chat-btn" class="btn btn-primary btn-block" type="button">Продолжить</button>
+                </div>
+
+                <!-- Запрос ушёл администраторам. Ждать можно и закрыв окно: запрос
+                     виден над списком чатов, там же его можно отменить. -->
+                <div data-pane="sent" class="join-sent" hidden>
+                    <span class="join-sent-icon" aria-hidden="true"><svg class="icon"><use href="#i-timer"/></svg></span>
+                    <h4>Запрос отправлен</h4>
+                    <p id="join-sent-text"></p>
+                    <div class="logout-actions">
+                        <button id="join-sent-cancel" class="btn btn-secondary btn-block" type="button">Отменить запрос</button>
+                        <button id="join-sent-close" class="btn btn-primary btn-block" type="button">Понятно</button>
+                    </div>
+                </div>
             </div>
         </div>
     </dialog>
@@ -391,20 +523,44 @@
                 </button>
             </div>
             <div class="modal-body">
-                <div class="field">
-                    <label class="field-label" for="chat-expiry-select">Исчезающие сообщения</label>
-                    <select id="chat-expiry-select" class="select">
-                        <option value="0">Выключены</option>
-                        <option value="300">Через 5 минут</option>
-                        <option value="3600">Через 1 час</option>
-                        <option value="86400">Через 1 день</option>
-                        <option value="604800">Через 1 неделю</option>
-                    </select>
+                <fieldset id="chat-expiry-options" class="field expiry-options">
+                    <legend class="field-label">Исчезающие сообщения</legend>
+                    <label class="radio-row"><input type="radio" name="chat-expiry" value="0"> Выключены</label>
+                    <label class="radio-row"><input type="radio" name="chat-expiry" value="300"> Через 5 минут</label>
+                    <label class="radio-row"><input type="radio" name="chat-expiry" value="3600"> Через 1 час</label>
+                    <label class="radio-row"><input type="radio" name="chat-expiry" value="86400"> Через 1 день</label>
+                    <label class="radio-row"><input type="radio" name="chat-expiry" value="604800"> Через 1 неделю</label>
                     <p class="field-hint">Срок считается от отправки, прочитано сообщение или нет. Касается новых сообщений всех участников. Исчезнувшее стирается и с сервера, и с устройств, но собеседник мог успеть его сохранить.</p>
+                </fieldset>
+                <div class="chat-menu-row">
+                    <button id="pin-chat-btn" class="btn btn-secondary" type="button">
+                        <svg class="icon" aria-hidden="true"><use href="#i-pin"/></svg>
+                        <span>Закрепить</span>
+                    </button>
+                    <button id="mute-chat-btn" class="btn btn-secondary" type="button">
+                        <svg class="icon" aria-hidden="true"><use href="#i-bell-off"/></svg>
+                        <span>Без звука</span>
+                    </button>
+                    <button id="archive-chat-btn" class="btn btn-secondary" type="button">
+                        <svg class="icon" aria-hidden="true"><use href="#i-archive"/></svg>
+                        <span>В архив</span>
+                    </button>
                 </div>
+                <button id="chat-menu-members-btn" class="btn btn-secondary btn-block" type="button" hidden>
+                    <svg class="icon" aria-hidden="true"><use href="#i-users"/></svg>
+                    Участники и название
+                </button>
+                <button id="chat-menu-invite-btn" class="btn btn-secondary btn-block" type="button" hidden>
+                    <svg class="icon" aria-hidden="true"><use href="#i-link"/></svg>
+                    Ссылка-приглашение
+                </button>
+                <button id="block-peer-btn" class="btn btn-secondary btn-block" type="button" hidden>
+                    <svg class="icon" aria-hidden="true"><use href="#i-alert"/></svg>
+                    <span id="block-peer-label">Заблокировать</span>
+                </button>
                 <button id="delete-chat-btn" class="btn btn-danger btn-block" type="button">
                     <svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg>
-                    Удалить чат
+                    <span id="delete-chat-label">Удалить чат</span>
                 </button>
             </div>
         </div>
@@ -424,7 +580,6 @@
                     <div class="profile-details">
                         <h4 id="profile-username"></h4>
                         <p id="profile-email"></p>
-                        <p id="profile-code" class="profile-code"></p>
                         <span id="profile-anon-badge" class="anon-badge hidden">
                             <svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg>
                             Приватный режим
@@ -442,6 +597,30 @@
                         <button class="color-option" data-color="#F5A524" aria-label="Янтарный" type="button"></button>
                     </div>
                 </div>
+                <!-- Код пользователя: по нему присылают запросы на личную переписку. -->
+                <section class="devices-section" aria-labelledby="user-code-title">
+                    <h4 id="user-code-title" class="field-label">Ваш код</h4>
+                    <div class="invite-code-container">
+                        <code id="user-code-display"></code>
+                        <button id="copy-user-code-btn" class="icon-btn icon-btn-sm" title="Скопировать" aria-label="Скопировать код" type="button">
+                            <svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg>
+                        </button>
+                    </div>
+                    <p class="field-hint">По этому коду вам могут прислать запрос на личную переписку. Сменили код — прежний больше никого к вам не приведёт.</p>
+                    <div class="invite-actions">
+                        <button id="rotate-user-code-btn" class="btn btn-secondary" type="button">Сменить код</button>
+                        <button id="profile-meet-btn" class="btn btn-ghost" type="button">QR при встрече</button>
+                    </div>
+                    <label class="toggle-row">
+                        <input type="checkbox" id="code-requests-toggle">
+                        <span>Запросы по коду</span>
+                    </label>
+                    <p class="field-hint">Если выключить, по коду вас не найти: ищущий увидит то же, что и при неверном коде.</p>
+                </section>
+                <section id="blocked-section" class="devices-section" aria-labelledby="blocked-title" hidden>
+                    <h4 id="blocked-title" class="field-label">Заблокированные</h4>
+                    <ul id="blocked-list" class="devices-list"></ul>
+                </section>
                 <!-- Все устройства, на которых открыт аккаунт. Незнакомое — повод сменить
                      пароль и отозвать его: у него есть ключи и к новым сообщениям. -->
                 <section id="devices-section" class="devices-section" aria-labelledby="devices-title">
@@ -460,6 +639,13 @@
                         <span>Отправлять отметки о прочтении</span>
                     </label>
                     <p class="field-hint">Если выключить, собеседники не увидят, что вы прочитали их сообщения, а вы не увидите, прочитали ли ваши.</p>
+                </div>
+                <div class="field">
+                    <label class="toggle-row">
+                        <input type="checkbox" id="hide-presence-toggle">
+                        <span>Скрывать, когда я в сети</span>
+                    </label>
+                    <p class="field-hint">Собеседники увидят только «был(а) недавно». Вы тоже перестанете видеть, кто в сети.</p>
                 </div>
                 <div class="field">
                     <label class="toggle-row">
@@ -489,6 +675,7 @@
             </div>
             <div class="modal-body">
                 <ul id="send-files-list" class="send-files-list"></ul>
+                <p class="field-hint send-files-note">Перед отправкой из файлов удаляются автор, дата и место съёмки; в чатах с собеседниками файл шифруется.</p>
                 <div class="logout-actions">
                     <button id="send-files-cancel" class="btn btn-secondary btn-block" type="button">Отмена</button>
                     <button id="send-files-confirm" class="btn btn-primary btn-block" type="button">Отправить</button>
@@ -526,28 +713,112 @@
         </div>
     </dialog>
 
+    <!-- Ссылка-приглашение группы: создать, сменить, отключить, QR. Только
+         для администраторов. Кто вошёл по ссылке и кто её сменил, видно в
+         переписке. -->
     <dialog id="invite-modal" class="modal" aria-labelledby="invite-modal-title">
-        <div class="modal-content modal-content-sm">
+        <div class="modal-content">
             <div class="modal-header">
-                <h3 id="invite-modal-title">Код приглашения</h3>
+                <h3 id="invite-modal-title">Ссылка-приглашение</h3>
                 <button class="icon-btn icon-btn-sm icon-btn-quiet close-modal" aria-label="Закрыть" type="button">
                     <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
                 </button>
             </div>
             <div class="modal-body">
-                <p id="invite-text" class="invite-text">Поделитесь этим кодом с друзьями:</p>
-                <div id="invite-code-box" class="invite-code-container">
-                    <code id="invite-code-display"></code>
-                    <button id="copy-invite-btn" class="icon-btn icon-btn-sm" title="Скопировать" aria-label="Скопировать код" type="button">
-                        <svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg>
-                    </button>
+                <p id="invite-text" class="invite-text"></p>
+                <div id="invite-code-box" class="invite-link-box" hidden>
+                    <div class="invite-code-container">
+                        <code id="invite-code-display"></code>
+                        <button id="copy-invite-btn" class="icon-btn icon-btn-sm" title="Скопировать" aria-label="Скопировать ссылку" type="button">
+                            <svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg>
+                        </button>
+                    </div>
+                    <p id="invite-terms" class="field-hint"></p>
+                    <canvas id="invite-qr" class="invite-qr" role="img" aria-label="QR-код ссылки"></canvas>
                 </div>
-                <!-- Утёкший код иначе действовал бы вечно. Кто вошёл по коду и кто
-                     его сменил, видно в переписке. -->
+                <!-- Условия новой ссылки. Применяются при создании и смене. -->
+                <fieldset id="invite-settings" class="field invite-settings">
+                    <legend class="field-label">Условия ссылки</legend>
+                    <label class="invite-setting" for="invite-expiry">
+                        <span>Срок действия</span>
+                        <select id="invite-expiry" class="select">
+                            <option value="3600">1 час</option>
+                            <option value="86400">1 день</option>
+                            <option value="604800">7 дней</option>
+                            <option value="0" selected>Бессрочно</option>
+                        </select>
+                    </label>
+                    <label class="invite-setting" for="invite-limit">
+                        <span>Сколько всего участников</span>
+                        <input type="number" id="invite-limit" min="2" max="1000" inputmode="numeric" placeholder="Без лимита">
+                    </label>
+                    <label class="toggle-row">
+                        <input type="checkbox" id="invite-approval" checked>
+                        <span>Впускать после одобрения</span>
+                    </label>
+                    <p class="field-hint">С одобрением по ссылке приходит запрос, и в группу человек попадает, только когда кто-то из администраторов его впустит.</p>
+                </fieldset>
                 <div class="invite-actions">
-                    <button id="reset-invite-btn" class="btn btn-secondary" type="button">Сменить код</button>
-                    <button id="disable-invite-btn" class="btn btn-ghost" type="button">Отключить приглашение</button>
+                    <button id="reset-invite-btn" class="btn btn-primary" type="button">Создать ссылку</button>
+                    <button id="disable-invite-btn" class="btn btn-ghost" type="button" hidden>Отключить</button>
                 </div>
+            </div>
+        </div>
+    </dialog>
+
+    <!-- Группа: название (менять может любой участник), запросы на вход и
+         участники с ролями. Администратор назначает, снимает и удаляет. -->
+    <dialog id="members-modal" class="modal" aria-labelledby="members-modal-title">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="members-modal-title">Группа</h3>
+                <button class="icon-btn icon-btn-sm icon-btn-quiet close-modal" aria-label="Закрыть" type="button">
+                    <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div class="field">
+                    <label class="field-label" for="group-name-input">Название группы</label>
+                    <div class="inline-field">
+                        <input type="text" id="group-name-input" maxlength="64" enterkeyhint="done">
+                        <button id="group-name-save" class="btn btn-secondary" type="button">Сохранить</button>
+                    </div>
+                    <p class="field-msg" data-msg-for="group-name-input"></p>
+                </div>
+                <section id="requests-section" class="members-section" aria-labelledby="requests-title" hidden>
+                    <h4 id="requests-title" class="field-label">Ждут одобрения</h4>
+                    <ul id="requests-list" class="members-list"></ul>
+                </section>
+                <section class="members-section" aria-labelledby="members-title">
+                    <h4 id="members-title" class="field-label">Участники</h4>
+                    <ul id="members-list" class="members-list"></ul>
+                </section>
+                <button id="members-invite-btn" class="btn btn-secondary btn-block" type="button" hidden>
+                    <svg class="icon" aria-hidden="true"><use href="#i-link"/></svg>
+                    Ссылка-приглашение
+                </button>
+            </div>
+        </div>
+    </dialog>
+
+    <!-- QR при встрече: в нём код пользователя и отпечаток ключей всех его
+         устройств. Второй сканирует камерой — совпало, значит, ключи сверены. -->
+    <dialog id="meet-modal" class="modal" aria-labelledby="meet-modal-title">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="meet-modal-title">QR при встрече</h3>
+                <button class="icon-btn icon-btn-sm icon-btn-quiet close-modal" aria-label="Закрыть" type="button">
+                    <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <p class="field-hint">Покажите этот QR собеседнику или отсканируйте его QR. Так и запрос уйдёт, и ключи сверятся сразу — без 60 цифр.</p>
+                <canvas id="meet-qr" class="invite-qr" role="img" aria-label="QR-код с вашим кодом и отпечатком ключей"></canvas>
+                <p class="meet-code">Ваш код: <code id="meet-code"></code></p>
+                <p class="field-hint">Не пересылайте снимок этого QR через Nyxo: если сервер подменяет ключи, он подменит и снимок.</p>
+                <div id="meet-result" class="meet-result" role="status" hidden></div>
+                <div id="meet-scan" class="safety-scan" hidden></div>
+                <button id="meet-scan-btn" class="btn btn-primary btn-block" type="button">Сканировать камерой</button>
             </div>
         </div>
     </dialog>
@@ -618,6 +889,7 @@
                 <div id="link-confirm-step" hidden>
                     <p class="logout-text"><strong id="link-confirm-label"></strong> получит доступ к вашему аккаунту и новым сообщениям.</p>
                     <p id="link-confirm-age" class="field-hint"></p>
+                    <p class="field-hint link-server-note">Название браузера определил сервер по его данным — само устройство его не присылало. Сверьте с тем, что видите на экране нового устройства.</p>
                     <p class="field-hint">Подключайте только своё устройство, которое видите перед собой. Если код прислали или попросили отсканировать — это чужое устройство.</p>
                     <div class="logout-actions">
                         <button id="link-cancel-btn" class="btn btn-secondary btn-block" type="button">Отмена</button>
@@ -680,9 +952,18 @@
     </dialog>
 
     <div id="message-menu" class="context-menu" role="menu" aria-label="Действия с сообщением" popover="manual">
+        <!-- Реакции — сверху, действия — под ними. Кнопки строит script.js из
+             public/emoji/set.json. -->
+        <div id="reaction-row" class="reaction-row" role="group" aria-label="Реакция"></div>
         <button id="reply-message-btn" class="menu-item" role="menuitem" type="button">
             <svg class="icon" aria-hidden="true"><use href="#i-reply"/></svg>
             Ответить
+        </button>
+        <!-- На телефоне выделение в пузыре выключено (иначе долгое нажатие
+             выделяло бы текст вместо меню) — включается этим пунктом. -->
+        <button id="select-text-btn" class="menu-item" role="menuitem" type="button" hidden>
+            <svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg>
+            Выделить текст
         </button>
         <button id="edit-message-btn" class="menu-item" role="menuitem" type="button">
             <svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg>
@@ -692,14 +973,40 @@
             <svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg>
             Удалить
         </button>
-        <div id="reaction-row" class="reaction-row" role="group" aria-label="Реакция">
-            <button class="menu-item reaction-choice" role="menuitem" type="button" data-emoji="👍" aria-label="Реакция 👍">👍</button>
-            <button class="menu-item reaction-choice" role="menuitem" type="button" data-emoji="❤️" aria-label="Реакция ❤️">❤️</button>
-            <button class="menu-item reaction-choice" role="menuitem" type="button" data-emoji="😂" aria-label="Реакция 😂">😂</button>
-            <button class="menu-item reaction-choice" role="menuitem" type="button" data-emoji="😢" aria-label="Реакция 😢">😢</button>
-            <button class="menu-item reaction-choice" role="menuitem" type="button" data-emoji="🔥" aria-label="Реакция 🔥">🔥</button>
-        </div>
     </div>
+
+    <!-- Действия со строкой списка чатов: правая кнопка мыши, долгое нажатие,
+         клавиша меню или Shift+F10. -->
+    <div id="chat-item-menu" class="context-menu" role="menu" aria-label="Действия с чатом" popover="manual">
+        <button data-action="pin" class="menu-item" role="menuitem" type="button">
+            <svg class="icon" aria-hidden="true"><use href="#i-pin"/></svg>
+            <span>Закрепить</span>
+        </button>
+        <button data-action="up" class="menu-item" role="menuitem" type="button">
+            <svg class="icon icon-up" aria-hidden="true"><use href="#i-back"/></svg>
+            <span>Выше</span>
+        </button>
+        <button data-action="down" class="menu-item" role="menuitem" type="button">
+            <svg class="icon icon-down" aria-hidden="true"><use href="#i-back"/></svg>
+            <span>Ниже</span>
+        </button>
+        <button data-action="mute" class="menu-item" role="menuitem" type="button">
+            <svg class="icon" aria-hidden="true"><use href="#i-bell-off"/></svg>
+            <span>Без звука</span>
+        </button>
+        <button data-action="archive" class="menu-item" role="menuitem" type="button">
+            <svg class="icon" aria-hidden="true"><use href="#i-archive"/></svg>
+            <span>В архив</span>
+        </button>
+    </div>
+
+    <!-- Весь набор реакций («+» в меню сообщения). -->
+    <div id="reaction-picker" class="context-menu reaction-picker" role="dialog" aria-label="Все реакции" popover="auto"></div>
+    <!-- Кто поставил реакцию: долгое нажатие или правый клик по ней. -->
+    <div id="reaction-who" class="context-menu reaction-who" role="dialog" aria-label="Кто поставил реакцию" popover="manual"></div>
+
+    <!-- Узкий список: «Название · время» у чата под мышью или в фокусе. -->
+    <div id="compact-tip" class="compact-tip" role="tooltip" hidden></div>
 
     <!-- Тост — popover="manual": так он в верхнем слое и виден поверх открытого окна. -->
     <div id="toast" class="toast" role="status" aria-live="polite" popover="manual"></div>

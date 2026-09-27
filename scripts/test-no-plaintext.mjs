@@ -5,7 +5,7 @@
 //     почему, текст остаётся в поле, «Повторить» поднимает шифрование и
 //     отправляет;
 //   - у собеседника нет ни одного устройства с ключами — сообщение ждёт на
-//     устройстве («Ждёт ключей собеседника»), на сервер ничего не уходит, в
+//     устройстве («Уйдёт, когда … откроет Nyxo»), на сервер ничего не уходит, в
 //     шапке «У … нет устройства с шифрованием»; ждущее переживает
 //     перезагрузку, его можно отменить; когда у собеседника появляются
 //     ключи, сервер сообщает об этом (peerKeysReady), и сообщение уходит
@@ -54,7 +54,7 @@ async function openRoom(page, name) {
 async function newRoom(owner, name, ...guests) {
     const code = await owner.evaluate(async name => {
         const c = await api('/api/chats', { method: 'POST', body: JSON.stringify({ name }) });
-        return (await api(`/api/chats/invite/${c.chat.id}`)).code;
+        return (await api(`/api/chats/${c.chat.id}/link`, { method: 'POST', body: JSON.stringify({ requireApproval: false }) })).code;
     }, name);
     for (const g of guests) await g.evaluate(c => api('/api/chats/join', { method: 'POST', body: JSON.stringify({ code: c }) }), code);
 }
@@ -112,7 +112,7 @@ const pendingView = await alice.evaluate(() => {
     const el = [...document.querySelectorAll('#chat-messages .message.is-pending')].at(-1);
     return el ? el.textContent : null;
 });
-check('сообщение ждёт на устройстве', pendingView && pendingView.includes('подожду ключей') && pendingView.includes('Ждёт ключей собеседника'), pendingView);
+check('сообщение ждёт на устройстве', pendingView && pendingView.includes('подожду ключей') && pendingView.includes('Уйдёт, когда erin откроет Nyxo. Не закрывайте вкладку'), pendingView);
 check('на сервер ничего не ушло', await count('подожду ключей') === 0
     && (await db.query("SELECT count(*) FROM messages m JOIN chats c ON c.room_id = m.room_id WHERE c.name = 'С Эрин' AND m.message_type <> 'system'")).rows[0].count === '0');
 check('поле очистилось', await alice.inputValue('#message-input') === '');
@@ -150,6 +150,78 @@ check('Боб его получил', await lastText(bob) === 'всем, у ко
 await openRoom(alice, 'Втроём');
 check('пометка остаётся после перезагрузки', await alice.evaluate(() =>
     [...document.querySelectorAll('#chat-messages .message')].at(-1)?.querySelector('.message-undelivered')?.textContent) === note);
+
+/* ------------------------- ответ потерялся ------------------------- */
+
+// Сервер сообщение принял, а ответ до клиента не дошёл. «Повторить» уходит
+// с тем же id — сервер отдаёт сохранённое, второго сообщения нет.
+await openRoom(alice, 'Втроём');
+const mark = Number((await db.query('SELECT max(id) FROM messages')).rows[0].max);
+let dropped = false;
+await alice.route('**/api/messages/encrypted', async route => {
+    if (dropped) return route.continue();
+    dropped = true;
+    await route.fetch();
+    await route.abort('connectionreset');
+});
+await send(alice, 'дойду один раз');
+check('ответ потерялся — предлагают повторить', (await alice.textContent('#toast .toast-action').catch(() => '')) === 'Повторить');
+await alice.click('#toast .toast-action');
+await alice.waitForTimeout(1500);
+await alice.unroute('**/api/messages/encrypted');
+const copies = Number((await db.query('SELECT count(*) FROM messages WHERE id > $1 AND encrypted', [mark])).rows[0].count);
+const bubbles = await alice.locator('#chat-messages .message', { hasText: 'дойду один раз' }).count();
+check('на сервере одно сообщение, на экране один пузырь', bubbles === 1 && copies === 1, `пузырей ${bubbles}, записей ${copies}`);
+await openRoom(bob);
+check('и у Боба оно одно', await bob.locator('#chat-messages .message', { hasText: 'дойду один раз' }).count() === 1);
+
+/* ------------------------- одно сообщение дважды ------------------------- */
+
+const once = await bob.evaluate(async () => {
+    const page = (await api(`/api/messages/${currentChatId}`)).messages;
+    const message = page.filter(m => m.message_type !== 'system').at(-1);
+    clearFeed();
+    // Сокет и история принесли одно и то же разом.
+    await Promise.all([appendMessageDecrypted({ ...message }), appendMessageDecrypted({ ...message })]);
+    const shownTwice = document.querySelectorAll(`#chat-messages [data-message-id="${message.id}"]`).length;
+    appendMessage({ ...message, text: 'заменено', encrypted: false });
+    const afterReplace = document.querySelectorAll(`#chat-messages [data-message-id="${message.id}"]`);
+    return { shownTwice, replaced: afterReplace.length, text: afterReplace[0]?.querySelector('.message-text')?.textContent };
+});
+check('одно сообщение, пришедшее дважды разом, — один пузырь', once.shownTwice === 1, JSON.stringify(once));
+check('повторная отрисовка заменяет пузырь, а не добавляет второй', once.replaced === 1 && once.text === 'заменено', JSON.stringify(once));
+
+/* ------------------------- сокет без шифрования ------------------------- */
+
+// У Кэрол шифрование когда-то не поднималось; сокет после входа всё равно
+// переподключается с её сессией — ответ бота приходит без перезагрузки.
+const dan = await openApp('dan');
+await dan.route('**/api/keys/**', route => route.fulfill({ status: 503, contentType: 'application/json', body: '{"success":false}' }));
+await register(dan, 'dan');
+await dan.locator('.chat-item[data-room-id=""]').first().click();
+await dan.waitForTimeout(800);
+const before = await dan.locator('#chat-messages .message.received').count();
+await send(dan, 'бот, ты тут?');
+await dan.waitForTimeout(2500);
+check('без шифрования сокет живой: ответ бота пришёл сам', await dan.locator('#chat-messages .message.received').count() > before);
+
+/* ------------------------- сервер ключей лёг ------------------------- */
+
+const gina = await openApp('gina');
+await register(gina, 'gina');
+await newRoom(alice, 'С Гиной', gina);
+await openRoom(alice, 'С Гиной');
+await alice.route('**/api/keys/bundle/**', route => route.fulfill({ status: 503, contentType: 'application/json',
+    body: JSON.stringify({ success: false, code: 'KEY_SERVER_UNAVAILABLE', message: 'Шифрование на сервере временно недоступно', errorId: 'abcdef012345' }) }));
+await send(alice, 'без сервера ключей не уйду');
+const downToast = await alice.textContent('#toast');
+check('сервер ключей лёг — «Шифрование на сервере временно недоступно — сообщение не отправлено»',
+    downToast.includes('Шифрование на сервере временно недоступно — сообщение не отправлено'), downToast);
+check('код ошибки — отдельной строкой', /\nКод ошибки: abcdef012345/.test(downToast), JSON.stringify(downToast));
+check('это не «нет ключей у собеседника»: сообщение не встало ждать',
+    await alice.locator('.message.is-pending').count() === 0 && await alice.inputValue('#message-input') === 'без сервера ключей не уйду');
+await alice.unroute('**/api/keys/bundle/**');
+await alice.fill('#message-input', '');
 
 /* ------------------------- бот ------------------------- */
 

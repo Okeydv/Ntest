@@ -1,6 +1,7 @@
 // Лента переписки и статус собеседника.
 //
-//   - «В сети» меняется вживую, когда собеседник уходит и возвращается; у
+//   - «в сети» и зелёная точка меняются вживую, ушедший — «был(а) в 14:05»,
+//     скрывший статус — «был(а) недавно» и сам не видит чужой; у
 //     группы — число участников;
 //   - при открытии чата — разделитель «Непрочитанные» перед первым новым;
 //   - подряд идущие сообщения одного автора собираются в группу;
@@ -68,7 +69,7 @@ const bobPage = await openApp('bob');
 await register(bobPage, 'bob');
 const code = await alice.evaluate(async () => {
     const c = await api('/api/chats', { method: 'POST', body: JSON.stringify({ name: 'Двое' }) });
-    return (await api(`/api/chats/invite/${c.chat.id}`)).code;
+    return (await api(`/api/chats/${c.chat.id}/link`, { method: 'POST', body: JSON.stringify({ requireApproval: false }) })).code;
 });
 await bobPage.evaluate(c => api('/api/chats/join', { method: 'POST', body: JSON.stringify({ code: c }) }), code);
 await openRoom(alice);
@@ -76,16 +77,47 @@ await openRoom(bobPage);
 
 /* ------------------------- в сети ------------------------- */
 
-check('собеседник на месте — «В сети»', await status(alice) === 'В сети', await status(alice));
+check('собеседник на месте — «в сети»', await status(alice) === 'в сети', await status(alice));
+const dots = () => alice.evaluate(() => ({
+    list: Boolean(document.querySelector('.chat-item.active .chat-avatar-small.is-online')),
+    header: document.getElementById('chat-avatar').classList.contains('is-online'),
+}));
+let dot = await dots();
+check('зелёная точка — и в списке, и в шапке', dot.list && dot.header, JSON.stringify(dot));
 const bobContext = bobPage.context();
 await bobPage.close();
 await sleep(1500);
-check('ушёл — «Не в сети» без перезагрузки', await status(alice) === 'Не в сети', await status(alice));
+check('ушёл — «был(а) в …» без перезагрузки', /^был\(а\) в \d{2}:\d{2}$/.test(await status(alice)), await status(alice));
+dot = await dots();
+check('и точки больше нет', !dot.list && !dot.header, JSON.stringify(dot));
+await alice.reload({ waitUntil: 'networkidle' });
+await alice.waitForTimeout(1200);
+await alice.locator(ROOM).first().click();
+await alice.waitForTimeout(1000);
+check('время ухода помнит и сервер (после перезагрузки)', /^был\(а\) в \d{2}:\d{2}$/.test(await status(alice)), await status(alice));
 let bob = await bobContext.newPage();
 bob.on('pageerror', e => errors.push(`bob: ${e.message}`));
 await bob.goto(BASE, { waitUntil: 'networkidle' });
 await sleep(1500);
-check('вернулся — снова «В сети»', await status(alice) === 'В сети', await status(alice));
+check('вернулся — снова «в сети»', await status(alice) === 'в сети', await status(alice));
+await send(alice, 'точка на месте?');
+dot = await dots();
+check('новое сообщение перерисовало строку чата — точка осталась', dot.list && dot.header, JSON.stringify(dot));
+
+// «Скрывать, когда я в сети»: собеседник видит «был(а) недавно», и
+// скрывший сам не видит чужой статус.
+await bob.evaluate(() => api('/api/user/presence', { method: 'POST', body: JSON.stringify({ hidden: true }) }));
+await alice.waitForTimeout(1000);
+check('Боб скрыл статус — у Алисы «был(а) недавно», хотя он в сети', await status(alice) === 'был(а) недавно', await status(alice));
+dot = await dots();
+check('и точки нет', !dot.list && !dot.header, JSON.stringify(dot));
+await bob.evaluate(async () => { await loadChats(); });
+await bob.locator(ROOM).first().click();
+await bob.waitForTimeout(1000);
+check('скрывший сам не видит, что Алиса в сети', await status(bob) === 'был(а) недавно', await status(bob));
+await bob.evaluate(() => api('/api/user/presence', { method: 'POST', body: JSON.stringify({ hidden: false }) }));
+await alice.waitForTimeout(1000);
+check('открыл статус — снова «в сети»', await status(alice) === 'в сети', await status(alice));
 
 /* ------------------------- непрочитанные и группы ------------------------- */
 
@@ -192,6 +224,57 @@ check('новая реакция появляется с анимацией', aw
 await chip(alice).click();
 await alice.waitForTimeout(800);
 check('нажатие на свою реакцию снимает её у обоих', await chip(alice).count() === 0 && await chip(bob).count() === 0);
+
+// Строка реакций — сверху меню, 6 штук и «+», картинки со своего сервера.
+await openMenu(alice, 'пока Алиса читает историю');
+const row = await alice.evaluate(() => {
+    const menu = document.getElementById('message-menu');
+    const choices = [...menu.querySelectorAll('#reaction-row .reaction-choice')];
+    const img = choices[0]?.querySelector('img.emoji');
+    const r = choices[0]?.getBoundingClientRect();
+    return {
+        first: menu.firstElementChild?.id, count: choices.length, more: Boolean(menu.querySelector('.reaction-more')),
+        src: img?.getAttribute('src'), size: r ? [Math.round(r.width), Math.round(r.height)] : null,
+    };
+});
+check('строка реакций — сверху меню: 6 реакций и «+», кнопки 44×44',
+    row.first === 'reaction-row' && row.count === 6 && row.more && row.size?.[0] === 44 && row.size?.[1] === 44, JSON.stringify(row));
+const svg = await fetch(`http://127.0.0.1:3006${row.src}`);
+check('картинка реакции — со своего сервера', svg.status === 200 && /svg/.test(svg.headers.get('content-type') || ''), row.src);
+await alice.click('#reaction-row .reaction-more');
+await alice.waitForTimeout(300);
+const picker = await alice.evaluate(() => ({
+    open: document.getElementById('reaction-picker').matches(':popover-open'),
+    count: document.querySelectorAll('#reaction-picker .reaction-pick').length,
+}));
+check('«+» открывает весь набор', picker.open && picker.count >= 50, JSON.stringify(picker));
+await alice.click('#reaction-picker .reaction-pick[data-emoji="🎉"]');
+await alice.waitForTimeout(800);
+check('реакция из набора ставится', await bubble(bob, 'пока Алиса читает историю').locator('.reaction[data-emoji="🎉"]').count() === 1);
+
+// Две одинаковые — счётчик 2, своя выделена.
+await openMenu(bob, 'пока Алиса читает историю');
+await bob.click('#reaction-row .reaction-choice[data-emoji="👍"]');
+await openMenu(alice, 'пока Алиса читает историю');
+await alice.click('#reaction-row .reaction-choice[data-emoji="👍"]');
+await alice.waitForTimeout(1000);
+const counted = await chip(alice).evaluate(el => ({ count: el.querySelector('.reaction-count').textContent, mine: el.classList.contains('mine') }));
+check('счётчик: две реакции 👍, своя выделена', counted.count === '2' && counted.mine, JSON.stringify(counted));
+check('у собеседника тоже 2 и тоже выделена его', await chip(bob).evaluate(el =>
+    el.querySelector('.reaction-count').textContent === '2' && el.classList.contains('mine')));
+await chip(alice).click({ button: 'right' });
+await alice.waitForTimeout(300);
+const who = await alice.evaluate(() => ({
+    open: document.getElementById('reaction-who').matches(':popover-open'),
+    names: [...document.querySelectorAll('#reaction-who li')].map(li => li.textContent),
+}));
+check('правый клик по реакции — кто поставил', who.open && who.names.includes('bob') && who.names.includes('Вы'), JSON.stringify(who));
+await alice.keyboard.press('Escape');
+const outside = await alice.evaluate(async () => {
+    const id = [...document.querySelectorAll('#chat-messages .message')].at(-1).dataset.messageId;
+    return api('/api/reactions', { method: 'POST', body: JSON.stringify({ messageId: Number(id), emoji: '🦄' }) });
+});
+check('эмодзи не из набора сервер не принимает', outside.success === false, JSON.stringify(outside));
 
 /* ------------------------- черновик и место ------------------------- */
 

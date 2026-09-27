@@ -59,7 +59,7 @@ const A = await user('alice','alice@example.com');
 const a1 = await addDevice(A.j, 'A-ноутбук');
 const chat = await req(A.j, 'POST', '/api/chats', { name: 'Секретный чат' });
 const chatIdA = chat.json.chat.id;
-const code = (await req(A.j, 'GET', `/api/chats/invite/${chatIdA}`)).json.code;
+const code = (await req(A.j, 'POST', `/api/chats/${chatIdA}/link`, { requireApproval: false })).json.code;
 
 const B = await user('bob','bob@example.com');
 const b1 = await addDevice(B.j, 'B-ноутбук');

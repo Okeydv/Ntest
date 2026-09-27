@@ -93,7 +93,7 @@ const bob = await openApp('bob');
 const bobInfo = await register(bob, 'bob');
 const room = await alice.page.evaluate(async () => {
     const c = await api('/api/chats', { method: 'POST', body: JSON.stringify({ name: 'Двое' }) });
-    return { roomId: c.chat.room_id, chatId: c.chat.id, code: (await api(`/api/chats/invite/${c.chat.id}`)).code };
+    return { roomId: c.chat.room_id, chatId: c.chat.id, code: (await api(`/api/chats/${c.chat.id}/link`, { method: 'POST', body: JSON.stringify({ requireApproval: false }) })).code };
 });
 await bob.page.evaluate(c => api('/api/chats/join', { method: 'POST', body: JSON.stringify({ code: c }) }), room.code);
 await openRoom(alice.page, room.roomId);
@@ -208,7 +208,7 @@ const ivy = await openApp('ivy');
 const ivyInfo = await register(ivy, 'ivy');
 const ivyRoom = await alice.page.evaluate(async () => {
     const c = await api('/api/chats', { method: 'POST', body: JSON.stringify({ name: 'С Айви' }) });
-    return { roomId: c.chat.room_id, code: (await api(`/api/chats/invite/${c.chat.id}`)).code };
+    return { roomId: c.chat.room_id, code: (await api(`/api/chats/${c.chat.id}/link`, { method: 'POST', body: JSON.stringify({ requireApproval: false }) })).code };
 });
 await ivy.page.evaluate(c => api('/api/chats/join', { method: 'POST', body: JSON.stringify({ code: c }) }), ivyRoom.code);
 await openRoom(alice.page, ivyRoom.roomId);

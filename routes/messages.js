@@ -8,8 +8,9 @@ const { normalizeExpiry } = require('../lib/disappearing-messages');
 const { sanitizeText } = require('../lib/privacy');
 const { onlyStrings, BAD_FIELDS, getCurrentTime, getSocketRoomKey } = require('../lib/helpers');
 const { receiptsFor, statusFor } = require('../lib/read-state');
-const { E2EE_REQUIRED, ROOM_EMPTY, canWriteTo } = require('../lib/rooms');
+const { E2EE_REQUIRED, ROOM_EMPTY, BLOCKED, canWriteTo, directBlock } = require('../lib/rooms');
 const { plaintextNotice } = require('../lib/plaintext-purge');
+const EMOJI_SET = require('../public/emoji/set.json');
 const { BLOB_ID_RE, MAX_BLOBS_PER_MESSAGE, purgeMessageContent } = require('../lib/storage');
 
 
@@ -139,6 +140,55 @@ module.exports = function registerMessageRoutes(app, ctx) {
         return target ? { id } : { error: 'Сообщение, на которое вы отвечаете, не найдено' };
     }
 
+    // Реакции сообщений: [{ emoji, users: [{ id, username }] }] в порядке
+    // первой реакции. Кто поставил — чтобы показать счётчик, выделить свою и
+    // по долгому нажатию сказать, кто.
+    async function reactionsFor(messageIds) {
+        if (!messageIds.length) return {};
+        const rows = await dbAll(
+            `SELECT r.message_id, r.emoji, r.user_id, u.username FROM reactions r JOIN users u ON u.id = r.user_id
+             WHERE r.message_id = ANY($1::int[]) ORDER BY r.id`, [messageIds]);
+        const byMessage = {};
+        for (const row of rows) {
+            const list = byMessage[row.message_id] || (byMessage[row.message_id] = []);
+            let entry = list.find(e => e.emoji === row.emoji);
+            if (!entry) list.push(entry = { emoji: row.emoji, users: [] });
+            entry.users.push({ id: row.user_id, username: row.username });
+        }
+        return byMessage;
+    }
+
+    // Повтор с тем же client id — уже сохранённое сообщение (см. migrations/010).
+    const CLIENT_ID_RE = /^[A-Za-z0-9_-]{16,64}$/;
+    const validClientId = id => id === undefined || id === null || (typeof id === 'string' && CLIENT_ID_RE.test(id));
+    const isClientIdConflict = error => error && error.code === '23505' && error.constraint === 'messages_user_client_id';
+    async function storedByClientId(userId, clientId) {
+        if (!clientId) return null;
+        return dbGet(
+            `SELECT m.*, u.username, u.avatar AS user_avatar, ex.expires_at FROM messages m
+             JOIN users u ON u.id = m.user_id LEFT JOIN message_expiry ex ON ex.message_id = m.id
+             WHERE m.user_id = $1 AND m.client_id = $2`, [userId, clientId]);
+    }
+    // Зашифрованное сообщение в том виде, в каком его отдаёт отправка.
+    const encryptedView = row => ({
+        id: row.id,
+        chat_id: row.chat_id,
+        room_id: row.room_id,
+        user_id: row.user_id,
+        sender_username: row.username || '',
+        sender_avatar: row.user_avatar || '',
+        sender_device_id: row.sender_device_id,
+        encrypted: true,
+        text: null,
+        message_type: row.message_type,
+        reply_to_id: row.reply_to_id,
+        sent: true,
+        time: row.time,
+        created_at: row.created_at,
+        expires_at: row.expires_at || null,
+        status: 'sent',
+    });
+
     app.post('/api/messages/encrypted', async (req, res) => {
         if (!req.session.userId) return res.status(401).json({ success: false, message: 'Не авторизован' });
         if (!req.session.deviceId) {
@@ -146,8 +196,9 @@ module.exports = function registerMessageRoutes(app, ctx) {
         }
 
         const {
-            chatId, replyToId, expirySeconds, envelopes = [], keyEnvelopes = [], group = null, blobIds = [],
+            chatId, replyToId, expirySeconds, envelopes = [], keyEnvelopes = [], group = null, blobIds = [], clientId = null,
         } = req.body || {};
+        if (!validClientId(clientId)) return res.status(400).json({ success: false, message: 'Некорректный id сообщения' });
 
         if (!Array.isArray(blobIds) || blobIds.length > MAX_BLOBS_PER_MESSAGE
             || !blobIds.every(id => typeof id === 'string' && BLOB_ID_RE.test(id))) {
@@ -179,6 +230,11 @@ module.exports = function registerMessageRoutes(app, ctx) {
             const chat = await dbGet('SELECT * FROM chats WHERE id = $1 AND user_id = $2', [chatId, req.session.userId]);
             if (!chat) return res.status(404).json({ success: false, message: 'Чат не найден' });
             if (!(await canWriteTo(chat, req.session.userId))) return res.status(409).json(ROOM_EMPTY);
+            const blocked = await directBlock(chat, req.session.userId);
+            if (blocked) return res.status(403).json(BLOCKED[blocked]);
+            // Повтор уже принятого: ни второго сообщения, ни второй рассылки.
+            const stored = await storedByClientId(req.session.userId, clientId);
+            if (stored) return res.json({ success: true, duplicate: true, message: encryptedView(stored), missingDeviceIds: [] });
 
             if (groupPayload && !chat.room_id) {
                 return res.status(400).json({ success: false, message: 'Групповое шифрование — только для комнат' });
@@ -226,9 +282,9 @@ module.exports = function registerMessageRoutes(app, ctx) {
             try {
                 await client.query('BEGIN');
                 const inserted = await client.query(
-                    `INSERT INTO messages (chat_id, room_id, user_id, text, message_type, sent, time, status, reply_to_id, encrypted, sender_device_id)
-                     VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, TRUE, $9) RETURNING id, created_at`,
-                    [chatId, roomId, req.session.userId, 'text', 1, time, 'sent', replyTo, senderDeviceId]
+                    `INSERT INTO messages (chat_id, room_id, user_id, text, message_type, sent, time, status, reply_to_id, encrypted, sender_device_id, client_id)
+                     VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, TRUE, $9, $10) RETURNING id, created_at`,
+                    [chatId, roomId, req.session.userId, 'text', 1, time, 'sent', replyTo, senderDeviceId, clientId]
                 );
                 messageId = inserted.rows[0].id;
                 createdAt = inserted.rows[0].created_at;
@@ -352,6 +408,12 @@ module.exports = function registerMessageRoutes(app, ctx) {
                 socketRoomKey,
             });
         } catch (error) {
+            // Два одинаковых запроса разом: второй упёрся в уникальность —
+            // отдаём то, что сохранил первый.
+            if (isClientIdConflict(error)) {
+                const stored = await storedByClientId(req.session.userId, clientId).catch(() => null);
+                if (stored) return res.json({ success: true, duplicate: true, message: encryptedView(stored), missingDeviceIds: [] });
+            }
             if (error.status === 409) {
                 return res.status(409).json({ success: false, message: 'Вложение уже отправлено' });
             }
@@ -478,14 +540,7 @@ module.exports = function registerMessageRoutes(app, ctx) {
             }
 
             const messageIds = messages.map(m => m.id);
-            const placeholders = messageIds.map((_, i) => `$${i + 1}`).join(',');
-            const reactions = await dbAll(
-                `SELECT message_id, STRING_AGG(DISTINCT emoji, ',') as emojis FROM reactions WHERE message_id IN (${placeholders}) GROUP BY message_id`,
-                messageIds
-            );
-
-            const reactionsMap = {};
-            reactions.forEach(r => { reactionsMap[r.message_id] = r.emojis.split(','); });
+            const reactionsMap = await reactionsFor(messageIds);
 
             // Конверты — только адресованные ЭТОМУ устройству. Чужие сервер
             // отдавать не должен: прочитать их устройство всё равно не может,
@@ -568,8 +623,9 @@ module.exports = function registerMessageRoutes(app, ctx) {
 
     app.post('/api/messages', async (req, res) => {
         if (!req.session.userId) return res.json({ success: false, message: 'Не авторизован' });
-        const { chatId, text, replyToId, expirySeconds } = req.body;
+        const { chatId, text, replyToId, expirySeconds, clientId = null } = req.body;
         if (!onlyStrings(text)) return res.status(400).json(BAD_FIELDS);
+        if (!validClientId(clientId)) return res.status(400).json({ success: false, message: 'Некорректный id сообщения' });
         if (!text || text.trim() === '' || !chatId) return res.json({ success: false, message: 'Введите текст сообщения' });
         if (text.length > 4000) return res.json({ success: false, message: 'Сообщение не может быть длиннее 4000 символов' });
 
@@ -577,6 +633,11 @@ module.exports = function registerMessageRoutes(app, ctx) {
             const chat = await dbGet('SELECT * FROM chats WHERE id = $1 AND user_id = $2', [chatId, req.session.userId]);
             if (!chat) return res.json({ success: false, message: 'Чат не найден' });
             if (!chat.is_bot) return res.status(409).json(E2EE_REQUIRED);
+            const again = await storedByClientId(req.session.userId, clientId);
+            if (again) {
+                return res.json({ success: true, duplicate: true, message: {
+                    ...again, sender_username: again.username, sender_avatar: again.user_avatar, status: 'read' } });
+            }
             const reply = await replyTargetFor(chat, replyToId);
             if (reply.error) return res.json({ success: false, message: reply.error });
             const replyTo = reply.id;
@@ -590,10 +651,18 @@ module.exports = function registerMessageRoutes(app, ctx) {
             // Очистка текста от опасных метаданных
             const safeText = sanitizeText(text.trim());
 
-            const result = await pool.query(
-                'INSERT INTO messages (chat_id, room_id, user_id, text, message_type, sent, time, status, reply_to_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id',
-                [chatId, roomId, req.session.userId, safeText, 'text', 1, time, 'sent', replyTo]
-            );
+            let result;
+            try {
+                result = await pool.query(
+                    'INSERT INTO messages (chat_id, room_id, user_id, text, message_type, sent, time, status, reply_to_id, client_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id',
+                    [chatId, roomId, req.session.userId, safeText, 'text', 1, time, 'sent', replyTo, clientId]
+                );
+            } catch (error) {
+                if (!isClientIdConflict(error)) throw error;
+                const stored = await storedByClientId(req.session.userId, clientId);
+                return res.json({ success: true, duplicate: true, message: {
+                    ...stored, sender_username: stored.username, sender_avatar: stored.user_avatar, status: 'read' } });
+            }
             const messageId = result.rows[0].id;
 
             const expiresAt = await applyExpiry(messageId, chatId, expiry);
@@ -751,21 +820,20 @@ module.exports = function registerMessageRoutes(app, ctx) {
     // кто-то вообще" (см. п.1 аудита). Имя файла уникально (Date.now() + random),
     // поэтому джойн messages.file_url -> chats/room_participants однозначно
     // определяет владельца.
-    // В UI предлагается фиксированный набор из 5 эмодзи для реакций. Раньше на
-    // бэке проверялась только длина строки (≤10 символов), а не содержимое — это
-    // пропускало вход в message.reactions, который на фронте рендерится в
-    // innerHTML без escapeHtml (см. п.3 аудита). Теперь бэк принимает только
-    // эмодзи из этого списка.
-    const ALLOWED_REACTION_EMOJIS = new Set(['👍', '❤️', '😂', '😢', '🔥']);
+    // Реакции — только из своего набора (public/emoji/set.json): картинки к
+    // ним лежат на нашем сервере, и на всех устройствах они одинаковые.
+    // Раньше бэк проверял лишь длину строки, и в реакцию можно было положить
+    // что угодно.
+    const ALLOWED_REACTION_EMOJIS = new Set(EMOJI_SET.all);
 
-    // Реакции сообщения — всем в его чате: раньше они менялись только у
+    // Реакции — всем в его чате: раньше они менялись только у
     // поставившего и то после перезагрузки.
     async function broadcastReactions(messageId) {
         const message = await dbGet('SELECT chat_id, room_id FROM messages WHERE id = $1', [messageId]);
         if (!message) return;
-        const rows = await dbAll('SELECT DISTINCT emoji FROM reactions WHERE message_id = $1', [messageId]);
+        const reactions = (await reactionsFor([Number(messageId)]))[messageId] || [];
         io.to(getSocketRoomKey(message.chat_id, message.room_id)).emit('reactionsChanged', {
-            id: Number(messageId), chat_id: message.chat_id, room_id: message.room_id, reactions: rows.map(r => r.emoji),
+            id: Number(messageId), chat_id: message.chat_id, room_id: message.room_id, reactions,
         });
     }
 
