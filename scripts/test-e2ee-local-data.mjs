@@ -183,6 +183,7 @@ check('после выхода из чата от него ничего не о�
 
 /* ------------------------- выход из аккаунта ------------------------- */
 
+await bob.page.click('#settings-btn');
 await bob.page.click('#logout-btn');
 await bob.page.waitForFunction(() => document.getElementById('logout-modal').open);
 check('перед выходом предупреждают, что ключи придётся сверять заново',
@@ -215,6 +216,7 @@ await openRoom(alice.page, ivyRoom.roomId);
 await openRoom(ivy.page, ivyRoom.roomId);
 await send(alice.page, 'прочитаю и после выхода');
 check('до выхода сообщение у Айви', await waitText(ivy.page, 'прочитаю и после выхода'));
+await ivy.page.click('#settings-btn');
 await ivy.page.click('#logout-btn');
 await ivy.page.waitForFunction(() => document.getElementById('logout-modal').open);
 await ivy.page.click('#logout-keep-btn');
@@ -320,7 +322,8 @@ check('вернувшееся в сеть узнаёт о подключённо
     await toastText(laptop.page));
 
 await laptop.page.click('#toast .toast-action');
-await laptop.page.waitForFunction(() => document.getElementById('profile-modal').open);
+await laptop.page.waitForFunction(() => document.getElementById('profile-modal').open
+    && document.querySelector('#devices-list .device-item'));
 const listed = await laptop.page.evaluate(() => [...document.querySelectorAll('#devices-list .device-item')].length);
 check('«Устройства» открывает профиль со списком', listed === 3, `${listed} в списке`);
 laptop.page.once('dialog', d => d.accept());

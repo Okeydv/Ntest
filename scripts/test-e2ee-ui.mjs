@@ -162,7 +162,8 @@ const lastBubbleTimer = page => page.evaluate(() => {
     return bubbles.at(-1)?.querySelector('.message-expiry')?.title || null;
 });
 const systemLines = page => page.evaluate(() =>
-    [...document.querySelectorAll('#chat-messages .message-system')].map(e => e.textContent));
+    // Неразрывный пробел («1 час») — для сравнения обычный.
+    [...document.querySelectorAll('#chat-messages .message-system')].map(e => e.textContent.replace(/\u00a0/g, ' ')));
 
 await alice.page.click('#chat-menu-btn');
 await alice.page.check('#chat-expiry-options input[value="3600"]');
@@ -175,7 +176,7 @@ check('и системное сообщение, кто включил',
     JSON.stringify(await systemLines(bob.page)));
 check('себе — «Вы включили», со значком таймера',
     await alice.page.evaluate(() => [...document.querySelectorAll('#chat-messages .message-system')]
-        .some(l => l.textContent === 'Вы включили исчезающие сообщения · 1 час' && l.querySelector('svg.icon'))),
+        .some(l => l.textContent === 'Вы включили исчезающие сообщения · 1\u00a0час' && l.querySelector('svg.icon'))),
     JSON.stringify(await systemLines(alice.page)));
 
 // Сменили срок — строка о смене; тост с «Отменить» возвращает прежний.

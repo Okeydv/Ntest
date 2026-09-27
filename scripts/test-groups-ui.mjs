@@ -83,7 +83,7 @@ check('группа создана и открыта: администратор
 
 // Ссылка с одобрением — по умолчанию.
 await alice.click('#get-chat-code-btn');
-await alice.waitForFunction(() => document.getElementById('invite-modal').open);
+await alice.waitForFunction(() => document.getElementById('invite-modal').open && !document.getElementById('reset-invite-btn').disabled);
 check('одобрение включено по умолчанию', await alice.isChecked('#invite-approval'));
 await alice.click('#reset-invite-btn');
 await alice.waitForFunction(() => !document.getElementById('invite-code-box').hidden);

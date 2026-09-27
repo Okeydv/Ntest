@@ -72,9 +72,15 @@
     --tr-label: 0.085em;
 
     /* --- Движение ------------------------------------------------------------ */
-    /* Без «отскока» и не дольше четверти секунды: интерфейс, который часто
-       открывают, должен отвечать, а не показывать анимацию. */
+    /* Правила — в docs/motion.md. Появление и уход — ease-out, движение —
+       ease-in-out, шторки и экраны телефона — «ящик». --ease — только для
+       цвета и фона. ease-in не используется. */
     --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+    --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+    --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+    --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+    --dur-press: 120ms;
+    --dur-screen: 250ms;
     --dur-1: 120ms;
     --dur-2: 180ms;
     --dur-3: 240ms;
@@ -105,6 +111,11 @@
     --bg: #08080e;
     --layer-1: #0e0e16;   /* область переписки */
     --layer-2: #14141f;   /* сайдбар, шапки, футеры */
+    --chat-bg-1: rgba(109, 94, 252, 0.16);
+    --chat-bg-2: rgba(168, 108, 245, 0.12);
+    --chat-bg-3: rgba(45, 212, 167, 0.07);
+    --chat-bg-4: rgba(79, 172, 254, 0.09);
+    --chat-pattern-opacity: 0.05;
     --layer-3: #1b1b28;   /* карточка входа, баббл собеседника */
     --layer-4: #232333;   /* модалки, контекстное меню — верхний слой */
     --field: #101019;
@@ -159,6 +170,11 @@
     --bg: #eef0f5;
     --layer-1: #f7f8fb;
     --layer-2: #ffffff;
+    --chat-bg-1: rgba(109, 94, 252, 0.13);
+    --chat-bg-2: rgba(250, 112, 154, 0.10);
+    --chat-bg-3: rgba(45, 212, 167, 0.12);
+    --chat-bg-4: rgba(79, 172, 254, 0.12);
+    --chat-pattern-opacity: 0.06;
     --layer-3: #ffffff;
     --layer-4: #ffffff;
     --field: #f1f2f7;
@@ -231,7 +247,6 @@ body {
     position: relative;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    transition: background var(--dur-3) var(--ease), color var(--dur-3) var(--ease);
 }
 
 /* Подсветка фона: два мягких пятна акцентом. Единственная роль — не дать
@@ -292,7 +307,7 @@ body { overscroll-behavior: none; }
     border: 2px solid transparent;
     background-clip: content-box;
 }
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     ::-webkit-scrollbar-thumb:hover { background-clip: padding-box; }
 }
 
@@ -412,7 +427,7 @@ code, .input-code, .mono {
     cursor: pointer;
     white-space: nowrap;
     transition:
-        transform var(--dur-1) var(--ease),
+        transform var(--dur-press) var(--ease-out),
         box-shadow var(--dur-2) var(--ease),
         background var(--dur-2) var(--ease),
         border-color var(--dur-2) var(--ease),
@@ -431,17 +446,14 @@ code, .input-code, .mono {
     box-shadow: var(--sh-accent), var(--inset-highlight);
 }
 
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .btn-primary:hover {
         transform: translateY(-2px);
         box-shadow: var(--sh-accent-hover), var(--inset-highlight);
     }
 }
 
-.btn-primary:active {
-    transform: translateY(0) scale(0.99);
-    box-shadow: var(--sh-1), var(--inset-highlight);
-}
+.btn-primary:active:not(:disabled) { box-shadow: var(--sh-1), var(--inset-highlight); }
 
 .btn-secondary {
     background: var(--control);
@@ -450,7 +462,7 @@ code, .input-code, .mono {
     box-shadow: var(--sh-1);
 }
 
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .btn-secondary:hover {
         border-color: var(--accent-line);
         background: var(--control-hover);
@@ -470,7 +482,7 @@ code, .input-code, .mono {
     font-size: var(--fs-sm);
 }
 
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .btn-ghost:hover {
         color: var(--text);
         background: var(--accent-soft);
@@ -484,7 +496,7 @@ code, .input-code, .mono {
     box-shadow: var(--sh-danger), var(--inset-highlight);
 }
 
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .btn-danger:hover {
         transform: translateY(-2px);
         filter: brightness(1.06);
@@ -512,14 +524,14 @@ code, .input-code, .mono {
     color: var(--text-2);
     cursor: pointer;
     transition:
-        transform var(--dur-1) var(--ease),
+        transform var(--dur-press) var(--ease-out),
         background var(--dur-2) var(--ease),
         border-color var(--dur-2) var(--ease),
         color var(--dur-2) var(--ease),
         box-shadow var(--dur-2) var(--ease);
 }
 
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .icon-btn:hover {
         color: var(--text);
         background: var(--accent-soft);
@@ -528,9 +540,36 @@ code, .input-code, .mono {
     }
 }
 
-.icon-btn:active { transform: translateY(0) scale(0.94); }
+/* Отклик на нажатие — у всех кнопок один: чуть сжаться (docs/motion.md).
+   translateY(0) — у кнопок, что приподнимаются при наведении. Строки
+   списка чатов не сжимаются. */
+.btn:active:not(:disabled),
+.icon-btn:active:not(:disabled),
+.toast-action:active,
+.reaction:active,
+.reaction-choice:active,
+.reaction-pick:active { transform: translateY(0) scale(0.96); }
+.toast-action,
+.reaction-pick { transition: transform var(--dur-press) var(--ease-out), background var(--dur-2) var(--ease); }
+
+/* Маленькие кнопки (крестики окон, копирование, отмена загрузки, тема) на
+   тач-экране — с невидимой зоной нажатия 44×44. */
+@media (pointer: coarse) {
+    .icon-btn-sm::before { content: ''; position: absolute; inset: calc((2.125rem - 44px) / 2); }
+}
+
+/* Касания: без задержки на «двойной тап — увеличить» (двойной тап по
+   сообщению — ❤️, а не масштаб), без выделения и системного меню при
+   долгом нажатии на кнопки и строки. */
+button, a, [role="button"], .chat-item, .message { touch-action: manipulation; }
+button, [role="button"], .chat-item, .menu-item {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+}
 
 .icon-btn-sm {
+    position: relative;
     width: 2.125rem;
     height: 2.125rem;
 }
@@ -549,7 +588,7 @@ code, .input-code, .mono {
     box-shadow: var(--sh-accent), var(--inset-highlight);
 }
 
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .icon-btn-accent:hover {
         background: linear-gradient(140deg, var(--accent) 0%, var(--accent-2) 100%);
         border-color: transparent;
@@ -827,7 +866,7 @@ input.is-invalid:focus {
     border-radius: var(--r-2xl);
     background: var(--layer-3);
     box-shadow: var(--sh-3);
-    animation: riseIn var(--dur-3) var(--ease) both;
+    animation: riseIn var(--dur-3) var(--ease-out) both;
 }
 
 @keyframes riseIn {
@@ -881,7 +920,7 @@ input.is-invalid:focus {
     transition: color var(--dur-2) var(--ease), background var(--dur-2) var(--ease), box-shadow var(--dur-2) var(--ease);
 }
 
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .auth-tab:hover:not(.active) { color: var(--text); }
 }
 
@@ -895,7 +934,7 @@ input.is-invalid:focus {
 
 .auth-form.active {
     display: block;
-    animation: fadeIn var(--dur-2) var(--ease) both;
+    animation: fadeIn var(--dur-2) var(--ease-out) both;
 }
 
 @keyframes fadeIn {
@@ -978,7 +1017,7 @@ input.is-invalid:focus {
     transition: background var(--dur-2) var(--ease), border-color var(--dur-2) var(--ease);
 }
 
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .chat-item:hover {
         background: var(--accent-soft);
         border-color: var(--border);
@@ -1019,8 +1058,20 @@ input.is-invalid:focus {
 /* Зелёная точка «в сети» на аватаре. */
 .chat-avatar-small,
 #chat-avatar { position: relative; }
+/* Точка «в сети» есть всегда и проявляется (150 мс); без статуса — не видна. */
+.chat-avatar-small::after,
+#chat-avatar::after {
+    opacity: 0;
+    transform: scale(0.5);
+    transition: opacity 150ms var(--ease-out), transform 150ms var(--ease-out);
+}
 .chat-avatar-small.is-online::after,
 #chat-avatar.is-online::after {
+    opacity: 1;
+    transform: none;
+}
+.chat-avatar-small::after,
+#chat-avatar::after {
     content: '';
     position: absolute;
     right: 0;
@@ -1104,8 +1155,24 @@ input.is-invalid:focus {
     font-size: var(--fs-sm);
     color: var(--text-3);
 }
+.empty-illustration { display: grid; place-items: center; margin-bottom: 0.75rem; }
+.empty-illustration svg { width: 7.5rem; height: auto; }
+.ei-line { fill: var(--layer-3); }
+.ei-bubble { fill: var(--layer-3); }
+.ei-own { fill: var(--accent); opacity: 0.8; }
+.ei-dot { fill: var(--accent); }
+.ei-dim { opacity: 0.6; }
+.ei-dimmer { opacity: 0.35; }
+.chat-empty {
+    margin: auto;
+    padding: 2rem 1rem;
+    text-align: center;
+    font-size: var(--fs-sm);
+    color: var(--text-3);
+}
 
 .chat-badge {
+    transition: opacity 150ms var(--ease-out), transform 150ms var(--ease-out);
     display: grid;
     place-items: center;
     min-width: 1.375rem;
@@ -1146,7 +1213,7 @@ input.is-invalid:focus {
     width: 2px;
     transition: background var(--dur-1) var(--ease);
 }
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .sidebar-resizer:hover::after { background: var(--accent-line); }
 }
 .sidebar-resizer:focus-visible { outline: none; }
@@ -1204,22 +1271,59 @@ input.is-invalid:focus {
 
 .main-content {
     position: relative;
+    isolation: isolate;
     flex: 1;
     min-width: 0;
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    background: var(--layer-1);
+    /* Фон чата — четыре мягких пятна и узор плиткой. Он неподвижен и лежит
+       под лентой, а не в ней: прокрутка и отправка его не сдвигают. */
+    background:
+        radial-gradient(60% 50% at 0% 0%, var(--chat-bg-1), transparent 70%),
+        radial-gradient(55% 45% at 100% 10%, var(--chat-bg-2), transparent 70%),
+        radial-gradient(60% 55% at 0% 100%, var(--chat-bg-3), transparent 70%),
+        radial-gradient(55% 50% at 100% 100%, var(--chat-bg-4), transparent 70%),
+        var(--layer-1);
 }
+.main-content::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    background: var(--text);
+    opacity: var(--chat-pattern-opacity);
+    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160' viewBox='0 0 160 160' fill='none' stroke='%23000' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='24' cy='26' r='7'/%3E%3Cpath d='M98 18l4 8 9 1-6.5 6 1.5 9-8-4.5-8 4.5 1.5-9-6.5-6 9-1z'/%3E%3Cpath d='M136 64c6 0 10 4 10 9s-4 9-10 9h-9l-7 6v-6c-3-2-4-5-4-9 0-5 4-9 10-9z'/%3E%3Cpath d='M30 92h20M40 82v20'/%3E%3Crect x='74' y='84' width='18' height='14' rx='3'/%3E%3Cpath d='M78 84v-4a5 5 0 0 1 10 0v4'/%3E%3Ccircle cx='128' cy='130' r='3'/%3E%3Cpath d='M16 142c8-8 16 8 24 0s16 8 24 0'/%3E%3Cpath d='M96 132l10-10M101 122h5v5'/%3E%3C/svg%3E") 0 0 / 160px 160px repeat;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160' viewBox='0 0 160 160' fill='none' stroke='%23000' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='24' cy='26' r='7'/%3E%3Cpath d='M98 18l4 8 9 1-6.5 6 1.5 9-8-4.5-8 4.5 1.5-9-6.5-6 9-1z'/%3E%3Cpath d='M136 64c6 0 10 4 10 9s-4 9-10 9h-9l-7 6v-6c-3-2-4-5-4-9 0-5 4-9 10-9z'/%3E%3Cpath d='M30 92h20M40 82v20'/%3E%3Crect x='74' y='84' width='18' height='14' rx='3'/%3E%3Cpath d='M78 84v-4a5 5 0 0 1 10 0v4'/%3E%3Ccircle cx='128' cy='130' r='3'/%3E%3Cpath d='M16 142c8-8 16 8 24 0s16 8 24 0'/%3E%3Cpath d='M96 132l10-10M101 122h5v5'/%3E%3C/svg%3E") 0 0 / 160px 160px repeat;
+    pointer-events: none;
+}
+/* «Фон: без фона» в настройках. */
+:root[data-chat-bg="plain"] .main-content { background: var(--layer-1); }
+:root[data-chat-bg="plain"] .main-content::before { display: none; }
 
+/* Шапка, плашка о старом тексте и полоса запросов — поверх ленты: лента
+   прокручивается под полупрозрачной шапкой. Высоту верха script.js пишет в
+   --chat-top-h, на неё сдвинуты начало ленты и липкая дата. */
+.chat-overlay-top {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 3;
+}
 .chat-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 1rem;
     padding: 1rem 1.5rem;
-    background: var(--layer-2);
+    background: color-mix(in srgb, var(--layer-2) 82%, transparent);
+    -webkit-backdrop-filter: blur(8px) saturate(1.4);
+    backdrop-filter: blur(8px) saturate(1.4);
     border-bottom: 1px solid var(--border);
+}
+@media (prefers-reduced-transparency: reduce) {
+    .chat-header { background: var(--layer-2); -webkit-backdrop-filter: none; backdrop-filter: none; }
 }
 
 .chat-back { display: none; flex-shrink: 0; }
@@ -1295,7 +1399,7 @@ input.is-invalid:focus {
 
 /* В зашифрованном чате индикатор — вход в сверку ключей. */
 .encryption-badge:not(:disabled) { cursor: pointer; }
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .encryption-badge:not(:disabled):hover { text-decoration: underline; text-underline-offset: 0.2em; }
 }
 
@@ -1322,7 +1426,7 @@ input.is-invalid:focus {
     cursor: pointer;
     border-radius: var(--r-xs);
 }
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .expiry-badge:hover { text-decoration: underline; text-underline-offset: 0.2em; }
 }
 .expiry-badge .icon { flex: none; width: 0.8125rem; height: 0.8125rem; }
@@ -1340,7 +1444,7 @@ input.is-invalid:focus {
     cursor: pointer;
 }
 .radio-row input { width: 1.125rem; height: 1.125rem; margin: 0; accent-color: var(--accent); }
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .radio-row:hover { background: var(--accent-soft); }
 }
 .radio-row:has(input:checked) { font-weight: 600; }
@@ -1396,7 +1500,8 @@ input.is-invalid:focus {
     display: flex;
     flex-direction: column;
     gap: 0.75rem;
-    padding: 1.5rem;
+    padding: calc(var(--chat-top-h, 0px) + 1.25rem) 1.5rem 1.5rem;
+    scroll-padding-top: calc(var(--chat-top-h, 0px) + 2.5rem);
 }
 
 .message {
@@ -1416,13 +1521,11 @@ input.is-invalid:focus {
     transition: height 150ms var(--ease), opacity 150ms var(--ease), padding 150ms var(--ease);
 }
 
-.message.is-new {
-    animation: messageIn var(--dur-2) var(--ease) both;
-}
-
+.message.is-new { animation: messageIn 200ms var(--ease-out) both; }
+.message.sent.is-new { transform-origin: 100% 100%; }
+.message.received.is-new { transform-origin: 0 100%; }
 @keyframes messageIn {
-    from { opacity: 0; transform: translateY(0.5rem); }
-    to { opacity: 1; transform: none; }
+    from { opacity: 0; transform: translateY(8px) scale(0.98); }
 }
 
 .message.sent {
@@ -1434,7 +1537,7 @@ input.is-invalid:focus {
        на светлом начале прежнего градиента он не дотягивал до 4,5:1. */
     background: linear-gradient(140deg, var(--accent-strong) 0%, var(--accent-deep) 100%);
     color: var(--accent-ink);
-    box-shadow: var(--sh-accent);
+    box-shadow: 0 1px 2px rgb(0 0 0 / 0.25);
 }
 
 .message.received {
@@ -1443,8 +1546,29 @@ input.is-invalid:focus {
     --bubble-rule: var(--accent);
     align-self: flex-start;
     background: var(--layer-3);
-    border: 1px solid var(--border);
     box-shadow: var(--sh-1);
+}
+
+/* Хвостик у последнего пузыря группы — того же цвета, что низ пузыря. */
+.message.group-end::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    width: 10px;
+    height: 16px;
+    pointer-events: none;
+}
+.message.sent.group-end::after {
+    right: -6px;
+    background: var(--accent-deep);
+    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 16'%3E%3Cpath d='M0 0C0 9 3 14 10 16H0z'/%3E%3C/svg%3E") no-repeat;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 16'%3E%3Cpath d='M0 0C0 9 3 14 10 16H0z'/%3E%3C/svg%3E") no-repeat;
+}
+.message.received.group-end::after {
+    left: -6px;
+    background: var(--layer-3);
+    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 16'%3E%3Cpath d='M10 0C10 9 7 14 0 16H10z'/%3E%3C/svg%3E") no-repeat;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 16'%3E%3Cpath d='M10 0C10 9 7 14 0 16H10z'/%3E%3C/svg%3E") no-repeat;
 }
 
 .message-content { word-break: break-word; }
@@ -1495,7 +1619,7 @@ input.is-invalid:focus {
 }
 
 .message-more .icon { width: 0.875rem; height: 0.875rem; }
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .message:hover .message-more,
     .message:focus-within .message-more { opacity: 1; }
 }
@@ -1550,7 +1674,10 @@ input.is-invalid:focus {
 
 .day-separator {
     position: sticky;
-    top: 0;
+    /* Липкий отступ считается от края содержимого ленты, а он уже сдвинут
+       под шапку (padding-top ленты): плашка встаёт в 0,5rem под шапкой и в
+       покое на пузырь не наезжает. */
+    top: -0.75rem;
     z-index: 1;
     display: flex;
     justify-content: center;
@@ -1607,10 +1734,10 @@ input.is-invalid:focus {
 .message-image {
     height: auto;
     cursor: pointer;
-    transition: transform var(--dur-2) var(--ease);
+    transition: transform var(--dur-2) var(--ease-out);
 }
 
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .message-image:hover { transform: scale(1.015); }
 }
 
@@ -1627,7 +1754,7 @@ input.is-invalid:focus {
     transition: background var(--dur-2) var(--ease);
 }
 
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .file-attachment a:hover { background: var(--bubble-inset-hover); }
 }
 .file-attachment .icon { width: 1rem; height: 1rem; }
@@ -1653,20 +1780,24 @@ input.is-invalid:focus {
     font-size: var(--fs-sm);
     color: inherit;
     cursor: pointer;
-    transition: transform var(--dur-1) var(--ease), background var(--dur-2) var(--ease), border-color var(--dur-2) var(--ease);
+    transition: transform var(--dur-press) var(--ease-out), background var(--dur-2) var(--ease), border-color var(--dur-2) var(--ease);
 }
 .reaction .emoji { width: 1.125rem; height: 1.125rem; }
 .reaction-count { min-width: 0.5rem; font-size: 0.75rem; font-weight: 600; font-variant-numeric: tabular-nums; }
-.reaction-count.count-bump { animation: countBump 200ms var(--ease); }
-@keyframes countBump {
+.reaction-count { display: inline-block; }
+.reaction-count.count-bump { animation: countUp 200ms var(--ease-out); }
+.reaction-count.count-bump.is-down { animation-name: countDown; }
+@keyframes countUp {
+    from { opacity: 0; transform: translateY(40%); }
+}
+@keyframes countDown {
     from { opacity: 0; transform: translateY(-40%); }
-    to { opacity: 1; transform: none; }
 }
 /* Своя реакция — с обводкой. */
 .reaction.mine { border-color: var(--accent); background: var(--accent-soft); }
 .message.sent .reaction.mine { border-color: rgba(255, 255, 255, 0.75); background: rgba(255, 255, 255, 0.18); }
 
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .reaction:hover { background: var(--bubble-inset-hover); transform: scale(1.08); }
 }
 
@@ -1682,6 +1813,22 @@ input.is-invalid:focus {
 
 /* Ждёт ключей собеседника: пузырь бледнее, под ним — часы и «Отменить». */
 .message.is-pending { opacity: 0.75; }
+.message.is-new.is-settled { animation: none; }
+/* Своё, пока сервер его не принял: сразу в ленте, с часиками вместо
+   галочки. Не ушло — строка «Не отправлено · Повторить · Удалить». */
+.message.is-sending .message-status .icon { width: 0.8125rem; height: 0.8125rem; vertical-align: -0.125rem; }
+.message.is-failed { opacity: 0.85; }
+.message-failed {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.25rem;
+    margin-top: 0.375rem;
+    font-size: var(--fs-xs);
+}
+.message-failed span { display: inline-flex; align-items: center; gap: 0.3rem; font-weight: 600; }
+.message-failed .icon { width: 0.875rem; height: 0.875rem; }
+.message.sent .message-failed .link-inline { color: inherit; font-weight: 600; }
 .message-pending {
     justify-content: space-between;
     gap: 0.75rem;
@@ -1715,8 +1862,28 @@ input.is-invalid:focus {
         user-select: text;
     }
 }
-.message { transition: transform var(--dur-1) var(--ease); }
-.message.is-swipe-ready { box-shadow: -3px 0 0 var(--accent); }
+/* Свайп влево — ответ: пузырь идёт за пальцем (переход снят на время
+   жеста), в освободившемся месте проявляется значок ответа, возврат —
+   пружиной (script.js). */
+.swipe-reply-icon {
+    position: absolute;
+    top: 50%;
+    right: -2.75rem;
+    display: grid;
+    place-items: center;
+    width: 2rem;
+    height: 2rem;
+    margin-top: -1rem;
+    border-radius: 50%;
+    background: var(--accent-soft);
+    color: var(--accent);
+    opacity: 0;
+    transform: scale(0.6);
+    transition: transform 150ms var(--ease-out);
+    pointer-events: none;
+}
+.swipe-reply-icon .icon { width: 1.125rem; height: 1.125rem; }
+.swipe-reply-icon.is-ready { transform: none; }
 
 /* Время в конце последней строки: строка времени — в правом нижнем углу,
    распорка в тексте держит под неё место. */
@@ -1738,12 +1905,12 @@ input.is-invalid:focus {
 
 /* Цитата ведёт к исходному сообщению. */
 .reply-to[data-reply-id] { cursor: pointer; }
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .reply-to[data-reply-id]:hover { background: var(--bubble-inset-hover); }
 }
 
 /* Новая реакция всплывает с небольшим «переростом»: 0.9 → 1.1 → 1. */
-.reaction.is-new { animation: reactionIn 240ms var(--ease) both; }
+.reaction.is-new { animation: reactionIn 240ms var(--ease-out) both; }
 @keyframes reactionIn {
     0% { opacity: 0; transform: scale(0.9); }
     60% { opacity: 1; transform: scale(1.1); }
@@ -1754,8 +1921,8 @@ input.is-invalid:focus {
    углы со стороны автора внутри группы скруглены меньше, «хвостик» (самый
    острый угол) — только у последнего. */
 .message.is-continuation { margin-top: calc(3px - 0.75rem); }
-.message.sent.group-end { border-bottom-right-radius: var(--r-xs); }
-.message.received.group-end { border-bottom-left-radius: var(--r-xs); }
+.message.sent.group-end { border-bottom-right-radius: 0; }
+.message.received.group-end { border-bottom-left-radius: 0; }
 .message.sent:not(.group-end) { border-bottom-right-radius: var(--r-sm); }
 .message.received:not(.group-end) { border-bottom-left-radius: var(--r-sm); }
 .message.sent.is-continuation { border-top-right-radius: var(--r-sm); }
@@ -1789,7 +1956,7 @@ input.is-invalid:focus {
 }
 
 /* Переход по цитате: исходное сообщение коротко подсвечивается. */
-.message.is-highlighted { animation: highlight 1.6s var(--ease); }
+.message.is-highlighted { animation: highlight 1.2s var(--ease); }
 @keyframes highlight {
     0%, 40% { box-shadow: 0 0 0 3px var(--accent); }
     100% { box-shadow: 0 0 0 3px transparent; }
@@ -1830,7 +1997,18 @@ input.is-invalid:focus {
     color: var(--text);
     box-shadow: var(--sh-1);
     cursor: pointer;
-    animation: fadeIn var(--dur-2) var(--ease) both;
+    opacity: 0;
+    transform: scale(0.9);
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity 150ms var(--ease-out), transform 150ms var(--ease-out), visibility 0s 150ms;
+}
+.jump-down.is-visible {
+    opacity: 1;
+    transform: none;
+    visibility: visible;
+    pointer-events: auto;
+    transition: opacity 150ms var(--ease-out), transform 150ms var(--ease-out), visibility 0s;
 }
 .jump-down .icon { width: 1.25rem; height: 1.25rem; transform: rotate(-90deg); }
 .jump-down-count {
@@ -1901,7 +2079,7 @@ input.is-invalid:focus {
     cursor: pointer;
 }
 .reaction-pick .emoji { width: 1.625rem; height: 1.625rem; }
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .reaction-pick:hover { background: var(--accent-soft); }
 }
 
@@ -1986,9 +2164,10 @@ input.is-invalid:focus {
     color: var(--accent);
 }
 
-.reply-preview span {
-    flex: 1;
-    min-width: 0;
+.reply-preview-body { display: grid; flex: 1; min-width: 0; }
+.reply-preview-author { font-size: var(--fs-xs); font-weight: 600; color: var(--accent); }
+.reply-preview-quote,
+.reply-preview-author {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -2043,7 +2222,7 @@ input.is-invalid:focus {
     background: var(--layer-3);
     font-size: var(--fs-sm);
     color: var(--text-2);
-    animation: fadeIn var(--dur-1) var(--ease) both;
+    animation: fadeIn var(--dur-1) var(--ease-out) both;
 }
 .upload-status > .icon { flex: none; width: 1rem; height: 1rem; color: var(--accent); }
 .upload-status-text {
@@ -2096,7 +2275,7 @@ input.is-invalid:focus {
     font-weight: 600;
     color: var(--text);
     pointer-events: none;
-    animation: fadeIn var(--dur-1) var(--ease) both;
+    animation: fadeIn var(--dur-1) var(--ease-out) both;
 }
 .drop-zone { flex-direction: column; }
 .drop-zone-title { display: inline-flex; align-items: center; gap: 0.5rem; }
@@ -2185,7 +2364,7 @@ input.is-invalid:focus {
     align-items: center;
     justify-content: center;
     gap: 0.75rem;
-    padding: 1.5rem;
+    padding: calc(var(--chat-top-h, 0px) + 1.5rem) 1.5rem 1.5rem;
     text-align: center;
 }
 .room-empty-icon {
@@ -2245,6 +2424,38 @@ input.is-invalid:focus {
     background: none;
 }
 
+/* Правая кнопка поля: скрепка / «Отправить» / «Сохранить». Значок
+   меняется проявлением из маленького и размытого — единственное место,
+   где размытие анимируется (4px, коротко; docs/motion.md). */
+.composer-btn { display: grid; place-items: center; }
+.composer-btn[data-mode="send"],
+.composer-btn[data-mode="save"] {
+    background: linear-gradient(140deg, var(--accent) 0%, var(--accent-strong) 100%);
+    border-color: transparent;
+    color: var(--accent-ink);
+    box-shadow: 0 1px 2px rgb(0 0 0 / 0.25), var(--inset-highlight);
+}
+.composer-icon {
+    grid-area: 1 / 1;
+    opacity: 0;
+    transform: scale(0.25);
+    filter: blur(4px);
+    transition:
+        opacity 200ms cubic-bezier(0.2, 0, 0, 1),
+        transform 200ms cubic-bezier(0.2, 0, 0, 1),
+        filter 200ms cubic-bezier(0.2, 0, 0, 1);
+}
+.composer-btn[data-mode="attach"] .composer-icon[data-for="attach"],
+.composer-btn[data-mode="send"] .composer-icon[data-for="send"],
+.composer-btn[data-mode="save"] .composer-icon[data-for="save"] {
+    opacity: 1;
+    transform: none;
+    filter: none;
+}
+@media (prefers-reduced-motion: reduce) {
+    .composer-icon { transform: none; filter: none; transition: opacity 150ms var(--ease-out); }
+}
+
 .input-wrapper textarea:disabled {
     cursor: not-allowed;
     opacity: 0.6;
@@ -2289,15 +2500,37 @@ dialog.modal::backdrop {
     border-radius: var(--r-2xl);
     background: var(--layer-4);
     box-shadow: var(--sh-3);
-    animation: modalIn var(--dur-2) var(--ease) both;
+}
+
+/* Окна: затемнение и окно проявляются и уходят переходом (уход короче). */
+dialog.modal,
+dialog.modal::backdrop {
+    opacity: 0;
+    transition: opacity 150ms var(--ease-out), display 150ms allow-discrete, overlay 150ms allow-discrete;
+}
+dialog.modal[open],
+dialog.modal[open]::backdrop {
+    opacity: 1;
+    transition-duration: 200ms;
+}
+@starting-style {
+    dialog.modal[open],
+    dialog.modal[open]::backdrop { opacity: 0; }
+}
+dialog.modal .modal-content {
+    transform: scale(0.97);
+    transition: transform 150ms var(--ease-out);
+}
+dialog.modal[open] .modal-content {
+    transform: none;
+    transition-duration: 200ms;
+}
+@starting-style {
+    dialog.modal[open] .modal-content { transform: scale(0.97); }
 }
 
 .modal-content-sm { width: min(24rem, calc(100vw - 2.5rem)); }
 
-@keyframes modalIn {
-    from { opacity: 0; transform: scale(0.97); }
-    to { opacity: 1; transform: none; }
-}
 
 .modal-header {
     display: flex;
@@ -2312,7 +2545,7 @@ dialog.modal::backdrop {
 .modal-body .field:last-of-type { margin-bottom: 1.25rem; }
 .modal-body > .btn:last-child { margin-bottom: 0; }
 
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .close-modal:hover {
         background: var(--danger-soft);
         border-color: transparent;
@@ -2393,16 +2626,40 @@ dialog.modal::backdrop {
     border-radius: var(--r-pill);
     cursor: pointer;
     box-shadow: var(--sh-1);
-    transition: transform var(--dur-1) var(--ease), box-shadow var(--dur-2) var(--ease);
+    transition: transform var(--dur-press) var(--ease-out), box-shadow var(--dur-2) var(--ease);
 }
 
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .color-option:hover { transform: scale(1.12); }
 }
 
 .color-option.active {
     box-shadow: 0 0 0 2px var(--layer-4), 0 0 0 4px var(--accent);
 }
+.avatar-emoji-picker {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(2.5rem, 1fr));
+    gap: 0.25rem;
+    margin-bottom: 0.625rem;
+}
+.avatar-emoji {
+    display: grid;
+    place-items: center;
+    height: 2.5rem;
+    border: 0;
+    border-radius: var(--r-md);
+    background: none;
+    font-size: 1.375rem;
+    cursor: pointer;
+    transition: transform var(--dur-press) var(--ease-out), background var(--dur-2) var(--ease);
+}
+.avatar-emoji.active { background: var(--accent-soft); box-shadow: inset 0 0 0 2px var(--accent); }
+@media (hover: hover) and (pointer: fine) {
+    .avatar-emoji:hover { background: var(--accent-soft); }
+}
+.avatar-emoji:active { transform: scale(0.96); }
+/* Эмодзи вместо буквы — чуть крупнее. */
+.is-emoji-avatar { font-size: 1.15em; }
 
 .invite-text {
     margin-bottom: 0.875rem;
@@ -2566,23 +2823,6 @@ dialog.modal::backdrop {
 @keyframes connectionPulse { 50% { opacity: 0.3; } }
 
 .logout-text { text-align: left; }
-/* Подключение устройства на телефоне — окном снизу экрана. */
-@media (max-width: 640px) {
-    #link-scan-modal,
-    #link-login-modal { margin: auto 0 0; width: 100%; }
-    #link-scan-modal .modal-content,
-    #link-login-modal .modal-content {
-        width: 100%;
-        max-height: 85vh;
-        border-radius: var(--r-2xl) var(--r-2xl) 0 0;
-        border-bottom: 0;
-        padding-bottom: env(safe-area-inset-bottom, 0px);
-        animation: sheetIn var(--dur-2) var(--ease) both;
-    }
-}
-@keyframes sheetIn {
-    from { transform: translateY(100%); }
-    to { transform: none; }
 }
 .link-server-note { font-style: italic; }
 
@@ -2688,7 +2928,7 @@ dialog.modal::backdrop {
     cursor: pointer;
     transition: border-color var(--dur-2) var(--ease), background var(--dur-2) var(--ease);
 }
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .choice-card:hover { border-color: var(--accent-line); background: var(--control-hover); }
 }
 .choice-icon {
@@ -2908,6 +3148,18 @@ dialog.modal::backdrop {
 .members-section .field-label { margin-bottom: 0.5rem; }
 .members-list { display: grid; gap: 0.25rem; margin: 0; padding: 0; list-style: none; }
 .members-skeleton { height: 3rem; border-radius: var(--r-md); }
+.invite-skeleton { display: block; height: 2.5rem; border-radius: var(--r-md); }
+/* Раздел профиля, который не загрузился. */
+.section-error {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    margin: 0.5rem 0 0;
+    font-size: var(--fs-sm);
+    color: var(--text-2);
+}
+.section-error .icon { flex: none; width: 1rem; height: 1rem; color: var(--danger); }
+.invite-code-container.is-loading { min-height: 3.5rem; background: var(--skeleton-base); border-color: transparent; }
 
 .member-row {
     display: flex;
@@ -2950,7 +3202,7 @@ dialog.modal::backdrop {
     border-radius: var(--r-lg);
     background: var(--layer-4);
     box-shadow: var(--sh-3);
-    animation: menuIn var(--dur-1) var(--ease) both;
+    animation: menuIn var(--dur-1) var(--ease-out) both;
 }
 
 /* Меню раскрывается из точки, где его открыли: transform-origin ставит
@@ -2979,15 +3231,15 @@ dialog.modal::backdrop {
 }
 
 .menu-item .icon { width: 1rem; height: 1rem; color: var(--text-3); }
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .menu-item:hover { background: var(--accent-soft); }
 }
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .menu-item:hover .icon { color: var(--accent); }
 }
 .menu-item.danger { color: var(--danger); }
 .menu-item.danger .icon { color: var(--danger); }
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .menu-item.danger:hover { background: var(--danger-soft); }
 }
 
@@ -3012,12 +3264,32 @@ dialog.modal::backdrop {
     font-weight: 500;
     color: var(--toast-ink);
     box-shadow: var(--sh-3);
-    animation: toastIn var(--dur-2) var(--ease) both;
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+    transition:
+        opacity 150ms var(--ease-out),
+        transform 150ms var(--ease-out),
+        display 150ms allow-discrete,
+        overlay 150ms allow-discrete;
 }
 
 /* display — только у открытого: иначе авторское flex перебило бы
    браузерное «закрытый popover не показывается». */
-.toast:popover-open { display: flex; }
+.toast:popover-open {
+    display: flex;
+    opacity: 1;
+    transform: none;
+    transition-duration: 220ms;
+}
+@starting-style {
+    .toast:popover-open { opacity: 0; transform: translateY(100%); }
+}
+@starting-style {
+    dialog.modal .toast:popover-open { transform: translateY(-100%); }
+}
+/* Под пальцем, мышью, в фокусе и в скрытой вкладке таймер тоста стоит —
+   и полоска тоже. */
+.toast.is-paused .toast-progress { animation-play-state: paused; }
 
 /* В открытом окне поле ввода недоступно, а тост внизу закрывал бы кнопки
    окна — там он у верхнего края экрана. */
@@ -3055,15 +3327,12 @@ dialog.modal .toast { top: calc(1rem + env(safe-area-inset-top, 0px)); bottom: a
     cursor: pointer;
 }
 
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .toast-action:hover { background: var(--accent-soft); }
 }
 
 .toast-close { flex-shrink: 0; margin: -0.25rem -0.5rem -0.25rem 0; color: var(--toast-ink-2); background: none; border-color: transparent; }
 
-@keyframes toastIn {
-    from { opacity: 0; transform: translateY(1rem); }
-    to { opacity: 1; transform: none; }
 }
 
 /* Тост — плашка противоположного теме цвета: на тёмной теме светлая, на
@@ -3091,16 +3360,9 @@ dialog.modal .toast { top: calc(1rem + env(safe-area-inset-top, 0px)); bottom: a
         z-index: 50;
         /* Поверх экрана целиком — безопасную область отступает сам. */
         padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) 0 env(safe-area-inset-left, 0px);
-        transition: transform var(--dur-3) var(--ease), visibility 0s;
+        transition: transform var(--dur-3) var(--ease-out), visibility 0s;
     }
 
-    /* Список уезжает влево и после этого скрывается совсем: иначе его
-       кнопки оставались бы в порядке Tab и для экранного диктора. */
-    .sidebar.hidden-mobile {
-        transform: translateX(-100%);
-        visibility: hidden;
-        transition: transform var(--dur-3) var(--ease), visibility 0s var(--dur-3);
-    }
 
     /* Простая стрелка без круга; нажимается квадрат 44×44. */
     .chat-back {
@@ -3114,8 +3376,9 @@ dialog.modal .toast { top: calc(1rem + env(safe-area-inset-top, 0px)); bottom: a
     .chat-back .icon { width: 1.375rem; height: 1.375rem; }
     /* Приглашение — в меню чата: в шапке телефона ему нет места. */
     #get-chat-code-btn { display: none; }
-    /* Полная подпись — только для экранного диктора, на экране — короткое
-       слово вместо одинокого значка. */
+    /* Статус шифрования — только значком, подробности — по нажатию; полная
+       подпись остаётся для экранного диктора. */
+    .encryption-badge .encryption-badge-short,
     .encryption-badge .encryption-badge-text {
         position: absolute;
         width: 1px;
@@ -3124,7 +3387,6 @@ dialog.modal .toast { top: calc(1rem + env(safe-area-inset-top, 0px)); bottom: a
         clip-path: inset(50%);
         white-space: nowrap;
     }
-    .encryption-badge .encryption-badge-short { display: inline; white-space: nowrap; }
 
     .main-content { width: 100%; }
     .message { max-width: 86%; }
@@ -3171,9 +3433,7 @@ dialog.modal .toast { top: calc(1rem + env(safe-area-inset-top, 0px)); bottom: a
     .reaction.is-new,
     .reaction-count.count-bump,
     .auth-container,
-    .modal-content,
-    .context-menu,
-    .toast {
+    .context-menu {
         animation-name: fadeIn !important;
         animation-duration: var(--dur-1) !important;
     }
@@ -3186,15 +3446,6 @@ dialog.modal .toast { top: calc(1rem + env(safe-area-inset-top, 0px)); bottom: a
     .skeleton::after { display: none; }
 }
 
-/* На телефоне список не уезжает вбок, а гаснет. */
-@media (prefers-reduced-motion: reduce) and (max-width: 640px) {
-    .sidebar { transition: opacity var(--dur-2) var(--ease), visibility 0s; }
-    .sidebar.hidden-mobile {
-        transform: none;
-        opacity: 0;
-        transition: opacity var(--dur-2) var(--ease), visibility 0s var(--dur-2);
-    }
-}
 
 /* ============================================================================
    Сверка ключей
@@ -3294,4 +3545,212 @@ dialog.modal .toast { top: calc(1rem + env(safe-area-inset-top, 0px)); bottom: a
 @media (max-width: 380px) {
     .safety-entry { padding: 0.875rem; }
     .safety-number { padding: 0.75rem; font-size: 0.9375rem; letter-spacing: 0.02em; }
+}
+
+/* Смена темы — кругом от кнопки (script.js, View Transitions). Свои
+   анимации снимков выключены: круг рисует clip-path. */
+::view-transition-old(root),
+::view-transition-new(root) {
+    animation: none;
+    mix-blend-mode: normal;
+}
+
+/* «Печатает…»: подпись и три точки. В списке — вместо последнего
+   сообщения, акцентным цветом. */
+.typing { display: inline-flex; align-items: baseline; gap: 0.1875rem; color: var(--accent); }
+.typing-dots { display: inline-flex; gap: 2px; }
+.typing-dots i {
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: currentColor;
+    animation: typingDot 1.2s var(--ease-in-out) infinite;
+}
+.typing-dots i:nth-child(2) { animation-delay: 0.15s; }
+.typing-dots i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes typingDot {
+    0%, 60%, 100% { opacity: 0.35; transform: none; }
+    30% { opacity: 1; transform: translateY(-2px); }
+}
+.chat-typing { display: none; font-size: var(--fs-sm); }
+.chat-item.is-typing .chat-last { display: none; }
+.chat-item.is-typing .chat-typing { display: block; }
+@media (prefers-reduced-motion: reduce) {
+    .typing-dots i { animation: none; opacity: 0.7; }
+}
+
+/* ============================================================================
+   ДВИЖЕНИЕ: телефон, шторки, меню сообщения (docs/motion.md)
+   ========================================================================= */
+
+/* Телефон: чат въезжает справа поверх списка, список уходит на четверть и
+   темнеет. Переключает .app.is-chat-open (script.js, showChatScreen);
+   во время свайпа «назад» положение задаёт --back (0…1) без переходов. */
+@media (max-width: 640px) {
+    .sidebar {
+        transform: none;
+        transition: transform 200ms var(--ease-drawer), visibility 0s;
+    }
+    .sidebar::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background: #000;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 200ms var(--ease-drawer);
+    }
+    .app.is-chat-open .sidebar {
+        transform: translateX(-25%);
+        visibility: hidden;
+        transition: transform 250ms var(--ease-drawer), visibility 0s 250ms;
+    }
+    .app.is-chat-open .sidebar::after { opacity: 0.35; transition-duration: 250ms; }
+
+    .main-content {
+        position: fixed;
+        inset: 0;
+        z-index: 60;
+        transform: translateX(100%);
+        visibility: hidden;
+        box-shadow: -8px 0 24px rgb(0 0 0 / 0.25);
+        transition: transform 200ms var(--ease-drawer), visibility 0s 200ms;
+    }
+    .app.is-chat-open .main-content {
+        transform: none;
+        visibility: visible;
+        transition: transform 250ms var(--ease-drawer), visibility 0s;
+    }
+    .chat-header { padding-top: calc(0.75rem + env(safe-area-inset-top, 0px)); }
+
+    .app.is-swiping-back .sidebar {
+        visibility: visible;
+        transform: translateX(calc(-25% * (1 - var(--back, 0))));
+        transition: none;
+    }
+    .app.is-swiping-back .sidebar::after { opacity: calc(0.35 * (1 - var(--back, 0))); transition: none; }
+    .app.is-swiping-back .main-content {
+        transform: translateX(calc(100% * var(--back, 0)));
+        transition: none;
+    }
+
+    /* Все окна — шторкой снизу. */
+    dialog.modal { margin: auto 0 0; width: 100%; }
+    dialog.modal .modal-content,
+    dialog.modal .modal-content-sm {
+        width: 100%;
+        max-height: 90dvh;
+        border-bottom: 0;
+        border-radius: 28px 28px 0 0;
+        padding-bottom: env(safe-area-inset-bottom, 0px);
+        transform: translateY(100%);
+        transition: transform 200ms var(--ease-drawer);
+    }
+    dialog.modal[open] .modal-content {
+        transform: translateY(var(--sheet-drag, 0px));
+        transition-duration: 250ms;
+    }
+    @starting-style {
+        dialog.modal[open] .modal-content { transform: translateY(100%); }
+    }
+    dialog.modal.is-dragging .modal-content { transition: none; }
+    /* «Ручка» — за неё и за шапку шторку тянут вниз. */
+    dialog.modal .modal-header { position: relative; padding-top: 1.5rem; touch-action: none; }
+    dialog.modal .modal-header::before {
+        content: '';
+        position: absolute;
+        top: 0.5rem;
+        left: 50%;
+        width: 36px;
+        height: 4px;
+        margin-left: -18px;
+        border-radius: 2px;
+        background: var(--border-2);
+    }
+}
+
+/* Телефон, долгое нажатие на сообщение: пузырь приподнимается, остальное
+   гаснет, меню встаёт у пузыря. */
+.message-dim {
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    background: #000;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 120ms var(--ease-out);
+}
+.message-dim.is-shown { opacity: 0.35; transition-duration: 150ms; }
+.message.is-lifted {
+    z-index: 5;
+    transform: scale(1.02);
+    box-shadow: var(--sh-2, 0 8px 24px rgb(0 0 0 / 0.25));
+    transition: transform 150ms var(--ease-out), box-shadow 150ms var(--ease-out);
+}
+.message.is-lowering { transition: transform 120ms var(--ease-out), box-shadow 120ms var(--ease-out); }
+
+/* Уменьшить движение: экраны и шторки — затуханием, тосты и окна — только
+   прозрачностью, жесты доводятся мгновенно. */
+@media (prefers-reduced-motion: reduce) {
+    .message.is-new { animation-name: fadeIn; animation-duration: 150ms; }
+    .toast, .toast:popover-open, dialog.modal .modal-content, dialog.modal[open] .modal-content { transform: none; }
+    @starting-style {
+        .toast:popover-open, dialog.modal .toast:popover-open, dialog.modal[open] .modal-content { transform: none; }
+    }
+    .jump-down, .jump-down.is-visible { transform: none; }
+    .message.is-lifted { transform: none; }
+}
+@media (prefers-reduced-motion: reduce) and (max-width: 640px) {
+    .sidebar, .app.is-chat-open .sidebar { transform: none; }
+    .main-content { transform: none; opacity: 0; transition: opacity 150ms var(--ease-out), visibility 0s 150ms; }
+    .app.is-chat-open .main-content { transform: none; opacity: 1; transition: opacity 150ms var(--ease-out), visibility 0s; }
+    dialog.modal .modal-content, dialog.modal[open] .modal-content { transform: none; }
+    @starting-style {
+        dialog.modal[open] .modal-content { transform: none; }
+    }
+}
+
+/* Новый счётчик в списке проявляется (цифры при этом не катятся). */
+@starting-style {
+    .chat-badge { opacity: 0; transform: scale(0.6); }
+}
+
+/* Одно–три эмодзи — крупно и без пузыря; время — плашкой под ними. */
+.message.is-emoji {
+    padding: 0;
+    background: none;
+    box-shadow: none;
+}
+.message.is-emoji::after { display: none; }
+.message.is-emoji .message-text { font-size: 48px; line-height: 1.15; }
+.message.is-emoji[data-emoji-count="1"] .message-text { font-size: 64px; }
+.message.is-emoji[data-emoji-count="2"] .message-text { font-size: 56px; }
+.message.is-emoji .message-meta {
+    width: fit-content;
+    margin-left: auto;
+    padding: 0.0625rem 0.4375rem;
+    border-radius: var(--r-pill);
+    background: color-mix(in srgb, var(--layer-2) 85%, transparent);
+    color: var(--text-2);
+}
+.message.received.is-emoji .message-meta { margin-left: 0; }
+
+/* «Ключи сверены»: галочка прорисовывается, плашка чуть вырастает. */
+.verified-burst {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: var(--r-md);
+    background: var(--ok-ring);
+    font-weight: 600;
+    animation: verifiedIn 300ms var(--ease-out) both;
+}
+.verified-burst svg { width: 1.5rem; height: 1.5rem; fill: none; stroke: var(--ok); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.verified-burst path { stroke-dasharray: 16; stroke-dashoffset: 16; animation: drawCheck 300ms var(--ease-out) 100ms forwards; }
+@keyframes verifiedIn { from { opacity: 0; transform: scale(0.9); } }
+@keyframes drawCheck { to { stroke-dashoffset: 0; } }
+@media (prefers-reduced-motion: reduce) {
+    .verified-burst { animation-name: fadeIn; }
+    .verified-burst path { animation: none; stroke-dashoffset: 0; }
 }

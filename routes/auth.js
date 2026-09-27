@@ -14,6 +14,7 @@ const { addRandomDelay, generateSecureToken } = require('../lib/privacy');
 const e2eeProxy = require('../lib/e2ee-proxy');
 const { hashPassword, checkPassword, DUMMY_PASSWORD_HASH, PASSWORD_PREFIX } = require('../lib/passwords');
 const { loginLimiter, loginEmailSlowdown, registerLimiter, passwordLimiter } = require('../lib/rate-limits');
+const { normalizeAvatar } = require('../lib/avatars');
 const {
     onlyStrings, BAD_FIELDS, getCurrentTime, getSocketRoomKey, normalizeAvatarColor, generateUniqueCodeAsync, generateAnonymousUsernameAsync,
 } = require('../lib/helpers');
@@ -376,11 +377,27 @@ module.exports = function registerAuthRoutes(app, ctx) {
     app.get('/api/user', async (req, res) => {
         if (!req.session.userId) return res.json({ success: false });
         try {
-            const user = await dbGet('SELECT id, unique_code, username, email, avatar, created_at, send_read_receipts, hide_presence FROM users WHERE id = $1', [req.session.userId]);
+            const user = await dbGet('SELECT id, unique_code, username, email, avatar, created_at, send_read_receipts, hide_presence, send_typing FROM users WHERE id = $1', [req.session.userId]);
             if (!user) return res.json({ success: false });
-            res.json({ success: true, user: { id: user.id, uniqueCode: user.unique_code, username: user.username, avatar: user.avatar || '', email: user.email, createdAt: user.created_at, sendReadReceipts: user.send_read_receipts, hidePresence: user.hide_presence } });
+            res.json({ success: true, user: { id: user.id, uniqueCode: user.unique_code, username: user.username, avatar: user.avatar || '', email: user.email, createdAt: user.created_at, sendReadReceipts: user.send_read_receipts, hidePresence: user.hide_presence, sendTyping: user.send_typing } });
         } catch (error) {
             res.json({ success: false });
+        }
+    });
+
+    // Аватар: цвет или эмодзи на градиенте — только из набора
+    // (lib/avatars.js).
+    app.post('/api/user/avatar', async (req, res) => {
+        if (!req.session.userId) return res.status(401).json({ success: false, message: 'Не авторизован' });
+        const avatar = normalizeAvatar(req.body && req.body.avatar);
+        if (!avatar) return res.status(400).json({ success: false, message: 'Такого аватара нет в наборе' });
+        try {
+            await dbRun('UPDATE users SET avatar = $1 WHERE id = $2', [avatar, req.session.userId]);
+            req.session.avatar = avatar;
+            res.json({ success: true, avatar });
+        } catch (error) {
+            log.error({ err: error }, 'Avatar update error');
+            res.status(500).json({ success: false, message: 'Не удалось обновить аватар' });
         }
     });
 
@@ -410,6 +427,21 @@ module.exports = function registerAuthRoutes(app, ctx) {
         } catch (error) {
             log.error({ err: error }, 'Presence setting error');
             if (!res.headersSent) res.status(500).json({ success: false, message: 'Не удалось сохранить' });
+        }
+    });
+
+    // «Показывать, что я печатаю».
+    app.post('/api/user/typing', async (req, res) => {
+        if (!req.session.userId) return res.status(401).json({ success: false, message: 'Не авторизован' });
+        if (typeof (req.body && req.body.enabled) !== 'boolean') {
+            return res.status(400).json({ success: false, message: 'Нужно enabled: true или false' });
+        }
+        try {
+            await dbRun('UPDATE users SET send_typing = $1 WHERE id = $2', [req.body.enabled, req.session.userId]);
+            res.json({ success: true, enabled: req.body.enabled });
+        } catch (error) {
+            log.error({ err: error }, 'Typing setting error');
+            res.status(500).json({ success: false, message: 'Не удалось сохранить' });
         }
     });
 

@@ -30,6 +30,11 @@ const elements = {
     archiveChatBtn: document.getElementById('archive-chat-btn'),
     chatItemMenu: document.getElementById('chat-item-menu'),
     logoutBtn: document.getElementById('logout-btn'),
+    settingsBtn: document.getElementById('settings-btn'),
+    settingsModal: document.getElementById('settings-modal'),
+    typingToggle: document.getElementById('typing-toggle'),
+    soundsToggle: document.getElementById('sounds-toggle'),
+    chatTop: document.getElementById('chat-top'),
     jumpDown: document.getElementById('jump-down'),
     jumpDownCount: document.getElementById('jump-down-count'),
     reactionRow: document.getElementById('reaction-row'),
@@ -82,7 +87,6 @@ const elements = {
     chatMessages: document.getElementById('chat-messages'),
     messageInput: document.getElementById('message-input'),
     sendBtn: document.getElementById('send-btn'),
-    attachBtn: document.getElementById('attach-btn'),
     fileInput: document.getElementById('file-input'),
     newChatBtn: document.getElementById('new-chat-btn'),
     chatHeader: document.getElementById('chat-header'),
@@ -181,6 +185,10 @@ const elements = {
     deleteMessageBtn: document.getElementById('delete-message-btn'),
     replyPreview: document.getElementById('reply-preview'),
     replyPreviewText: document.getElementById('reply-preview-text'),
+    replyPreviewAuthor: document.getElementById('reply-preview-author'),
+    editPreview: document.getElementById('edit-preview'),
+    editPreviewText: document.getElementById('edit-preview-text'),
+    cancelEditBtn: document.getElementById('cancel-edit-btn'),
     cancelReplyBtn: document.getElementById('cancel-reply-btn'),
     toast: document.getElementById('toast'),
     profileUsername: document.getElementById('profile-username'),
@@ -344,7 +352,8 @@ const SECURITY_EVENT_TEXT = {
 
 async function renderSecurityEvents() {
     const data = await api('/api/security-events').catch(() => null);
-    const events = data && data.success ? data.events : [];
+    if (!data || !data.success) return false;
+    const events = data.events;
     elements.securitySection.hidden = events.length === 0;
     elements.securityList.replaceChildren(...events.map(event => {
         const item = document.createElement('li');
@@ -360,12 +369,12 @@ async function renderSecurityEvents() {
         item.append(what, meta);
         return item;
     }));
+    return true;
 }
 
 async function renderDevices() {
     const list = await api('/api/devices').catch(() => null);
-    elements.devicesSection.hidden = !(list && list.success);
-    if (!list || !list.success) return;
+    if (!list || !list.success) return false;
     elements.devicesList.replaceChildren();
     for (const device of list.devices.filter(d => !d.revoked_at)) {
         const item = document.createElement('li');
@@ -401,6 +410,167 @@ async function renderDevices() {
         }
         elements.devicesList.appendChild(item);
     }
+    return true;
+}
+
+/* --- Профиль ----------------------------------------------------------------
+   Окно открывается сразу: имя, почта и цвет — из того, что уже известно,
+   остальные разделы — заготовками, и каждый заполняется по своему ответу
+   (запросы идут параллельно). Раздел, который не загрузился, говорит об
+   этом у себя и предлагает повторить, — остальные от него не зависят.
+   Второй раз окно показывает прошлое и тихо обновляется. */
+
+let profileLoaded = false;
+
+function fillProfileUser(user) {
+    elements.profileUsername.textContent = user.username || '';
+    elements.profileEmail.textContent = user.email || (user.email === undefined ? '' : 'Нет email (приватный режим)');
+    const avatar = user.avatar || DEFAULT_AVATAR;
+    paintAvatar(elements.profileAvatar, avatar, user.username);
+    document.querySelectorAll('.color-option').forEach(o => {
+        o.classList.toggle('active', o.dataset.color.toLowerCase() === avatar.toLowerCase());
+    });
+    renderAvatarPicker(avatar);
+    const anonymous = user.email === null || Boolean(user.isAnonymous);
+    elements.profileAnonBadge.classList.toggle('hidden', !anonymous);
+    elements.changePasswordBtn.classList.toggle('hidden', anonymous);
+    elements.linkDeviceBtn.hidden = anonymous;
+    if ('sendReadReceipts' in user) elements.readReceiptsToggle.checked = user.sendReadReceipts !== false;
+    if ('hidePresence' in user) elements.hidePresenceToggle.checked = Boolean(user.hidePresence);
+}
+
+async function saveAvatar(avatar) {
+    const data = await api('/api/user/avatar', { method: 'POST', body: JSON.stringify({ avatar }) });
+    if (!data.success) return showToast(data.message, 'error');
+    if (currentUser) currentUser.avatar = data.avatar;
+    paintAvatar(elements.profileAvatar, data.avatar, currentUser && currentUser.username);
+    document.querySelectorAll('.color-option[data-color]').forEach(o => {
+        o.classList.toggle('active', o.dataset.color.toLowerCase() === data.avatar.toLowerCase());
+    });
+    renderAvatarPicker(data.avatar);
+    showToast('Аватар обновлён', 'success');
+}
+
+// Эмодзи и градиенты: выбор эмодзи сохраняет его на текущем градиенте.
+function renderAvatarPicker(avatar) {
+    if (!AVATARS) return;
+    const m = /^e:(\d+):(\d+)$/.exec(avatar || '');
+    const emoji = m ? Number(m[1]) : -1;
+    const gradient = m ? Number(m[2]) : 0;
+    const emojiBox = document.getElementById('avatar-emoji-picker');
+    emojiBox.replaceChildren(...AVATARS.emoji.map((e, i) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'avatar-emoji' + (i === emoji ? ' active' : '');
+        b.textContent = e;
+        b.setAttribute('aria-label', `Эмодзи ${e}`);
+        b.setAttribute('aria-pressed', String(i === emoji));
+        b.addEventListener('click', () => saveAvatar(`e:${i}:${gradient}`));
+        return b;
+    }));
+    const gradientBox = document.getElementById('avatar-gradient-picker');
+    gradientBox.replaceChildren(...AVATARS.gradients.map(([a, b], i) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'color-option' + (m && i === gradient ? ' active' : '');
+        btn.style.background = `linear-gradient(140deg, ${a}, ${b})`;
+        btn.setAttribute('aria-label', `Фон ${i + 1}`);
+        btn.disabled = !m;
+        btn.title = m ? '' : 'Сначала выберите эмодзи';
+        btn.addEventListener('click', () => saveAvatar(`e:${emoji}:${i}`));
+        return btn;
+    }));
+}
+
+async function loadProfileUser() {
+    const data = await api('/api/user').catch(() => null);
+    if (!data || !data.success) return false;
+    fillProfileUser(data.user);
+    if (currentUser) Object.assign(currentUser, { sendTyping: data.user.sendTyping !== false });
+    elements.typingToggle.checked = data.user.sendTyping !== false;
+    return true;
+}
+
+/* --- Настройки --------------------------------------------------------------
+   Окно — сразу, из того, что известно; значения с сервера — следом. Звуки
+   и фон — настройки этого браузера. */
+
+async function openSettings() {
+    elements.notifyToggle.checked = notificationsOn();
+    elements.soundsToggle.checked = soundsOn();
+    const bg = chatBackground();
+    for (const radio of document.querySelectorAll('input[name="chat-bg"]')) radio.checked = radio.value === bg;
+    elements.typingToggle.checked = !currentUser || currentUser.sendTyping !== false;
+    openModal(elements.settingsModal);
+    await loadProfileSection(elements.settingsModal.querySelector('.modal-body'), loadProfileUser);
+}
+
+const CHAT_BG_KEY = 'nyxo-chat-bg';
+function chatBackground() {
+    try {
+        return localStorage.getItem(CHAT_BG_KEY) === 'plain' ? 'plain' : 'gradient';
+    } catch {
+        return 'gradient';
+    }
+}
+function setChatBackground(value) {
+    try { localStorage.setItem(CHAT_BG_KEY, value); } catch { /* хранилище недоступно */ }
+    applyChatBackground();
+}
+function applyChatBackground() {
+    if (chatBackground() === 'plain') document.documentElement.dataset.chatBg = 'plain';
+    else delete document.documentElement.dataset.chatBg;
+}
+
+// Раздел профиля: заполнить; не вышло — «Не удалось загрузить · Повторить»
+// на его месте.
+async function loadProfileSection(host, load) {
+    host.querySelector(':scope > .section-error')?.remove();
+    let ok = false;
+    try {
+        ok = await load();
+    } catch (error) {
+        console.warn('Раздел профиля не загрузился:', error);
+    }
+    if (ok) return;
+    const row = document.createElement('p');
+    row.className = 'section-error';
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'link-inline';
+    retry.textContent = 'Повторить';
+    retry.addEventListener('click', () => loadProfileSection(host, load));
+    row.append(createIcon('i-alert'), 'Не удалось загрузить · ', retry);
+    host.appendChild(row);
+}
+
+function profileSkeletons() {
+    const line = () => {
+        const li = document.createElement('li');
+        li.className = 'skeleton members-skeleton';
+        li.setAttribute('aria-hidden', 'true');
+        return li;
+    };
+    elements.devicesList.replaceChildren(line());
+    elements.userCodeDisplay.textContent = '';
+    elements.userCodeDisplay.parentElement.classList.add('is-loading');
+}
+
+async function openProfile() {
+    if (!profileLoaded) {
+        fillProfileUser({ ...currentUser, email: currentUser.isAnonymous ? null : currentUser.email });
+        profileSkeletons();
+    }
+    elements.notifyToggle.checked = notificationsOn();
+    openModal(elements.profileModal);
+    profileLoaded = true;
+    await Promise.allSettled([
+        loadProfileSection(elements.profileUsername.closest('.profile-info'), loadProfileUser),
+        loadProfileSection(elements.userCodeDisplay.closest('section'), renderUserCode),
+        loadProfileSection(elements.blockedSection, renderBlocked),
+        loadProfileSection(elements.devicesSection, renderDevices),
+        loadProfileSection(elements.securitySection, renderSecurityEvents),
+    ]);
 }
 
 /**
@@ -605,7 +775,10 @@ async function refreshEncryptionBadge(chatId, isBot) {
     // Пока ждали ответа, могли открыть другой чат — не перезаписываем его.
     if (currentChatId !== chatId) return;
     badge.className = `encryption-badge is-${mode}`;
-    badge.disabled = mode === 'off' || !checkable;
+    badge.dataset.checkable = mode !== 'off' && checkable ? '1' : '';
+    // На телефоне видно только значок — нажатие показывает подробности,
+    // даже когда сверять нечего.
+    badge.disabled = !mobileLayout.matches && (mode === 'off' || !checkable);
     badge.title = badge.disabled ? (mode === 'warn' && e2eeFailure && !checkable ? e2eeFailure : '') : 'Сверить ключи';
     // Текст в отдельном элементе: на узком экране он обрезается
     // многоточием, а замок остаётся виден.
@@ -839,6 +1012,20 @@ function safetyQrBlock(info, onMatch) {
     return block;
 }
 
+// Единственный «свой» момент: код совпал — галочка прорисовывается,
+// плашка слегка вырастает, телефон коротко вздрагивает.
+async function renderVerified(section, chatId, user) {
+    const fresh = await renderSafetyEntry(chatId, user);
+    section.replaceWith(fresh);
+    const burst = document.createElement('div');
+    burst.className = 'verified-burst';
+    burst.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M7 12.5l3.2 3.2L17 9"/></svg>';
+    burst.append('Ключи сверены');
+    fresh.prepend(burst);
+    if (navigator.vibrate) navigator.vibrate(10);
+    refreshEncryptionBadge(chatId, currentChatIsBot);
+}
+
 async function renderSafetyEntry(chatId, user) {
     const section = document.createElement('section');
     section.className = 'safety-entry';
@@ -906,8 +1093,7 @@ async function renderSafetyEntry(chatId, user) {
     if (info.state !== 'verified') {
         section.appendChild(safetyQrBlock(info, async () => {
             await e2ee.markVerified(user.user_id, info.devices);
-            section.replaceWith(await renderSafetyEntry(chatId, user));
-            refreshEncryptionBadge(chatId, currentChatIsBot);
+            await renderVerified(section, chatId, user);
         }));
     }
 
@@ -928,8 +1114,7 @@ async function renderSafetyEntry(chatId, user) {
             // Отмечается ровно тот набор устройств, по которому посчитан
             // показанный код, а не тот, что окажется на сервере к моменту клика.
             await e2ee.markVerified(user.user_id, info.devices);
-            section.replaceWith(await renderSafetyEntry(chatId, user));
-            refreshEncryptionBadge(chatId, currentChatIsBot);
+            await renderVerified(section, chatId, user);
         });
     }
     section.appendChild(action);
@@ -961,6 +1146,31 @@ async function openSafetyModal(chatId) {
 
 const THEME_KEY = 'nyxo-theme';
 const DEFAULT_AVATAR = '#6D5EFC';
+
+/* --- Аватары ----------------------------------------------------------------
+   Цвет с буквой ('#RRGGBB') или эмодзи на градиенте ('e:эмодзи:градиент',
+   номера из public/avatars.json — тот же набор проверяет сервер). */
+
+let AVATARS = null;
+fetch('/avatars.json').then(r => r.json()).then(set => { AVATARS = set; }).catch(() => {});
+
+function avatarLook(avatar) {
+    const m = /^e:(\d+):(\d+)$/.exec(avatar || '');
+    if (m && AVATARS && AVATARS.emoji[m[1]] && AVATARS.gradients[m[2]]) {
+        const [a, b] = AVATARS.gradients[m[2]];
+        return { emoji: AVATARS.emoji[m[1]], background: `linear-gradient(140deg, ${a}, ${b})`, color: a };
+    }
+    const color = /^#[0-9a-f]{3,8}$/i.test(avatar || '') ? avatar : DEFAULT_AVATAR;
+    return { emoji: null, background: color, color };
+}
+
+function paintAvatar(el, avatar, name) {
+    const look = avatarLook(avatar);
+    el.style.background = look.background;
+    el.textContent = look.emoji || (name || '?').charAt(0).toUpperCase();
+    el.classList.toggle('is-emoji-avatar', Boolean(look.emoji));
+    return look;
+}
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
 // Иконки берутся из спрайта в index.html. className у SVG-элемента — это
@@ -982,12 +1192,7 @@ function createIcon(id) {
 
 function applyTheme(theme) {
     document.documentElement.setAttribute('data-theme', theme);
-    // Строка состояния на телефоне красится по theme-color. Обе метки (для
-    // светлой и тёмной системы) получают цвет выбранной темы, иначе при
-    // ручной смене полоса сверху осталась бы цвета системной.
-    document.querySelectorAll('meta[name="theme-color"]').forEach(meta => {
-        meta.setAttribute('content', theme === 'light' ? '#f4f4f7' : '#08080e');
-    });
+    updateThemeColor();
     try {
         localStorage.setItem(THEME_KEY, theme);
     } catch (e) {
@@ -1000,13 +1205,45 @@ function applyTheme(theme) {
     });
 }
 
+/*
+ * Строка состояния на телефоне красится по theme-color. Обе метки (для
+ * светлой и тёмной системы) получают цвет выбранной темы, иначе при ручной
+ * смене полоса сверху осталась бы цвета системной. В приложении — цвет
+ * шапки, на экране входа — цвет фона.
+ */
+function updateThemeColor() {
+    const light = document.documentElement.getAttribute('data-theme') === 'light';
+    const inApp = !elements.app.classList.contains('hidden');
+    const color = inApp ? (light ? '#ffffff' : '#14141f') : (light ? '#f4f4f7' : '#08080e');
+    document.querySelectorAll('meta[name="theme-color"]').forEach(meta => meta.setAttribute('content', color));
+}
+
+/*
+ * Смена темы — новой темой, расходящейся кругом от кнопки (View
+ * Transitions). Редкое действие — можно красиво. Без поддержки API или при
+ * «уменьшить движение» — мгновенно; зависнуть переход не может дольше 1,5 с.
+ */
+function switchTheme(button) {
+    const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    if (!document.startViewTransition || prefersReducedMotion()) return applyTheme(next);
+    const r = button.getBoundingClientRect();
+    const x = r.left + r.width / 2;
+    const y = r.top + r.height / 2;
+    const radius = Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y));
+    const transition = document.startViewTransition(() => applyTheme(next));
+    const stuck = setTimeout(() => transition.skipTransition(), 1500);
+    transition.ready.then(() => document.documentElement.animate(
+        { clipPath: [`circle(0 at ${x}px ${y}px)`, `circle(${radius}px at ${x}px ${y}px)`] },
+        { duration: 450, easing: 'cubic-bezier(0.23, 1, 0.32, 1)', pseudoElement: '::view-transition-new(root)' },
+    )).catch(() => {});
+    transition.finished.finally(() => clearTimeout(stuck));
+}
+
 function setupTheme() {
     applyTheme(document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark');
+    applyChatBackground();
     document.querySelectorAll('[data-theme-toggle]').forEach(btn => {
-        btn.addEventListener('click', () => {
-            const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-            applyTheme(next);
-        });
+        btn.addEventListener('click', () => switchTheme(btn));
     });
 }
 
@@ -1086,6 +1323,7 @@ async function checkAuth() {
 function showAuth() {
     elements.authScreen.classList.remove('hidden');
     elements.app.classList.add('hidden');
+    updateThemeColor();
 }
 
 function showApp() {
@@ -1094,6 +1332,7 @@ function showApp() {
     showAnonNote(currentUser);
     elements.authScreen.classList.add('hidden');
     elements.app.classList.remove('hidden');
+    updateThemeColor();
     loadMyRequests();
     loadDirectRequests();
     setTimeout(offerJoinFromUrl);
@@ -1172,21 +1411,122 @@ function showToast(message, type = 'info', { action = null, duration = null, pro
     // открытого окна, а когда окна нет — обратно в body.
     const host = document.querySelector('dialog.modal[open]') || document.body;
     if (toast.parentElement !== host) {
-        if (toast.matches(':popover-open')) toast.hidePopover();
-        host.appendChild(toast);
+        if (toast.matches(':popover-open')) moveToast(host);
+        else host.appendChild(toast);
     }
     // Ошибку экранный диктор зачитывает сразу, остальное — в паузе.
     toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
     toast.setAttribute('aria-live', type === 'error' ? 'assertive' : 'polite');
-    if (toast.matches(':popover-open')) toast.hidePopover();
+    // Уже открыт на том же месте — меняется только содержимое, без
+    // повторного въезда.
+    if (!toast.matches(':popover-open')) toast.showPopover();
+    toastClock.stop();
+    toastClock.remaining = sticky ? null : (duration || 3200);
+    toast.classList.remove('is-paused');
+    toastClock.resume();
+}
+
+/*
+ * Таймер тоста стоит, пока тост под пальцем или мышью, в фокусе или
+ * вкладка скрыта, — прочитать и нажать «Вернуть» успевают.
+ */
+const toastClock = {
+    remaining: null, started: 0, timer: null, holds: new Set(),
+    stop() {
+        clearTimeout(this.timer);
+        this.timer = null;
+    },
+    resume() {
+        if (this.remaining === null || this.holds.size || this.timer) return;
+        this.started = Date.now();
+        this.timer = setTimeout(hideToast, this.remaining);
+        elements.toast.classList.remove('is-paused');
+    },
+    hold(reason) {
+        this.holds.add(reason);
+        if (this.timer) {
+            this.stop();
+            this.remaining = Math.max(0, this.remaining - (Date.now() - this.started));
+        }
+        elements.toast.classList.add('is-paused');
+    },
+    release(reason) {
+        this.holds.delete(reason);
+        this.resume();
+    },
+};
+
+function setupToastPause() {
+    const toast = elements.toast;
+    toast.addEventListener('pointerenter', () => toastClock.hold('pointer'));
+    toast.addEventListener('pointerleave', () => toastClock.release('pointer'));
+    toast.addEventListener('focusin', () => toastClock.hold('focus'));
+    toast.addEventListener('focusout', () => toastClock.release('focus'));
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') toastClock.hold('hidden');
+        else toastClock.release('hidden');
+    });
+}
+
+// Перенос открытого тоста в окно (или обратно): без перехода ухода, иначе
+// он задержался бы в верхнем слое под окном.
+function moveToast(host) {
+    const toast = elements.toast;
+    toast.style.transition = 'none';
+    toast.hidePopover();
+    host.appendChild(toast);
     toast.showPopover();
-    clearTimeout(toastTimer);
-    if (!sticky) toastTimer = setTimeout(hideToast, duration || 3200);
+    toast.getBoundingClientRect();
+    toast.style.transition = '';
 }
 
 function hideToast() {
-    clearTimeout(toastTimer);
+    toastClock.stop();
+    toastClock.remaining = null;
+    toastClock.holds.delete('pointer');
+    toastClock.holds.delete('focus');
     if (elements.toast.matches(':popover-open')) elements.toast.hidePopover();
+}
+
+/*
+ * На телефоне окна — шторкой снизу; тянут её за шапку вниз. Вверх — с
+ * сопротивлением. Закрывается дальше четверти высоты или рывком быстрее
+ * 0,11 px/мс, иначе возвращается.
+ */
+function setupSheetDrag() {
+    document.querySelectorAll('dialog.modal').forEach(dialog => {
+        const header = dialog.querySelector('.modal-header');
+        const content = dialog.querySelector('.modal-content');
+        if (!header || !content) return;
+        let drag = null;
+        header.addEventListener('pointerdown', e => {
+            if (!mobileLayout.matches || e.button !== 0 || e.target.closest('button, input, a')) return;
+            drag = { y: e.clientY, dy: 0, samples: [[performance.now(), 0]], id: e.pointerId };
+            header.setPointerCapture(e.pointerId);
+            dialog.classList.add('is-dragging');
+        });
+        header.addEventListener('pointermove', e => {
+            if (!drag || e.pointerId !== drag.id) return;
+            const dy = e.clientY - drag.y;
+            drag.dy = dy >= 0 ? dy : dy * 0.2;
+            drag.samples.push([performance.now(), dy]);
+            if (drag.samples.length > 5) drag.samples.shift();
+            dialog.style.setProperty('--sheet-drag', `${drag.dy}px`);
+        });
+        const end = e => {
+            if (!drag || e.pointerId !== drag.id) return;
+            const { dy, samples } = drag;
+            drag = null;
+            dialog.classList.remove('is-dragging');
+            const [t0, y0] = samples[0];
+            const [t1, y1] = samples[samples.length - 1];
+            const speed = t1 > t0 ? (y1 - y0) / (t1 - t0) : 0;
+            dialog.style.removeProperty('--sheet-drag');
+            if (dy > content.offsetHeight * 0.25 || (speed > 0.11 && dy > 0)) closeModal(dialog);
+        };
+        header.addEventListener('pointerup', end);
+        header.addEventListener('pointercancel', end);
+    });
 }
 
 function getCsrfToken() {
@@ -1419,6 +1759,135 @@ function setupPinDrag() {
     });
 }
 
+/* --- «Печатает…» ------------------------------------------------------------
+   Событие без содержимого: кто и в каком чате. Шлём не чаще раза в 3 с,
+   пока человек набирает; подпись у собеседников держится 5 с и снимается,
+   когда от него приходит сообщение. В чате с ботом не шлём; выключено в
+   настройках — не шлём (и сервер такое не разошлёт). */
+
+const TYPING_SEND_MS = 3000;
+const TYPING_SHOW_MS = 5000;
+let typingSentAt = 0;
+// room_id → Map(user_id → { username, until })
+const typingState = new Map();
+
+function noteTyping() {
+    if (!currentChatId || currentChatIsBot || !currentRoomId || !elements.messageInput.value.trim()) return;
+    if (currentUser && currentUser.sendTyping === false) return;
+    const now = Date.now();
+    if (now - typingSentAt < TYPING_SEND_MS) return;
+    typingSentAt = now;
+    socket.emit('typing', { chatId: currentChatId });
+}
+
+function onTyping({ room_id: roomId, user_id: userId, username }) {
+    if (!currentUser || userId === currentUser.id) return;
+    const room = typingState.get(Number(roomId)) || new Map();
+    room.set(userId, { username, until: Date.now() + TYPING_SHOW_MS });
+    typingState.set(Number(roomId), room);
+    renderTyping();
+    setTimeout(renderTyping, TYPING_SHOW_MS + 50);
+}
+
+// Сообщение пришло — этот человек больше не «печатает».
+function stopTyping(roomId, userId) {
+    const room = typingState.get(Number(roomId));
+    if (room && room.delete(userId)) renderTyping();
+}
+
+function typingNames(roomId) {
+    const room = typingState.get(Number(roomId));
+    if (!room) return [];
+    const now = Date.now();
+    for (const [id, entry] of room) if (entry.until <= now) room.delete(id);
+    if (!room.size) typingState.delete(Number(roomId));
+    return [...room.values()].map(e => e.username);
+}
+
+function typingText(names, direct) {
+    if (direct || !names.length) return 'печатает';
+    if (names.length === 1) return `${names[0]} печатает`;
+    if (names.length === 2) return `${names[0]} и ${names[1]} печатают`;
+    return `${names[0]} и ещё ${names.length - 1} печатают`;
+}
+
+function typingElement(names, direct) {
+    const box = document.createElement('span');
+    box.className = 'typing';
+    const dots = document.createElement('span');
+    dots.className = 'typing-dots';
+    dots.setAttribute('aria-hidden', 'true');
+    dots.append(document.createElement('i'), document.createElement('i'), document.createElement('i'));
+    box.append(`${typingText(names, direct)}`, dots);
+    return box;
+}
+
+function renderTyping() {
+    // Список: вместо последнего сообщения.
+    for (const item of elements.chatsList.querySelectorAll('.chat-item[data-room-id]')) {
+        const roomId = Number(item.dataset.roomId);
+        const names = roomId ? typingNames(roomId) : [];
+        const chat = chatsMeta.get(Number(item.dataset.id));
+        let line = item.querySelector('.chat-typing');
+        item.classList.toggle('is-typing', names.length > 0);
+        if (!names.length) {
+            line?.remove();
+            continue;
+        }
+        if (!line) {
+            line = document.createElement('div');
+            line.className = 'chat-typing';
+            item.querySelector('.chat-info')?.appendChild(line);
+        }
+        line.replaceChildren(typingElement(names, chat && chat.kind === 'direct'));
+    }
+    // Шапка открытого чата.
+    if (currentChatId) renderChatStatus(currentChatIsBot);
+}
+
+/* --- Звуки ------------------------------------------------------------------
+   Короткие (до 150 мс) и тихие, синтезом — без файлов. По умолчанию
+   выключены; включаются в настройках этого браузера. */
+
+const SOUNDS_KEY = 'nyxo-sounds';
+let audioContext = null;
+
+function soundsOn() {
+    try {
+        return localStorage.getItem(SOUNDS_KEY) === '1';
+    } catch {
+        return false;
+    }
+}
+
+function setSoundsOn(on) {
+    try { localStorage.setItem(SOUNDS_KEY, on ? '1' : '0'); } catch { /* хранилище недоступно */ }
+    if (on) playSound('receive');
+}
+
+function playSound(kind) {
+    if (!soundsOn()) return;
+    try {
+        audioContext = audioContext || new AudioContext();
+        const t = audioContext.currentTime;
+        const tones = kind === 'send' ? [[740, 0, 0.07]] : [[560, 0, 0.06], [840, 0.06, 0.08]];
+        for (const [frequency, start, length] of tones) {
+            const osc = audioContext.createOscillator();
+            const gain = audioContext.createGain();
+            osc.type = 'sine';
+            osc.frequency.value = frequency;
+            gain.gain.setValueAtTime(0.0001, t + start);
+            gain.gain.exponentialRampToValueAtTime(0.04, t + start + 0.01);
+            gain.gain.exponentialRampToValueAtTime(0.0001, t + start + length);
+            osc.connect(gain).connect(audioContext.destination);
+            osc.start(t + start);
+            osc.stop(t + start + length + 0.02);
+        }
+    } catch {
+        // Звука нет — не беда.
+    }
+}
+
 /* --- Приватный режим -------------------------------------------------------
    Когда удалится аккаунт — строкой над кнопками профиля; за 10 минут до
    потолка (7 дней с создания) — предупреждение. Срок вышел — сервер уже
@@ -1614,10 +2083,12 @@ function setupEventListeners() {
         setMessageInput('');
         clearReply();
         editingMessageId = null;
+        showEditBar(false);
         showToast('Вы вышли из аккаунта', 'info');
         showAuth();
     };
     elements.logoutBtn.addEventListener('click', () => {
+        closeModal(elements.settingsModal);
         if (!(e2ee && e2ee.isReady()) || (currentUser && currentUser.isAnonymous)) {
             return finishLogout({ keepDevice: false });
         }
@@ -1634,7 +2105,7 @@ function setupEventListeners() {
 
     elements.errorReportBtn.addEventListener('click', () => {
         elements.errorReportText.value = buildErrorReport();
-        closeModal(elements.profileModal);
+        closeModal(elements.settingsModal);
         openModal(elements.errorReportModal);
     });
     elements.copyErrorReportBtn.addEventListener('click', async () => {
@@ -1788,35 +2259,23 @@ function setupEventListeners() {
         if (event.key === 'Enter' && !event.isComposing) withBusy(elements.groupNameSave, renameGroup);
     });
 
-    elements.profileBtn.addEventListener('click', async () => {
-        const data = await api('/api/user');
-        if (data.success) {
-            elements.profileUsername.textContent = data.user.username;
-            elements.profileEmail.textContent = data.user.email || 'Нет email (приватный режим)';
-            const avatarColor = data.user.avatar || DEFAULT_AVATAR;
-            elements.profileAvatar.style.background = avatarColor;
-            elements.profileAvatar.textContent = data.user.username.charAt(0).toUpperCase();
-            document.querySelectorAll('.color-option').forEach(o => {
-                o.classList.toggle('active', o.dataset.color.toLowerCase() === avatarColor.toLowerCase());
-            });
-            if (data.user.email === null || data.user.email === undefined) {
-                elements.profileAnonBadge.classList.remove('hidden');
-                elements.changePasswordBtn.classList.add('hidden');
-                elements.linkDeviceBtn.hidden = true;
-            } else {
-                elements.profileAnonBadge.classList.add('hidden');
-                elements.changePasswordBtn.classList.remove('hidden');
-                elements.linkDeviceBtn.hidden = false;
-            }
-            elements.readReceiptsToggle.checked = data.user.sendReadReceipts !== false;
-            elements.hidePresenceToggle.checked = Boolean(data.user.hidePresence);
-            elements.notifyToggle.checked = notificationsOn();
-            await renderUserCode();
-            await renderBlocked();
-            await renderDevices();
-            await renderSecurityEvents();
-            openModal(elements.profileModal);
+    elements.profileBtn.addEventListener('click', openProfile);
+    elements.settingsBtn.addEventListener('click', openSettings);
+    for (const radio of document.querySelectorAll('input[name="chat-bg"]')) {
+        radio.addEventListener('change', () => setChatBackground(radio.value));
+    }
+    elements.soundsToggle.addEventListener('change', () => setSoundsOn(elements.soundsToggle.checked));
+    elements.typingToggle.addEventListener('change', async () => {
+        const toggle = elements.typingToggle;
+        toggle.disabled = true;
+        const data = await api('/api/user/typing', { method: 'POST', body: JSON.stringify({ enabled: toggle.checked }) });
+        toggle.disabled = false;
+        if (!data.success) {
+            toggle.checked = !toggle.checked;
+            return showToast(data.message, 'error');
         }
+        if (currentUser) currentUser.sendTyping = data.enabled;
+        showToast(data.enabled ? 'Собеседники видят, когда вы печатаете' : 'Собеседники больше не видят, что вы печатаете', 'success');
     });
 
     elements.hidePresenceToggle.addEventListener('change', async () => {
@@ -1881,24 +2340,20 @@ function setupEventListeners() {
         }
     });
 
-    document.querySelectorAll('.color-option').forEach(btn => {
-        btn.addEventListener('click', async () => {
-            const color = btn.dataset.color;
-            const data = await api('/api/user/avatar-color', {
-                method: 'POST',
-                body: JSON.stringify({ avatarColor: color }),
-            });
-            if (data.success) {
-                elements.profileAvatar.style.background = color;
-                if (currentUser) currentUser.avatar = color;
-                document.querySelectorAll('.color-option').forEach(o => o.classList.remove('active'));
-                btn.classList.add('active');
-                showToast('Цвет обновлён', 'success');
-            }
-        });
+    document.querySelectorAll('.color-option[data-color]').forEach(btn => {
+        btn.addEventListener('click', () => saveAvatar(btn.dataset.color));
     });
 
-    elements.sendBtn.addEventListener('click', sendMessage);
+    // Кнопка не забирает фокус у поля: иначе на телефоне после отправки
+    // закрывалась бы клавиатура.
+    elements.sendBtn.addEventListener('mousedown', e => e.preventDefault());
+    elements.sendBtn.addEventListener('click', () => {
+        if (elements.sendBtn.dataset.mode === 'attach') return elements.fileInput.click();
+        elements.messageInput.focus({ preventScroll: true });
+        sendMessage();
+    });
+    elements.messageInput.addEventListener('input', updateSendButton);
+    elements.messageInput.addEventListener('input', noteTyping);
     // keydown, а не устаревший keypress. Enter, которым подтверждают слово
     // в IME (японский, китайский, корейский ввод, часть экранных
     // клавиатур), не должен отправлять недописанное сообщение: isComposing,
@@ -1908,8 +2363,7 @@ function setupEventListeners() {
         if (e.key === 'Escape' && (editingMessageId || replyToMessageId)) {
             e.preventDefault();
             if (editingMessageId) {
-                editingMessageId = null;
-                setMessageInput('');
+                cancelEdit();
             } else {
                 clearReply();
             }
@@ -1919,15 +2373,17 @@ function setupEventListeners() {
         // экранной клавиатуре Shift+Enter не набрать.
         if (e.key !== 'Enter' || e.shiftKey || e.isComposing || e.keyCode === 229 || coarsePointer()) return;
         e.preventDefault();
+        // Зажатый Enter повторяется — это не второе сообщение.
+        if (e.repeat) return;
         sendMessage();
     });
 
-    elements.attachBtn.addEventListener('click', () => elements.fileInput.click());
     elements.fileInput.addEventListener('change', handleFileUpload);
     elements.cancelReplyBtn.addEventListener('click', clearReply);
 
     elements.replyMessageBtn.addEventListener('click', () => {
-        startReply({ id: elements.messageMenu.dataset.forMessage, text: elements.messageMenu.dataset.forMessageText });
+        startReply({ id: elements.messageMenu.dataset.forMessage, text: elements.messageMenu.dataset.forMessageText,
+            author: elements.messageMenu.dataset.forMessageAuthor });
         hideMessageMenu();
     });
 
@@ -1958,10 +2414,13 @@ function setupEventListeners() {
     elements.editMessageBtn.addEventListener('click', () => {
         editingMessageId = elements.messageMenu.dataset.forMessage;
         const text = elements.messageMenu.dataset.forMessageText;
+        clearReply();
         setMessageInput(text);
+        showEditBar(true, text);
         elements.messageInput.focus();
         hideMessageMenu();
     });
+    elements.cancelEditBtn.addEventListener('click', cancelEdit);
 
     elements.deleteMessageBtn.addEventListener('click', () => {
         hideMessageMenu();
@@ -1996,8 +2455,17 @@ function setupEventListeners() {
     });
 
     elements.chatEncryption.addEventListener('click', () => {
-        if (currentChatId) openSafetyModal(currentChatId);
+        if (!currentChatId) return;
+        if (elements.chatEncryption.dataset.checkable) return openSafetyModal(currentChatId);
+        const text = elements.chatEncryption.querySelector('.encryption-badge-text')?.textContent || '';
+        const why = elements.chatEncryption.title && elements.chatEncryption.title !== 'Сверить ключи' ? ` — ${elements.chatEncryption.title}` : '';
+        showToast(`${text}${why}`, 'info');
     });
+
+    // Верх чата лежит поверх ленты: его высота — отступ ленты и липкой даты.
+    new ResizeObserver(() => {
+        elements.mainContent.style.setProperty('--chat-top-h', `${Math.round(elements.chatTop.getBoundingClientRect().height)}px`);
+    }).observe(elements.chatTop);
 
     document.querySelectorAll('.close-modal').forEach(btn => {
         btn.addEventListener('click', () => closeModal(btn.closest('dialog')));
@@ -2034,6 +2502,9 @@ function setupEventListeners() {
     setupHistoryPaging();
     setupReadMarks();
     setupFeed();
+    setupChatListTouch();
+    setupToastPause();
+    setupSheetDrag();
     setupComposer();
     setupPending();
     setupSidebarResize();
@@ -2080,6 +2551,7 @@ function setupEventListeners() {
     });
 
     socket.on('joinRequestDecided', onJoinRequestDecided);
+    socket.on('typing', onTyping);
     // Закрепили, переставили, отправили в архив на другом устройстве.
     socket.on('chatListChanged', async () => {
         await loadChats();
@@ -2125,11 +2597,7 @@ function openModal(modal) {
     // inert, и крестик с кнопкой действия не нажимались бы. Переносим его
     // внутрь и показываем заново — так он поднимается над окном.
     const toast = elements.toast;
-    if (toast.matches(':popover-open') && !modal.contains(toast)) {
-        toast.hidePopover();
-        modal.appendChild(toast);
-        toast.showPopover();
-    }
+    if (toast.matches(':popover-open') && !modal.contains(toast)) moveToast(modal);
 }
 
 function closeModal(modal) {
@@ -2165,12 +2633,30 @@ function renderChatsSkeleton(count = 5) {
     }
 }
 
-function renderChatsPlaceholder(text) {
+function renderChatsPlaceholder(text, { art = false } = {}) {
     elements.chatsList.innerHTML = '';
-    const note = document.createElement('p');
+    const note = document.createElement('div');
     note.className = 'chats-placeholder';
-    note.textContent = text;
+    if (art) note.appendChild(emptyArt('list'));
+    const p = document.createElement('p');
+    p.textContent = text;
+    note.appendChild(p);
     elements.chatsList.appendChild(note);
+}
+
+// Иллюстрации пустых экранов: знак Nyxo на орбитах и пара пузырей.
+function emptyArt(kind) {
+    const box = document.createElement('div');
+    box.className = `empty-illustration is-${kind}`;
+    box.setAttribute('aria-hidden', 'true');
+    box.innerHTML = kind === 'list'
+        ? '<svg viewBox="0 0 120 96" fill="none"><rect x="14" y="14" width="92" height="20" rx="10" class="ei-line"/>'
+            + '<rect x="14" y="40" width="92" height="20" rx="10" class="ei-line ei-dim"/><rect x="14" y="66" width="60" height="20" rx="10" class="ei-line ei-dimmer"/>'
+            + '<circle cx="24" cy="24" r="6" class="ei-dot"/><circle cx="24" cy="50" r="6" class="ei-dot ei-dim"/><circle cx="24" cy="76" r="6" class="ei-dot ei-dimmer"/></svg>'
+        : '<svg viewBox="0 0 120 96" fill="none"><rect x="10" y="16" width="58" height="24" rx="12" class="ei-bubble"/>'
+            + '<rect x="50" y="50" width="60" height="24" rx="12" class="ei-bubble ei-own"/><circle cx="24" cy="28" r="3" class="ei-dot"/>'
+            + '<circle cx="34" cy="28" r="3" class="ei-dot"/><circle cx="44" cy="28" r="3" class="ei-dot"/></svg>';
+    return box;
 }
 
 async function loadChats() {
@@ -2189,7 +2675,7 @@ async function loadChats() {
 
     if (!data.chats.length) {
         elements.chatsList.innerHTML = '';
-        renderChatsPlaceholder('Чатов пока нет');
+        renderChatsPlaceholder('Чатов пока нет — начните новый', { art: true });
         return;
     }
 
@@ -2237,10 +2723,85 @@ async function loadChats() {
         rows.push(toggle);
         if (archiveShown) for (const chat of archived) rows.push(await chatListItem(chat));
     }
-    elements.chatsList.replaceChildren(...rows);
+    placeChatRows(rows);
     updateTitleCounter();
     refreshPresenceDots();
     refreshChatListTabStop();
+    renderTyping();
+}
+
+/*
+ * Новый список встаёт на место старого без пересборки: строка, которая не
+ * изменилась, остаётся тем же узлом (с фокусом и обработчиками), и
+ * перестановка видна — строки доезжают до новых мест за 200 мс (FLIP:
+ * сначала все старые позиции, потом все новые, потом transform). Без
+ * доезда — при «уменьшить движение», если сдвинулось больше 10 строк или
+ * список держат пальцем.
+ */
+let chatListTouched = false;
+function placeChatRows(rows) {
+    const list = elements.chatsList;
+    const before = new Map();
+    for (const item of list.querySelectorAll('.chat-item[data-id]')) before.set(item.dataset.id, item);
+    const oldTop = new Map([...before].map(([id, item]) => [id, item.getBoundingClientRect().top]));
+    const next = rows.map(row => {
+        const old = row.classList && row.classList.contains('chat-item') ? before.get(row.dataset.id) : null;
+        return old && old.outerHTML === row.outerHTML ? old : row;
+    });
+    list.replaceChildren(...next);
+    if (prefersReducedMotion() || chatListTouched) return;
+    const moved = [];
+    for (const item of list.querySelectorAll('.chat-item[data-id]')) {
+        const top = oldTop.get(item.dataset.id);
+        if (top === undefined) continue;
+        const dy = top - item.getBoundingClientRect().top;
+        if (Math.abs(dy) > 1) moved.push([item, dy]);
+    }
+    if (!moved.length || moved.length > 10) return;
+    for (const [item, dy] of moved) {
+        item.style.transition = 'none';
+        item.style.transform = `translateY(${dy}px)`;
+    }
+    list.getBoundingClientRect();
+    for (const [item] of moved) {
+        item.style.transition = 'transform 200ms var(--ease-in-out)';
+        item.style.transform = '';
+        item.addEventListener('transitionend', () => { item.style.transition = ''; }, { once: true });
+    }
+}
+
+/*
+ * Новое в другом чате — список обновляется не на каждое сообщение: вызовы
+ * склеиваются за 250 мс, запрос в полёте один. Пока список держат пальцем,
+ * он не переставляется — обновится, когда отпустят.
+ */
+let chatsReloadTimer = null;
+let chatsReloadRunning = null;
+let chatsReloadAgain = false;
+function scheduleChatsReload() {
+    clearTimeout(chatsReloadTimer);
+    chatsReloadTimer = setTimeout(async () => {
+        if (chatListTouched) return scheduleChatsReload();
+        if (chatsReloadRunning) {
+            chatsReloadAgain = true;
+            return;
+        }
+        chatsReloadRunning = loadChats().finally(() => {
+            chatsReloadRunning = null;
+            if (chatsReloadAgain) {
+                chatsReloadAgain = false;
+                scheduleChatsReload();
+            }
+        });
+    }, 250);
+}
+
+function setupChatListTouch() {
+    const list = elements.chatsList;
+    list.addEventListener('touchstart', () => { chatListTouched = true; }, { passive: true });
+    for (const type of ['touchend', 'touchcancel']) {
+        list.addEventListener(type, () => { chatListTouched = false; }, { passive: true });
+    }
 }
 
 async function chatListItem(chat) {
@@ -2305,7 +2866,62 @@ const mobileLayout = window.matchMedia('(max-width: 640px)');
 
 function showChatScreen(show) {
     elements.sidebar.classList.toggle('hidden-mobile', show);
+    elements.app.classList.toggle('is-chat-open', show);
     applyMobileInert();
+}
+
+/*
+ * Свайп вправо по чату — назад к списку (на iPhone с экрана «Домой»
+ * системного «назад» нет). Чат идёт за пальцем, список выезжает из −25%,
+ * затемнение тает. Отпустили дальше 35% ширины или быстрее 0,11 px/мс —
+ * назад, иначе чат возвращается. Касания у самого края (x < 20) — жест
+ * вкладки Safari, их не трогаем.
+ */
+function setupSwipeBack() {
+    const area = elements.mainContent;
+    const app = elements.app;
+    let drag = null;
+    area.addEventListener('touchstart', e => {
+        if (!mobileLayout.matches || !app.classList.contains('is-chat-open') || e.touches.length !== 1) return;
+        const t = e.touches[0];
+        if (t.clientX < 20 || e.target.closest('input, textarea, dialog, .message.is-lifted')) return;
+        drag = { x: t.clientX, y: t.clientY, dx: 0, active: false, samples: [[performance.now(), 0]] };
+    }, { passive: true });
+    area.addEventListener('touchmove', e => {
+        if (!drag || e.touches.length !== 1) return;
+        const t = e.touches[0];
+        const dx = t.clientX - drag.x;
+        const dy = t.clientY - drag.y;
+        if (!drag.active) {
+            if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx)) { drag = null; return; }
+            if (dx < 12 || dx < Math.abs(dy) * 1.5) return;
+            drag.active = true;
+            app.classList.add('is-swiping-back');
+        }
+        drag.dx = Math.max(0, dx);
+        drag.samples.push([performance.now(), drag.dx]);
+        if (drag.samples.length > 5) drag.samples.shift();
+        app.style.setProperty('--back', String(Math.min(1, drag.dx / area.clientWidth)));
+    }, { passive: true });
+    const end = () => {
+        if (!drag) return;
+        const { active, dx, samples } = drag;
+        drag = null;
+        if (!active) return;
+        const [t0, x0] = samples[0];
+        const [t1, x1] = samples[samples.length - 1];
+        const speed = t1 > t0 ? (x1 - x0) / (t1 - t0) : 0;
+        const back = dx > area.clientWidth * 0.35 || speed > 0.11;
+        // Переходы вернутся вместе со снятием класса — положение доедет с
+        // того места, где отпустили.
+        app.classList.remove('is-swiping-back');
+        app.style.removeProperty('--back');
+        if (!back) return;
+        if (history.state && history.state.nyxoChat) history.back();
+        else backToChatList();
+    };
+    area.addEventListener('touchend', end);
+    area.addEventListener('touchcancel', end);
 }
 
 function applyMobileInert() {
@@ -2315,6 +2931,7 @@ function applyMobileInert() {
 }
 
 function setupMobileScreens() {
+    setupSwipeBack();
     mobileLayout.addEventListener('change', applyMobileInert);
     applyMobileInert();
     elements.chatBackBtn.addEventListener('click', () => {
@@ -2356,8 +2973,9 @@ async function openChat(chatId, roomId, name, avatar, online, isBot) {
     refreshChatListTabStop();
     elements.chatName.textContent = name;
     renderChatStatus(isBot, online);
-    elements.chatAvatar.textContent = name.charAt(0).toUpperCase();
-    elements.chatAvatar.style.background = /^#[0-9a-f]{3,8}$/i.test(avatar || '') ? avatar : DEFAULT_AVATAR;
+    const openedMeta = chatsMeta.get(Number(chatId));
+    if (openedMeta && openedMeta.kind === 'direct' && openedMeta.peer_avatar) paintAvatar(elements.chatAvatar, openedMeta.peer_avatar, name);
+    else paintAvatar(elements.chatAvatar, avatar, name);
     elements.chatHeader.classList.remove('hidden');
     elements.messageInputContainer.classList.remove('hidden');
     elements.emptyState.classList.add('hidden');
@@ -2400,6 +3018,7 @@ async function openChat(chatId, roomId, name, avatar, online, isBot) {
     for (const msg of page) await appendMessageDecrypted(msg);
     if (currentChatId !== chatId) return;
     await renderPendingFor(chatId);
+    showEmptyChat();
     await fillScreenWithHistory();
     // Куда встать: туда, где были (возврат в чат), к «Непрочитанным» или вниз.
     const separator = reopening ? null : placeUnreadSeparator(Number(data.chat && data.chat.last_read_id) || 0);
@@ -2451,6 +3070,22 @@ function currentRoomIsEmpty() {
     return Boolean(chat && chat.room_id && !chat.is_bot && !chat.peer_count);
 }
 
+// Чат, где ещё не написано ни слова: картинка и подсказка вместо пустоты.
+function showEmptyChat() {
+    const list = elements.chatMessages;
+    // Строки «вошёл», «создал ссылку» — не переписка.
+    const hasContent = list.querySelector('.message');
+    let empty = list.querySelector(':scope > .chat-empty');
+    if (hasContent) return empty?.remove();
+    if (empty || currentRoomIsEmpty()) return;
+    empty = document.createElement('div');
+    empty.className = 'chat-empty';
+    const text = document.createElement('p');
+    text.textContent = currentChatIsBot ? 'Напишите боту что-нибудь' : 'Сообщений пока нет — напишите первым';
+    empty.append(emptyArt('chat'), text);
+    list.appendChild(empty);
+}
+
 function applyRoomState() {
     if (!currentChatId) return;
     const meta = currentChatMeta();
@@ -2476,7 +3111,7 @@ function applyRoomState() {
     // Группу переименовали — шапка следом.
     if (meta && meta.name && elements.chatName.textContent !== meta.name) {
         elements.chatName.textContent = meta.name;
-        elements.chatAvatar.textContent = meta.name.charAt(0).toUpperCase();
+        if (!(meta.kind === 'direct' && meta.peer_avatar)) elements.chatAvatar.textContent = meta.name.charAt(0).toUpperCase();
     }
     const empty = currentRoomIsEmpty();
     const history = Boolean(elements.chatMessages.querySelector('.message'));
@@ -2484,12 +3119,13 @@ function applyRoomState() {
     elements.roomEmpty.classList.toggle('is-strip', history);
     elements.chatMessages.hidden = empty && !history;
     const blocked = Boolean(meta && meta.kind === 'direct' && meta.peer_blocked);
-    for (const control of [elements.messageInput, elements.attachBtn, elements.sendBtn]) control.disabled = empty || blocked;
+    for (const control of [elements.messageInput, elements.sendBtn]) control.disabled = empty || blocked;
     elements.messageInput.placeholder = empty ? 'Сначала пригласите участников'
         : blocked ? 'Вы заблокировали собеседника' : 'Введите сообщение';
     if (empty) {
         clearReply();
         editingMessageId = null;
+        showEditBar(false);
     }
 }
 
@@ -2518,6 +3154,7 @@ function rememberChatView() {
     });
     // Правка и ответ относятся к сообщению этого чата — в другой не переносятся.
     editingMessageId = null;
+    showEditBar(false);
     clearReply();
 }
 
@@ -2671,12 +3308,18 @@ let reactionWhoShownAt = 0;
 function noteNewBelow() {
     newBelow++;
     elements.jumpDownCount.textContent = newBelow > 99 ? '99+' : String(newBelow);
-    elements.jumpDown.hidden = false;
+    showJumpDown(true);
+}
+
+// «↓» показывается и прячется переходом, поэтому — классом, а не hidden.
+function showJumpDown(show) {
+    elements.jumpDown.classList.toggle('is-visible', show);
+    elements.jumpDown.inert = !show;
 }
 
 function resetNewBelow() {
     newBelow = 0;
-    elements.jumpDown.hidden = true;
+    showJumpDown(false);
     elements.jumpDownCount.textContent = '';
 }
 
@@ -2685,6 +3328,10 @@ function resetNewBelow() {
 let stickToBottom = true;
 
 function setupFeed() {
+    // Касание или колёсико прерывают доезд ленты.
+    for (const type of ['wheel', 'touchstart', 'pointerdown']) {
+        elements.chatMessages.addEventListener(type, stopScrollAnimation, { passive: true });
+    }
     elements.chatMessages.addEventListener('scroll', () => { stickToBottom = atChatBottom(); }, { passive: true });
     if (window.visualViewport) {
         window.visualViewport.addEventListener('resize', () => {
@@ -2697,8 +3344,8 @@ function setupFeed() {
     });
     elements.chatMessages.addEventListener('scroll', () => {
         if (atChatBottom()) resetNewBelow();
-        else if (!newBelow) elements.jumpDown.hidden = elements.chatMessages.scrollHeight - elements.chatMessages.scrollTop
-            - elements.chatMessages.clientHeight < 600;
+        else if (!newBelow) showJumpDown(elements.chatMessages.scrollHeight - elements.chatMessages.scrollTop
+            - elements.chatMessages.clientHeight >= 600);
     }, { passive: true });
     elements.chatMessages.addEventListener('click', event => {
         const quote = event.target.closest('.reply-to[data-reply-id]');
@@ -2797,6 +3444,12 @@ const currentChatMeta = () => chatsMeta.get(currentChatId) || null;
 function renderChatStatus(isBot, online = false) {
     const chat = currentChatMeta();
     const status = elements.chatStatus;
+    const typing = !isBot && currentRoomId ? typingNames(currentRoomId) : [];
+    if (typing.length) {
+        status.replaceChildren(typingElement(typing, Boolean(chat && chat.kind === 'direct')));
+        status.className = 'status online is-typing';
+        return;
+    }
     if (chat) online = (chat.peer_ids || []).some(id => peerOnline.get(Number(id)));
     if (isBot) {
         status.textContent = 'Бот';
@@ -2833,11 +3486,14 @@ async function goToMessage(id) {
         showToast('Исходное сообщение не найдено — возможно, его удалили', 'info');
         return;
     }
-    bubble.scrollIntoView({ block: 'center', behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
+    const list = elements.chatMessages;
+    const rect = bubble.getBoundingClientRect();
+    const box = list.getBoundingClientRect();
+    scrollToTarget(list, list.scrollTop + rect.top - box.top - (list.clientHeight - rect.height) / 2);
     bubble.classList.remove('is-highlighted');
     bubble.getBoundingClientRect();
     bubble.classList.add('is-highlighted');
-    setTimeout(() => bubble.classList.remove('is-highlighted'), 1600);
+    setTimeout(() => bubble.classList.remove('is-highlighted'), 1200);
     bubble.focus({ preventScroll: true });
 }
 
@@ -2960,7 +3616,8 @@ function renderReactions(bubble, reactions) {
     }
     box.replaceChildren(...reactions.map(r => reactionChip(r, {
         fresh: !before.has(r.emoji),
-        bumped: before.has(r.emoji) && before.get(r.emoji) !== r.users.length,
+        bumped: before.has(r.emoji) && before.get(r.emoji) !== r.users.length
+            ? (r.users.length > before.get(r.emoji) ? 'up' : 'down') : false,
     })));
     updateInlineMeta(bubble);
 }
@@ -2976,7 +3633,7 @@ function reactionChip(reaction, { fresh = false, bumped = false } = {}) {
     chip.dataset.count = String(users.length);
     chip.reactionUsers = users;
     const count = document.createElement('span');
-    count.className = 'reaction-count' + (bumped ? ' count-bump' : '');
+    count.className = 'reaction-count' + (bumped ? ' count-bump' : '') + (bumped === 'down' ? ' is-down' : '');
     count.textContent = users.length ? String(users.length) : '';
     chip.append(emojiImage(emoji), count);
     const names = users.map(u => (currentUser && u.id === currentUser.id ? 'вы' : u.username)).join(', ');
@@ -3117,17 +3774,19 @@ function startExpirySweep() {
    (lib/read-state.js), а сюда — наши. */
 
 const STATUS_VIEW = {
+    sending: ['', 'Отправляется'],
     sent: ['○', 'Отправлено'],
     delivered: ['✓', 'Доставлено'],
     read: ['✓✓', 'Прочитано'],
 };
-const STATUS_RANK = { sent: 0, delivered: 1, read: 2 };
+const STATUS_RANK = { sending: -1, sent: 0, delivered: 1, read: 2 };
 
 function setMessageStatus(span, status) {
     const [mark, label] = STATUS_VIEW[status] || STATUS_VIEW.sent;
     const changed = span.isConnected && span.textContent && span.textContent !== mark;
     span.dataset.status = status in STATUS_VIEW ? status : 'sent';
     span.textContent = mark;
+    if (status === 'sending') span.appendChild(createIcon('i-timer'));
     // ✓ → ✓✓ не скачком: новая отметка проявляется. Только прозрачность —
     // её оставляем и при «уменьшить движение».
     if (changed && span.animate) span.animate([{ opacity: 0.2 }, { opacity: 1 }], { duration: 200, easing: 'ease-out' });
@@ -3426,15 +4085,22 @@ function dayGroup(date, container = elements.chatMessages) {
 function appendMessage(message, { fresh = false, container = elements.chatMessages } = {}) {
     const el = createMessageElement(message);
     if (message.id) shownMessageIds.add(message.id);
-    // Уже показанный пузырь с тем же id заменяется, а не повторяется.
-    const existing = message.id && elements.chatMessages.querySelector(`.message[data-message-id="${message.id}"], .message-system[data-message-id="${message.id}"]`);
+    // Уже показанный пузырь с тем же id — или своё «отправляемое» с тем же
+    // clientId — заменяется, а не повторяется.
+    const existing = (message.id && elements.chatMessages.querySelector(`.message[data-message-id="${message.id}"], .message-system[data-message-id="${message.id}"]`))
+        || (message.client_id && sendingBubble(message.client_id));
     if (existing && container === elements.chatMessages) {
+        // Своё «отправляемое» уже появилось с анимацией — принятое встаёт на
+        // его место новым, но второй раз не въезжает.
+        if (existing.classList.contains('is-new')) el.classList.add('is-new', 'is-settled');
         existing.replaceWith(el);
         refreshMessageTabStop();
         regroupMessages();
         return;
     }
-    if (fresh) el.classList.add('is-new');
+    if (container === elements.chatMessages) elements.chatMessages.querySelector(':scope > .chat-empty')?.remove();
+    // Новое въезжает, если это не поток и вкладка на экране.
+    if (fresh && !arrivalBurst() && document.visibilityState === 'visible') el.classList.add('is-new');
     dayGroup(messageDate(message), container).appendChild(el);
     if (container === elements.chatMessages) {
         refreshMessageTabStop();
@@ -3692,13 +4358,16 @@ const SYSTEM_LINES = [
         (name, self) => (self ? 'Вы выключили исчезающие сообщения' : `Исчезающие сообщения выключены · ${name}`)],
 ];
 
+// «1 день», «5 минут» — не рвутся между числом и словом.
+const keepNumbersTogether = text => text.replace(/(\d) (?=\S)/g, '$1\u00a0');
+
 function systemLineText(text) {
     const me = currentUser && currentUser.username;
     for (const [pattern, render] of SYSTEM_LINES) {
         const match = pattern.exec(text);
-        if (match) return render(match[1], match[1] === me, match[2], me);
+        if (match) return keepNumbersTogether(render(match[1], match[1] === me, match[2], me));
     }
-    return text;
+    return keepNumbersTogether(text);
 }
 
 // Ширина строки времени — в --meta-w пузыря (для распорки). Меняется сама:
@@ -3718,6 +4387,15 @@ function updateInlineMeta(bubble) {
     bubble.classList.toggle('inline-meta', Boolean(last && last.classList.contains('message-text') && last.querySelector('.meta-spacer')));
 }
 
+// Сообщение из одного–трёх эмодзи (и ничего больше) — крупно и без пузыря.
+const graphemes = typeof Intl.Segmenter === 'function' ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
+function emojiOnlyCount(text) {
+    if (!graphemes || !text) return 0;
+    const parts = [...graphemes.segment(text.trim())].map(p => p.segment).filter(g => g.trim());
+    if (!parts.length || parts.length > 3) return 0;
+    return parts.every(g => /\p{Extended_Pictographic}|\p{Regional_Indicator}/u.test(g) && !/[\p{L}\p{N}]/u.test(g)) ? parts.length : 0;
+}
+
 function createMessageElement(message) {
     // Событие чата (вошёл, вышел, сменил код) — строкой, без меню.
     if (message.message_type === 'system') {
@@ -3732,7 +4410,9 @@ function createMessageElement(message) {
     const isMine = isOwnMessage(message);
     const div = document.createElement('div');
     div.className = `message ${isMine ? 'sent' : 'received'}`;
-    div.dataset.messageId = message.id;
+    if (message.id) div.dataset.messageId = message.id;
+    if (message.client_id && isMine) div.dataset.clientId = message.client_id;
+    if (message.status === 'sending') div.classList.add('is-sending');
     if (message.sender_username) div.dataset.sender = message.sender_username;
     div.dataset.senderKey = `${isMine ? 'me' : message.user_id}:${Number(message.sent) ? 1 : 0}`;
     const at = messageDate(message);
@@ -3744,8 +4424,8 @@ function createMessageElement(message) {
     // В группе у чужих: имя — над первым в группе, аватар — у последнего
     // (что показывать, решают классы группы и .is-group у ленты).
     if (!isMine && message.sender_username) {
-        const color = /^#[0-9a-f]{3,8}$/i.test(message.sender_avatar || '') ? message.sender_avatar : DEFAULT_AVATAR;
-        div.style.setProperty('--author-color', color);
+        const look = avatarLook(message.sender_avatar);
+        div.style.setProperty('--author-color', look.color);
         const author = document.createElement('div');
         author.className = 'message-author';
         author.textContent = message.sender_username;
@@ -3753,7 +4433,7 @@ function createMessageElement(message) {
         const face = document.createElement('div');
         face.className = 'message-avatar';
         face.setAttribute('aria-hidden', 'true');
-        face.textContent = message.sender_username.charAt(0).toUpperCase();
+        paintAvatar(face, message.sender_avatar, message.sender_username);
         div.appendChild(face);
     }
 
@@ -3817,6 +4497,11 @@ function createMessageElement(message) {
             textDiv.className = 'message-text';
             textDiv.textContent = message.text || '';
             contentDiv.appendChild(textDiv);
+            const emojis = !message.reply_to && !message.encryptedFile && !message.file_url ? emojiOnlyCount(message.text) : 0;
+            if (emojis) {
+                div.classList.add('is-emoji');
+                div.dataset.emojiCount = String(emojis);
+            }
         }
 
         if (message.edited_at) {
@@ -3894,7 +4579,7 @@ function createMessageElement(message) {
     // Время — в конце последней строки текста, если помещается: место под
     // него держит невидимая распорка шириной со строку времени.
     const lastText = contentDiv.lastElementChild;
-    if (lastText && lastText.classList.contains('message-text')) {
+    if (lastText && lastText.classList.contains('message-text') && !div.classList.contains('is-emoji')) {
         const spacer = document.createElement('span');
         spacer.className = 'meta-spacer';
         spacer.setAttribute('aria-hidden', 'true');
@@ -3932,22 +4617,34 @@ function createMessageElement(message) {
         showMessageMenu(e.clientX, e.clientY, message, null, div);
     });
 
-    // Долгое нажатие (400 мс, лёгкая вибрация) — меню; свайп вправо — ответ.
+    // Долгое нажатие (400 мс, лёгкая вибрация) — меню; свайп влево — ответ
+    // (вправо — «назад» к списку).
     let swipe = null;
     div.addEventListener('touchstart', (e) => {
+        if (e.touches.length > 1) {
+            // Второй палец — не жест.
+            if (swipe && swipe.active) releaseSwipe(false);
+            swipe = null;
+            clearTimeout(longPressTimer);
+            return;
+        }
         if (div.classList.contains('is-selectable') || e.target.closest('.reaction')) return;
         const touch = e.touches[0];
-        swipe = { x: touch.clientX, y: touch.clientY, dx: 0, active: false, moved: false, at: Date.now(), target: e.target };
+        swipe = { x: touch.clientX, y: touch.clientY, d: 0, active: false, moved: false, ready: false,
+            at: Date.now(), target: e.target, samples: [] };
         clearTimeout(longPressTimer);
         longPressTimer = setTimeout(() => {
             if (message.deleted || !swipe || swipe.active) return;
             longPressShownAt = Date.now();
             if (navigator.vibrate) navigator.vibrate(10);
-            showMessageMenu(touch.clientX, touch.clientY, message, null, div);
+            showMessageMenu(touch.clientX, touch.clientY, message, null, div, { lift: true });
         }, LONG_PRESS_MS);
     }, { passive: true });
+    const SWIPE_MAX = 64;
+    const SWIPE_FIRE = 48;
+    let swipeIcon = null;
     div.addEventListener('touchmove', (e) => {
-        if (!swipe) return;
+        if (!swipe || e.touches.length > 1) return;
         const touch = e.touches[0];
         const dx = touch.clientX - swipe.x;
         const dy = touch.clientY - swipe.y;
@@ -3955,13 +4652,37 @@ function createMessageElement(message) {
             clearTimeout(longPressTimer);
             swipe.moved = true;
         }
-        if (!swipe.active && !message.deleted && dx > 12 && Math.abs(dx) > Math.abs(dy) * 1.5) swipe.active = true;
-        if (swipe.active) {
-            swipe.dx = Math.max(0, Math.min(dx, 72));
-            div.style.transform = `translateX(${swipe.dx}px)`;
-            div.classList.toggle('is-swipe-ready', swipe.dx >= 56);
+        if (!swipe.active && !message.deleted && message.id && dx < -12 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+            swipe.active = true;
+            div.style.transition = 'none';
+            swipeIcon = document.createElement('span');
+            swipeIcon.className = 'swipe-reply-icon';
+            swipeIcon.appendChild(createIcon('i-reply'));
+            div.appendChild(swipeIcon);
         }
+        if (!swipe.active) return;
+        const pull = Math.max(0, -dx);
+        // До 64px — за пальцем, дальше — с сопротивлением.
+        swipe.d = pull <= SWIPE_MAX ? pull : SWIPE_MAX + (pull - SWIPE_MAX) * 0.2;
+        swipe.samples.push([performance.now(), pull]);
+        if (swipe.samples.length > 5) swipe.samples.shift();
+        div.style.transform = `translateX(${-swipe.d}px)`;
+        swipeIcon.style.opacity = String(Math.min(1, swipe.d / SWIPE_FIRE));
+        const ready = swipe.d >= SWIPE_FIRE;
+        if (ready && !swipe.ready && navigator.vibrate) navigator.vibrate(10);
+        swipe.ready = ready;
+        swipeIcon.classList.toggle('is-ready', ready);
     }, { passive: true });
+    // Возврат — пружиной; при «уменьшить движение» — сразу.
+    const releaseSwipe = fire => {
+        const icon = swipeIcon;
+        swipeIcon = null;
+        div.style.transition = prefersReducedMotion() ? 'none' : 'transform 300ms cubic-bezier(0.34, 1.25, 0.64, 1)';
+        div.style.transform = '';
+        setTimeout(() => { div.style.transition = ''; icon?.remove(); }, 300);
+        if (icon) icon.style.opacity = '0';
+        if (fire) startReply(message);
+    };
     const endSwipe = () => {
         clearTimeout(longPressTimer);
         // Двойной тап по пузырю — ❤️ (не по ссылке, цитате, вложению).
@@ -3977,12 +4698,12 @@ function createMessageElement(message) {
             }
         }
         if (swipe && swipe.active) {
-            div.style.transform = '';
-            div.classList.remove('is-swipe-ready');
-            if (swipe.dx >= 56) {
-                if (navigator.vibrate) navigator.vibrate(10);
-                startReply(message);
-            }
+            const samples = swipe.samples;
+            const [t0, x0] = samples[0] || [0, 0];
+            const [t1, x1] = samples[samples.length - 1] || [0, 0];
+            const speed = t1 > t0 ? (x1 - x0) / (t1 - t0) : 0;
+            // Дотянул до порога — или рывок быстрее 0,11 px/мс хотя бы на 24px.
+            releaseSwipe(swipe.d >= SWIPE_FIRE || (speed > 0.11 && swipe.d >= 24));
         }
         swipe = null;
     };
@@ -4014,13 +4735,17 @@ function menuItems() {
  */
 let menuBubble = null;
 
-function showMessageMenu(x, y, message, trigger = null, bubble = trigger) {
+function showMessageMenu(x, y, message, trigger = null, bubble = trigger, { lift = false } = {}) {
+    // Пока сообщение не принято сервером, делать с ним нечего.
+    if (!message.id) return;
     const menu = elements.messageMenu;
+    lowerMessage();
     menuBubble = bubble;
     // Не data-message-id: по этому атрибуту ищут пузыри сообщений, и после
     // удаления пузыря находилось бы само меню.
     menu.dataset.forMessage = message.id;
     menu.dataset.forMessageText = message.text || '';
+    menu.dataset.forMessageAuthor = isOwnMessage(message) ? 'Вы' : (message.sender_username || '');
     const isMine = isOwnMessage(message);
     // Правка зашифрованного сообщения ушла бы на сервер открытым текстом,
     // поэтому её нет вовсе — удалить и отправить заново можно.
@@ -4035,12 +4760,27 @@ function showMessageMenu(x, y, message, trigger = null, bubble = trigger) {
     menu.showPopover();
     // Размер известен только после показа: прижимаем меню к краям окна.
     const margin = 8;
-    const left = Math.max(margin, Math.min(x, window.innerWidth - menu.offsetWidth - margin));
-    const top = Math.max(margin, Math.min(y, window.innerHeight - menu.offsetHeight - margin));
-    menu.style.left = `${left}px`;
-    menu.style.top = `${top}px`;
-    // Раскрывается из точки нажатия, даже если меню пришлось сдвинуть от края.
-    menu.style.transformOrigin = `${x - left}px ${y - top}px`;
+    if (lift && bubble) {
+        // Телефон, долгое нажатие: пузырь приподнят, остальное гаснет, меню —
+        // у пузыря (под ним, а если места нет — над), по краю со стороны
+        // автора и раскрывается из его угла.
+        liftMessage(bubble);
+        const r = bubble.getBoundingClientRect();
+        const sent = bubble.classList.contains('sent');
+        const below = r.bottom + 8 + menu.offsetHeight <= window.innerHeight - margin;
+        const top = below ? r.bottom + 8 : Math.max(margin, r.top - 8 - menu.offsetHeight);
+        const left = Math.max(margin, Math.min(sent ? r.right - menu.offsetWidth : r.left, window.innerWidth - menu.offsetWidth - margin));
+        menu.style.left = `${left}px`;
+        menu.style.top = `${top}px`;
+        menu.style.transformOrigin = `${sent ? '100%' : '0%'} ${below ? '0%' : '100%'}`;
+    } else {
+        const left = Math.max(margin, Math.min(x, window.innerWidth - menu.offsetWidth - margin));
+        const top = Math.max(margin, Math.min(y, window.innerHeight - menu.offsetHeight - margin));
+        menu.style.left = `${left}px`;
+        menu.style.top = `${top}px`;
+        // Раскрывается из точки нажатия, даже если меню пришлось сдвинуть от края.
+        menu.style.transformOrigin = `${x - left}px ${y - top}px`;
+    }
     if (trigger) (menuItems().find(item => item.id) || menuItems()[0])?.focus();
 }
 
@@ -4180,12 +4920,18 @@ function isForOpenChat({ chat_id, room_id }) {
 
 async function handleNewMessage(message) {
     notifyNewMessage(message);
+    if (message.room_id && message.user_id) stopTyping(message.room_id, message.user_id);
+    if (!isOwnMessage(message) && message.message_type !== 'system' && Number(message.sent) !== 0) {
+        const chat = [...chatsMeta.values()].find(c => (message.room_id ? Number(c.room_id) === Number(message.room_id)
+            : c.id === Number(message.chat_id)));
+        if (!chat || !chat.muted) playSound('receive');
+    }
     if (isForOpenChat(message)) {
         // Читают историю — не выдёргиваем вниз, а показываем «↓» со
         // счётчиком. У конца переписки — прокручиваем, как раньше.
         const wasAtBottom = atChatBottom();
         await appendMessageDecrypted(message, { fresh: true });
-        if (wasAtBottom || isOwnMessage(message)) scrollToBottom();
+        if (wasAtBottom || isOwnMessage(message)) scrollToBottom({ smooth: recentArrivals.length <= 3 });
         else noteNewBelow();
         scheduleReadMark();
         // Строка «вошёл» или «вышел» меняет состав: может быть, теперь есть
@@ -4208,16 +4954,23 @@ async function handleNewMessage(message) {
                 await e2ee.rememberPreview(message, e2ee.payloadPreview(e2ee.decodePayload(raw)));
             }
         }
-        loadChats();
+        scheduleChatsReload();
     }
 }
 
-// Ответ на сообщение: из меню и свайпом вправо.
+// Ответ на сообщение: из меню и свайпом. Курсор — сразу в поле: ответ
+// начинают печатать тут же.
+let replyContext = null;
 function startReply(message) {
     if (!message || !message.id) return;
     replyToMessageId = message.id;
+    const author = isOwnMessage(message) ? 'Вы' : (message.sender_username || message.author || '');
+    replyContext = { id: Number(message.id), author, text: message.text || '' };
+    elements.replyPreviewAuthor.textContent = author;
+    elements.replyPreviewAuthor.hidden = !author;
     elements.replyPreviewText.textContent = (message.text || 'Сообщение').substring(0, 100);
     elements.replyPreview.classList.remove('hidden');
+    elements.messageInput.focus({ preventScroll: true });
 }
 
 function checkExpiryOption(seconds) {
@@ -4227,14 +4980,50 @@ function checkExpiryOption(seconds) {
 
 function hideMessageMenu() {
     if (elements.messageMenu.matches(':popover-open')) elements.messageMenu.hidePopover();
+    lowerMessage();
+}
+
+let liftedMessage = null;
+function liftMessage(bubble) {
+    let dim = elements.mainContent.querySelector(':scope > .message-dim');
+    if (!dim) {
+        dim = document.createElement('div');
+        dim.className = 'message-dim';
+        elements.mainContent.appendChild(dim);
+    }
+    dim.classList.add('is-shown');
+    bubble.classList.remove('is-lowering');
+    bubble.classList.add('is-lifted');
+    liftedMessage = bubble;
+}
+function lowerMessage() {
+    elements.mainContent.querySelector(':scope > .message-dim')?.classList.remove('is-shown');
+    if (!liftedMessage) return;
+    const bubble = liftedMessage;
+    liftedMessage = null;
+    bubble.classList.remove('is-lifted');
+    bubble.classList.add('is-lowering');
+    setTimeout(() => bubble.classList.remove('is-lowering'), 120);
 }
 
 function clearReply() {
     replyToMessageId = null;
+    replyContext = null;
     elements.replyPreview.classList.add('hidden');
     elements.replyPreviewText.textContent = '';
 }
 
+/*
+ * Отправка. Своё сообщение появляется сразу: поле и плашка ответа
+ * очищаются по нажатию, пузырь «отправляется» (⏲) встаёт в ленту, а
+ * шифрование и запрос идут в фоне. Раньше текст висел в поле, пока шли
+ * шифрование, запрос и запись в IndexedDB, — и второй Enter отправлял его
+ * ещё раз с новым clientId.
+ *
+ * Дальше пузырь либо получает id и галочку, либо становится «Не
+ * отправлено · Повторить · Удалить» (повтор — с тем же clientId: сервер
+ * не заведёт второе сообщение), либо — «Ждёт ключей собеседника».
+ */
 async function sendMessage() {
     const text = elements.messageInput.value.trim();
     if (!text) return;
@@ -4242,33 +5031,141 @@ async function sendMessage() {
         showToast('Выберите чат', 'error');
         return;
     }
-    const payload = { chatId: currentChatId, text };
-    if (replyToMessageId) payload.replyToId = replyToMessageId;
+    if (editingMessageId) return saveEdit(editingMessageId, text);
 
-    if (editingMessageId) {
-        const data = await api(`/api/messages/${editingMessageId}`, {
-            method: 'PUT',
-            body: JSON.stringify({ text }),
-        });
-        if (!data.success) return showToast(data.message || 'Не удалось изменить сообщение', 'error');
-        showToast('Сообщение изменено', 'success');
-        const el = elements.chatMessages.querySelector(`[data-message-id="${editingMessageId}"] .message-text`);
-        if (el) el.textContent = text;
-        editingMessageId = null;
-    } else if (currentChatIsBot) {
-        // Бот отвечает на текст, который видит, — единственный чат без
-        // шифрования.
-        const data = await api('/api/messages', { method: 'POST', body: JSON.stringify({ ...payload, clientId: newClientId() }) });
-        if (!data.success) return showToast(data.message || 'Сообщение не отправлено', 'error');
-    } else {
-        // Не отправилось — текст остаётся в поле: иначе его пришлось бы
-        // набирать заново. Открытым текстом не уходит никогда.
-        const outcome = await sendEncrypted(text, payload);
-        if (outcome === 'failed') return;
-    }
-
+    const chatId = currentChatId;
+    const isBot = currentChatIsBot;
+    const reply = replyContext;
+    const clientId = newClientId();
     setMessageInput('');
     clearReply();
+    // Отправил — следующий набор снова «печатает» сразу.
+    typingSentAt = 0;
+    appendSendingBubble(chatId, { clientId, text, reply });
+    updateChatPreviewInList({ chat_id: chatId, room_id: currentRoomId, user_id: currentUser.id, sent: 1,
+        created_at: new Date().toISOString() }, text);
+    await deliverText({ chatId, isBot, text, replyToId: reply ? reply.id : null, clientId });
+}
+
+// Плашка «Редактирование» над полем — как у ответа.
+function showEditBar(show, text = '') {
+    elements.editPreview.classList.toggle('hidden', !show);
+    elements.editPreviewText.textContent = text.substring(0, 100);
+    updateSendButton();
+}
+
+function cancelEdit() {
+    editingMessageId = null;
+    setMessageInput('');
+    showEditBar(false);
+}
+
+// Правка: новый текст — сразу в пузыре; не удалось — прежний возвращается.
+async function saveEdit(messageId, text) {
+    const el = elements.chatMessages.querySelector(`[data-message-id="${messageId}"] .message-text`);
+    const before = el ? el.firstChild && el.firstChild.nodeType === 3 ? el.firstChild.textContent : el.textContent : null;
+    const setText = value => {
+        if (!el) return;
+        const spacer = el.querySelector('.meta-spacer');
+        el.textContent = value;
+        if (spacer) el.appendChild(spacer);
+    };
+    editingMessageId = null;
+    setMessageInput('');
+    showEditBar(false);
+    setText(text);
+    const data = await api(`/api/messages/${messageId}`, { method: 'PUT', body: JSON.stringify({ text }) });
+    if (!data.success) {
+        if (before !== null) setText(before);
+        showToast(data.message || 'Не удалось изменить сообщение', 'error');
+    }
+}
+
+// Свой пузырь, пока сообщение не принято сервером.
+function appendSendingBubble(chatId, { clientId, text, reply }) {
+    if (chatId !== currentChatId) return;
+    const local = {
+        client_id: clientId, user_id: currentUser.id, sent: 1, text, message_type: 'text',
+        created_at: new Date().toISOString(), status: 'sending', encrypted: !currentChatIsBot,
+        reply_to: reply ? { id: reply.id, sender_username: reply.author, text: reply.text } : null,
+    };
+    appendMessage(local, { fresh: true });
+    scrollToBottom({ smooth: true });
+}
+
+const sendingBubble = clientId => elements.chatMessages.querySelector(`.message[data-client-id="${CSS.escape(clientId)}"]`);
+
+function setBubbleSending(clientId) {
+    const bubble = sendingBubble(clientId);
+    if (!bubble) return;
+    bubble.classList.remove('is-failed');
+    bubble.classList.add('is-sending');
+    bubble.querySelector('.message-failed')?.remove();
+    updateInlineMeta(bubble);
+}
+
+// Не отправлено: в пузыре — «Повторить» (тот же clientId) и «Удалить».
+function markSendFailed(clientId, retry) {
+    const bubble = sendingBubble(clientId);
+    if (!bubble) return;
+    bubble.classList.remove('is-sending');
+    bubble.classList.add('is-failed');
+    bubble.querySelector('.message-failed')?.remove();
+    const row = document.createElement('div');
+    row.className = 'message-failed';
+    const label = document.createElement('span');
+    label.append(createIcon('i-alert'), 'Не отправлено');
+    const again = document.createElement('button');
+    again.type = 'button';
+    again.className = 'link-inline';
+    again.textContent = 'Повторить';
+    again.addEventListener('click', () => retry());
+    const drop = document.createElement('button');
+    drop.type = 'button';
+    drop.className = 'link-inline';
+    drop.textContent = 'Удалить';
+    drop.addEventListener('click', () => removeMessageElement(bubble));
+    row.append(label, ' · ', again, ' · ', drop);
+    bubble.querySelector('.message-content')?.appendChild(row);
+    updateInlineMeta(bubble);
+}
+
+async function deliverText({ chatId, isBot, text, replyToId, clientId }) {
+    setBubbleSending(clientId);
+    const retry = () => deliverText({ chatId, isBot, text, replyToId, clientId });
+    if (isBot) {
+        // Бот отвечает на текст, который видит, — единственный чат без
+        // шифрования.
+        const data = await api('/api/messages', { method: 'POST', body: JSON.stringify({ chatId, text, replyToId, clientId }) })
+            .catch(() => ({ success: false, message: 'Нет связи с сервером' }));
+        if (!data.success) {
+            markSendFailed(clientId, retry);
+            return showToast(data.message || 'Сообщение не отправлено', 'error');
+        }
+        if (chatId === currentChatId) appendMessage({ ...data.message, client_id: clientId });
+        playSound('send');
+        return;
+    }
+    // Открытым текстом не уходит никогда.
+    if (!e2ee || !e2ee.isReady()) {
+        // «Повторить» сначала поднимает шифрование заново.
+        const again = async () => {
+            if (!e2ee || !e2ee.isReady()) await setupE2EE();
+            if (currentChatId) refreshEncryptionBadge(currentChatId, currentChatIsBot);
+            retry();
+        };
+        markSendFailed(clientId, again);
+        return reportE2eeUnavailable('Сообщение не отправлено', again);
+    }
+    try {
+        const encoded = e2ee.encodeText(text);
+        const result = await sendEncryptedPayload(chatId, encoded, { replyToId, clientId });
+        if (result.waiting) await queuePending(chatId, encoded, replyToId, result.missing, clientId);
+        else playSound('send');
+    } catch (error) {
+        markSendFailed(clientId, retry);
+        reportEncryptedSendError('Сообщение не отправлено', chatId, error, retry);
+    }
 }
 
 /**
@@ -4328,7 +5225,7 @@ async function sendEncryptedPayload(chatId, encoded, { replyToId = null, blobIds
     updateChatPreviewInList(data.message, preview);
 
     if (chatId === currentChatId) {
-        const local = { ...data.message };
+        const local = { ...data.message, client_id: clientId };
         applyDecryptedContent(local, content);
         await resolveReplyQuote(local);
         appendMessage(local, { fresh: true });
@@ -4392,7 +5289,7 @@ async function queuePending(chatId, encoded, replyToId, missing, clientId = newC
     await withPendingLock(async () => e2ee.pending.save([...(await e2ee.pending.list()), item]));
     if (chatId === currentChatId) {
         appendPendingElement(item);
-        scrollToBottom();
+        if (!sendingBubble(clientId)) scrollToBottom();
     }
     showToast(`Нет ключей у ${namesList(missing)} — сообщение отправится, когда они появятся`, 'info');
 }
@@ -4428,7 +5325,9 @@ function appendPendingElement(item) {
     meta.append(label, cancel);
     body.append(text, meta);
     div.appendChild(body);
-    dayGroup(new Date(item.createdAt), elements.chatMessages).appendChild(div);
+    const sending = item.clientId && sendingBubble(item.clientId);
+    if (sending) sending.replaceWith(div);
+    else dayGroup(new Date(item.createdAt), elements.chatMessages).appendChild(div);
     regroupMessages();
 }
 
@@ -4500,72 +5399,9 @@ function devicesGenitive(n) {
     return `${n} ${one ? 'устройства' : 'устройств'}`;
 }
 
-/*
- * Итог: 'sent', 'queued' (ждёт ключей собеседника на устройстве) или
- * 'failed'. Открытого пути нет: раньше, если шифрование на устройстве не
- * поднялось или сервер отдавал пустой список устройств собеседника, текст
- * молча уходил открытым — и взломанному серверу было достаточно «потерять»
- * ключи, чтобы клиент сам прислал ему переписку.
- */
-async function sendEncrypted(text, payload) {
-    const chatId = currentChatId;
-    const replyToId = payload.replyToId || null;
-    if (!e2ee || !e2ee.isReady()) {
-        const clientId = newClientId();
-        reportE2eeUnavailable('Сообщение не отправлено', () => retryAfterSetup(chatId, text, replyToId, clientId));
-        return 'failed';
-    }
-    const clientId = newClientId();
-    try {
-        const encoded = e2ee.encodeText(text);
-        const result = await sendEncryptedPayload(chatId, encoded, { replyToId, clientId });
-        if (result.waiting) {
-            await queuePending(chatId, encoded, replyToId, result.missing, clientId);
-            return 'queued';
-        }
-        return 'sent';
-    } catch (error) {
-        reportEncryptedSendError('Сообщение не отправлено', chatId, error,
-            () => resendText(chatId, text, replyToId, clientId));
-        return 'failed';
-    }
-}
-
 function reportE2eeUnavailable(prefix, retry) {
     showToast(`${prefix}: шифрование на этом устройстве не работает — ${e2eeFailure || 'причина неизвестна'}`,
         'error', { action: retry ? { label: 'Повторить', onClick: retry } : null });
-}
-
-// «Повторить», когда не поднялось шифрование: сначала поднять его заново.
-async function retryAfterSetup(chatId, text, replyToId, clientId) {
-    if (!e2ee || !e2ee.isReady()) await setupE2EE();
-    if (currentChatId) refreshEncryptionBadge(currentChatId, currentChatIsBot);
-    if (!e2ee || !e2ee.isReady()) {
-        reportE2eeUnavailable('Сообщение не отправлено', () => retryAfterSetup(chatId, text, replyToId, clientId));
-        return;
-    }
-    await resendText(chatId, text, replyToId, clientId);
-}
-
-/**
- * «Повторить» из тоста об ошибке. Раньше кнопка вызывала sendMessage, а
- * та берёт текущий чат и то, что сейчас в поле ввода: переключился на
- * другой чат — и повтор уходил туда. Теперь повторяется то же сообщение в
- * тот же чат; текст из поля убирается, только если это он и есть.
- */
-async function resendText(chatId, text, replyToId, clientId = newClientId()) {
-    try {
-        const encoded = e2ee.encodeText(text);
-        const result = await sendEncryptedPayload(chatId, encoded, { replyToId, clientId });
-        if (result.waiting) await queuePending(chatId, encoded, replyToId, result.missing, clientId);
-        if (chatId === currentChatId && elements.messageInput.value.trim() === text) {
-            setMessageInput('');
-            clearReply();
-        }
-    } catch (error) {
-        reportEncryptedSendError('Сообщение не отправлено', chatId, error,
-            () => resendText(chatId, text, replyToId, clientId));
-    }
 }
 
 function reportEncryptedSendError(prefix, chatId, error, retry = null) {
@@ -4871,6 +5707,21 @@ function autosizeMessageInput() {
 function setMessageInput(value) {
     elements.messageInput.value = value;
     autosizeMessageInput();
+    updateSendButton();
+}
+
+const SEND_BUTTON = {
+    attach: 'Прикрепить файл',
+    send: 'Отправить',
+    save: 'Сохранить изменения',
+};
+function updateSendButton() {
+    const mode = editingMessageId ? 'save' : elements.messageInput.value.trim() ? 'send' : 'attach';
+    const button = elements.sendBtn;
+    if (button.dataset.mode === mode) return;
+    button.dataset.mode = mode;
+    button.title = SEND_BUTTON[mode];
+    button.setAttribute('aria-label', SEND_BUTTON[mode]);
 }
 
 /* --- Ширина списка чатов ------------------------------------------------
@@ -5401,8 +6252,9 @@ async function setBlocked(userId, username, blocked) {
 }
 
 async function renderBlocked() {
-    const data = await api('/api/blocks');
-    const list = (data.success && data.blocked) || [];
+    const data = await api('/api/blocks').catch(() => null);
+    if (!data || !data.success) return false;
+    const list = data.blocked;
     elements.blockedSection.hidden = list.length === 0;
     elements.blockedList.replaceChildren(...list.map(user => {
         const li = document.createElement('li');
@@ -5423,15 +6275,18 @@ async function renderBlocked() {
         li.append(info, button);
         return li;
     }));
+    return true;
 }
 
 /* --- Свой код в профиле ---------------------------------------------------- */
 
 async function renderUserCode() {
-    const data = await api('/api/user/code');
-    if (!data.success) return;
+    const data = await api('/api/user/code').catch(() => null);
+    if (!data || !data.success) return false;
+    elements.userCodeDisplay.parentElement.classList.remove('is-loading');
     elements.userCodeDisplay.textContent = data.code;
     elements.codeRequestsToggle.checked = data.requestsEnabled;
+    return true;
 }
 
 /* --- QR при встрече ---------------------------------------------------------
@@ -5531,21 +6386,33 @@ async function showInviteLink(link) {
     elements.inviteExpiry.value = !link.expires_at ? '0' : left > 86400 * 1.5 ? '604800' : left > 3600 * 1.5 ? '86400' : '3600';
     elements.inviteLimit.value = link.member_limit || '';
     elements.inviteApproval.checked = link.require_approval;
-    try {
-        await drawQr(elements.inviteQr, [[inviteUrl(link.code), 'Byte']]);
-        elements.inviteQr.hidden = false;
-    } catch {
-        elements.inviteQr.hidden = true;
-    }
+    elements.inviteQr.hidden = false;
+    drawQr(elements.inviteQr, [[inviteUrl(link.code), 'Byte']]).catch(() => { elements.inviteQr.hidden = true; });
 }
 
+// Окно — сразу, ссылка и QR — как придут.
 async function openInviteModal(chatId = currentChatId) {
     if (!chatId) return;
-    const data = await api(`/api/chats/${chatId}/link`);
-    if (!data.success) return showToast(data.message, 'error');
     inviteChatId = chatId;
-    await showInviteLink(data.link);
+    elements.inviteCodeBox.hidden = true;
+    elements.disableInviteBtn.hidden = true;
+    elements.resetInviteBtn.disabled = true;
+    elements.inviteText.replaceChildren(Object.assign(document.createElement('span'), {
+        className: 'skeleton invite-skeleton', ariaHidden: 'true' }));
     openModal(elements.inviteModal);
+    const data = await api(`/api/chats/${chatId}/link`).catch(() => null);
+    if (inviteChatId !== chatId || !elements.inviteModal.open) return;
+    elements.resetInviteBtn.disabled = false;
+    if (!data || !data.success) {
+        const retry = document.createElement('button');
+        retry.type = 'button';
+        retry.className = 'link-inline';
+        retry.textContent = 'Повторить';
+        retry.addEventListener('click', () => openInviteModal(chatId));
+        elements.inviteText.replaceChildren(`${(data && data.message) || 'Не удалось загрузить'} · `, retry);
+        return;
+    }
+    await showInviteLink(data.link);
 }
 
 async function saveInviteLink() {
@@ -5642,6 +6509,7 @@ function memberRow(chatId, member, { admin, admins, state }) {
     const li = personRow(me ? `${member.username} (вы)` : member.username,
         [member.role === 'admin' ? 'администратор' : 'участник', verified ? 'ключи сверены' : null].filter(Boolean).join(' · '));
     li.dataset.userId = member.user_id;
+    paintAvatar(li.querySelector('.chat-avatar-small'), member.avatar, member.username);
     if (verified) {
         const mark = createIcon('i-shield-check');
         mark.classList.add('member-verified');
@@ -5849,8 +6717,11 @@ function chatItemElement(chat, previewText) {
     div.tabIndex = -1;
     const avatar = document.createElement('div');
     avatar.className = 'chat-avatar-small';
-    avatar.style.background = /^#[0-9a-f]{3,8}$/i.test(chat.avatar || '') ? chat.avatar : DEFAULT_AVATAR;
-    avatar.textContent = chat.name.charAt(0).toUpperCase();
+    if (chat.kind === 'direct' && chat.peer_avatar) paintAvatar(avatar, chat.peer_avatar, chat.name);
+    else {
+        avatar.style.background = /^#[0-9a-f]{3,8}$/i.test(chat.avatar || '') ? chat.avatar : DEFAULT_AVATAR;
+        avatar.textContent = chat.name.charAt(0).toUpperCase();
+    }
     const info = document.createElement('div');
     info.className = 'chat-info';
     const name = document.createElement('div');
@@ -5909,10 +6780,64 @@ function chatItemElement(chat, previewText) {
     return div;
 }
 
+/* --- Прокрутка ----------------------------------------------------------------
+   Доезд своей кривой через rAF: длительность растёт с расстоянием (250–600
+   мс), короткое — 1 − (1 − t)^3.5, длинное — 1 − (1 − t)^5. Любое касание
+   или колёсико прерывает. Дальше полутора экранов — сначала мгновенно на
+   полтора экрана до цели, потом доезд. «Уменьшить движение» — мгновенно. */
+
+let scrollAnimation = null;
+
+function stopScrollAnimation() {
+    if (scrollAnimation) cancelAnimationFrame(scrollAnimation);
+    scrollAnimation = null;
+}
+
+function animateScroll(list, target) {
+    stopScrollAnimation();
+    const start = list.scrollTop;
+    const distance = target - start;
+    if (prefersReducedMotion() || Math.abs(distance) < 2) {
+        list.scrollTop = target;
+        return;
+    }
+    const abs = Math.abs(distance);
+    const duration = Math.min(600, Math.max(250, 250 + abs / 1500 * 350));
+    const power = abs <= 500 ? 3.5 : 5;
+    const began = performance.now();
+    const step = now => {
+        const t = Math.min(1, (now - began) / duration);
+        list.scrollTop = start + distance * (1 - Math.pow(1 - t, power));
+        scrollAnimation = t < 1 ? requestAnimationFrame(step) : null;
+    };
+    scrollAnimation = requestAnimationFrame(step);
+}
+
+function scrollToTarget(list, target) {
+    const max = list.scrollHeight - list.clientHeight;
+    target = Math.max(0, Math.min(max, target));
+    const far = list.clientHeight * 1.5;
+    if (!prefersReducedMotion() && Math.abs(target - list.scrollTop) > far) {
+        stopScrollAnimation();
+        list.scrollTop = target - Math.sign(target - list.scrollTop) * far;
+    }
+    animateScroll(list, target);
+}
+
 function scrollToBottom({ smooth = false } = {}) {
     const list = elements.chatMessages;
-    if (smooth && !prefersReducedMotion()) list.scrollTo({ top: list.scrollHeight, behavior: 'smooth' });
-    else list.scrollTop = list.scrollHeight;
+    if (smooth) return scrollToTarget(list, list.scrollHeight - list.clientHeight);
+    stopScrollAnimation();
+    list.scrollTop = list.scrollHeight;
+}
+
+// Больше трёх за 300 мс — поток: без въезда пузырей и без доезда.
+const recentArrivals = [];
+function arrivalBurst() {
+    const now = performance.now();
+    recentArrivals.push(now);
+    while (recentArrivals.length && now - recentArrivals[0] > 300) recentArrivals.shift();
+    return recentArrivals.length > 3;
 }
 
 

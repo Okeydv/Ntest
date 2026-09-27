@@ -213,7 +213,7 @@ check('клик мимо закрывает меню', !(await menuOpen()));
 check('вход по ссылке виден в переписке строкой, не пузырём', await page.evaluate(() =>
     [...document.querySelectorAll('#chat-messages .message-system')].some(el => el.textContent === 'bob в группе · по ссылке')));
 await page.click('#get-chat-code-btn');
-await page.waitForFunction(() => document.getElementById('invite-modal').open);
+await page.waitForFunction(() => document.getElementById('invite-modal').open && !document.getElementById('reset-invite-btn').disabled);
 const shownCode = await page.textContent('#invite-code-display');
 check('ссылка-приглашение с QR-кодом и условиями', await page.evaluate(() =>
     !document.getElementById('invite-qr').hidden && document.getElementById('invite-qr').width === document.getElementById('invite-qr').height
@@ -465,7 +465,7 @@ const errorCode = (failed.message.match(/\nКод ошибки: ([0-9a-f]{12})$/
 check('ошибка сервера показывается с кодом', Boolean(errorCode) && failed.errorId === errorCode, failed.message);
 
 await page.evaluate(() => console.error(`сломалось при проверке: ${location.origin}/api/chats?secret=1 и https://tracker.example/p?id=7`));
-await page.click('#profile-btn');
+await page.click('#settings-btn');
 await page.click('#error-report-btn');
 await page.waitForFunction(() => document.getElementById('error-report-modal').open);
 const report = await page.inputValue('#error-report-text');

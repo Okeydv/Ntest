@@ -2,7 +2,8 @@
 //
 //   - шифрование на устройстве не поднялось (здесь: сервер ключей не
 //     отвечает) — сообщение не уходит ни открытым, ни как-то ещё; сказано
-//     почему, текст остаётся в поле, «Повторить» поднимает шифрование и
+//     почему, текст остаётся в ленте пузырём «Не отправлено · Повторить ·
+//     Удалить», «Повторить» (там или в тосте) поднимает шифрование и
 //     отправляет;
 //   - у собеседника нет ни одного устройства с ключами — сообщение ждёт на
 //     устройстве («Уйдёт, когда … откроет Nyxo»), на сервер ничего не уходит, в
@@ -89,7 +90,10 @@ await send(carol, 'без шифрования не уйду');
 const toast = await carol.textContent('#toast');
 check('сообщение не ушло, и сказано почему', /не работает/.test(toast) && /сервер ключей/.test(toast), toast);
 check('на открытый путь клиент не пошёл', plainPosts.length === 0 && await count('без шифрования не уйду') === 0, plainPosts.join(', '));
-check('текст остался в поле', await carol.inputValue('#message-input') === 'без шифрования не уйду');
+check('текст не пропал: пузырь «Не отправлено · Повторить · Удалить»', await carol.evaluate(() => {
+    const bubble = [...document.querySelectorAll('#chat-messages .message.is-failed')].find(m => m.textContent.includes('без шифрования не уйду'));
+    return bubble ? bubble.querySelector('.message-failed').textContent.replace(/\s+/g, ' ').trim() : null;
+}) === 'Не отправлено · Повторить · Удалить');
 check('в тосте — «Повторить»', (await carol.textContent('#toast .toast-action')) === 'Повторить');
 await carol.unroute('**/api/keys/**');
 await carol.click('#toast .toast-action');
@@ -97,7 +101,9 @@ await carol.waitForTimeout(3000);
 check('«Повторить» поднял шифрование', await carol.evaluate(() => e2ee.isReady()));
 await openRoom(alice);
 check('и сообщение дошло зашифрованным', await lastText(alice) === 'без шифрования не уйду', await lastText(alice));
-check('поле очистилось после отправки', await carol.inputValue('#message-input') === '');
+check('после повтора «Не отправлено» пропало, пузырь один', await carol.evaluate(() =>
+    [...document.querySelectorAll('#chat-messages .message')].filter(m => m.textContent.includes('без шифрования не уйду')).length === 1
+    && !document.querySelector('#chat-messages .message.is-failed')));
 
 /* ------------------------- у собеседника нет ключей ------------------------- */
 
@@ -218,10 +224,11 @@ const downToast = await alice.textContent('#toast');
 check('сервер ключей лёг — «Шифрование на сервере временно недоступно — сообщение не отправлено»',
     downToast.includes('Шифрование на сервере временно недоступно — сообщение не отправлено'), downToast);
 check('код ошибки — отдельной строкой', /\nКод ошибки: abcdef012345/.test(downToast), JSON.stringify(downToast));
-check('это не «нет ключей у собеседника»: сообщение не встало ждать',
-    await alice.locator('.message.is-pending').count() === 0 && await alice.inputValue('#message-input') === 'без сервера ключей не уйду');
+check('это не «нет ключей у собеседника»: сообщение не встало ждать, а «Не отправлено»',
+    await alice.locator('.message.is-pending').count() === 0
+    && await alice.locator('.message.is-failed', { hasText: 'без сервера ключей не уйду' }).count() === 1);
 await alice.unroute('**/api/keys/bundle/**');
-await alice.fill('#message-input', '');
+await alice.locator('.message.is-failed', { hasText: 'без сервера ключей не уйду' }).locator('button', { hasText: 'Удалить' }).click();
 
 /* ------------------------- бот ------------------------- */
 
