@@ -451,7 +451,7 @@ await page.keyboard.press('Escape');
 await db.query('ALTER TABLE chats RENAME TO chats_hidden');
 const failed = await page.evaluate(() => api('/api/chats'));
 await db.query('ALTER TABLE chats_hidden RENAME TO chats');
-const errorCode = (failed.message.match(/\(код ([0-9a-f]{12})\)$/) || [])[1];
+const errorCode = (failed.message.match(/\nКод ошибки: ([0-9a-f]{12})$/) || [])[1];
 check('ошибка сервера показывается с кодом', Boolean(errorCode) && failed.errorId === errorCode, failed.message);
 
 await page.evaluate(() => console.error(`сломалось при проверке: ${location.origin}/api/chats?secret=1 и https://tracker.example/p?id=7`));

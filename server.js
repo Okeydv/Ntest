@@ -430,4 +430,7 @@ databaseReady.then(() => server.listen(PORT, HOST, async () => {
 
     // Старый открытый текст в комнатах — по сроку из migrations/009.
     startPlaintextPurge(io);
+
+    // Сервер ключей недоступен — сказать сразу, а не при первой отправке.
+    e2eeProxy.watchKeyServerAtStartup();
 }));

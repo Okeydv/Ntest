@@ -443,6 +443,15 @@ async function encryptPairwise(targets, plaintext) {
     const usersToFetch = [...new Set(needBundle.map(t => t.user_id))];
     for (const userId of usersToFetch) {
         const response = await state.api(`/api/keys/bundle/${userId}`);
+        // Сервер ключей лёг — это не «у собеседника нет ключей»: отправка
+        // должна сказать, что недоступно шифрование, а не ставить сообщение
+        // ждать ключей.
+        if (response && response.code === 'KEY_SERVER_UNAVAILABLE') {
+            const error = new Error(response.message || 'шифрование на сервере временно недоступно');
+            error.code = 'KEY_SERVER_UNAVAILABLE';
+            error.errorId = response.errorId || null;
+            throw error;
+        }
         if (!response || !Array.isArray(response.bundles)) {
             console.warn(`[E2EE] нет ключей для пользователя ${userId}, его устройства пропущены`);
             continue;
