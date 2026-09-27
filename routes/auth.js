@@ -4,7 +4,8 @@
 
 const { log } = require('../lib/log');
 const { broadcastReceipts } = require('../lib/read-state');
-const { setPresenceHidden } = require('../lib/presence');
+const { setPresenceHidden, isOnline } = require('../lib/presence');
+const { ANON_LIFETIMES, DEFAULT_LIFETIME, anonExpired, anonCookieMaxAge, anonInfo } = require('../lib/anon');
 const { purgeMessageContent } = require('../lib/storage');
 const { recordSecurityEvent, listSecurityEvents } = require('../lib/security-events');
 const { pool, dbGet, dbAll, dbRun } = require('../lib/db');
@@ -107,6 +108,10 @@ module.exports = function registerAuthRoutes(app, ctx) {
     });
 
     app.post('/api/register/anonymous', registerLimiter, async (req, res) => {
+        const lifetime = (req.body && req.body.lifetime) || DEFAULT_LIFETIME;
+        if (!Object.hasOwn(ANON_LIFETIMES, lifetime)) {
+            return res.status(400).json({ success: false, message: 'Неизвестный срок приватного аккаунта' });
+        }
         try {
             // Раньше код и имя выдавал отдельный сервис на Rust, слушавший все
             // сетевые интерфейсы. Случайную строку Node делает и сам.
@@ -117,14 +122,16 @@ module.exports = function registerAuthRoutes(app, ctx) {
             const sessionFingerprint = generateSecureToken(32);
 
             const client = await pool.connect();
-            let userId;
+            let userId, anonRow;
             try {
                 await client.query('BEGIN');
                 const userResult = await client.query(
-                    'INSERT INTO users (unique_code, username, email, password, avatar) VALUES ($1, $2, $3, $4, $5) RETURNING id',
-                    [uniqueCode, username, null, null, '#667EEA']
+                    `INSERT INTO users (unique_code, username, email, password, avatar, anon_lifetime, last_active_at)
+                     VALUES ($1, $2, $3, $4, $5, $6, now()) RETURNING id, created_at, last_active_at, anon_lifetime`,
+                    [uniqueCode, username, null, null, '#667EEA', lifetime]
                 );
                 userId = userResult.rows[0].id;
+                anonRow = userResult.rows[0];
 
                 const botResult = await client.query(
                     'INSERT INTO chats (user_id, name, avatar, online, is_bot) VALUES ($1, $2, $3, $4, $5) RETURNING id',
@@ -133,7 +140,7 @@ module.exports = function registerAuthRoutes(app, ctx) {
                 const botChatId = botResult.rows[0].id;
                 const greeting = await client.query(
                     'INSERT INTO messages (chat_id, user_id, text, sent, time, status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
-                    [botChatId, userId, '🔒 Приватный режим активирован!\n\nВаши данные:\n• Хранятся только в этой сессии\n• Будут удалены при выходе\n• Не связаны с email или телефоном\n\nДля максимальной анонимности:\n• Используйте Tor Browser\n• Не делитесь личной информацией\n• Включите disappearing messages', 0, getCurrentTime(), 'read']
+                    [botChatId, userId, '🔒 Приватный режим активирован!\n\nВаши данные:\n• Удаляются при выходе и по истечении выбранного срока\n• Не связаны с email или телефоном\n\nДля максимальной анонимности:\n• Используйте Tor Browser\n• Не делитесь личной информацией\n• Включите disappearing messages', 0, getCurrentTime(), 'read']
                 );
                 // Приветствие не должно висеть непрочитанным.
                 await client.query('UPDATE chats SET last_read_id = $1, last_delivered_id = $1 WHERE id = $2',
@@ -151,8 +158,9 @@ module.exports = function registerAuthRoutes(app, ctx) {
                 isAnonymous: true, sessionFingerprint, createdAt: Date.now(),
             });
 
-            // Устанавливаем короткий срок жизни сессии для анонимных пользователей
-            req.session.cookie.maxAge = 4 * 60 * 60 * 1000; // 4 часа
+            // Кука живёт столько, сколько аккаунт без активности; продлевает
+            // её общий обработчик (server.js) на каждом запросе.
+            req.session.cookie.maxAge = anonCookieMaxAge(anonRow);
 
             res.json({
                 success: true,
@@ -163,7 +171,7 @@ module.exports = function registerAuthRoutes(app, ctx) {
                     uniqueCode,
                     avatar: '#667EEA',
                     isAnonymous: true,
-                    sessionExpiresIn: 4 * 60 * 60 // секунды
+                    anon: anonInfo(anonRow),
                 }
             });
         } catch (error) {
@@ -276,17 +284,17 @@ module.exports = function registerAuthRoutes(app, ctx) {
 
     async function sweepAnonymousAccounts() {
         try {
-            const stale = await dbAll(
-                `SELECT u.id FROM users u
-                 WHERE u.email IS NULL AND u.password IS NULL
-                   AND u.created_at < NOW() - INTERVAL '10 minutes'
-                   AND NOT EXISTS (SELECT 1 FROM "session" s
-                                   WHERE s.sess->>'userId' = u.id::text AND s.expire > NOW())`
+            const candidates = await dbAll(
+                `SELECT u.id, u.created_at, u.last_active_at, u.anon_lifetime,
+                        NOT EXISTS (SELECT 1 FROM "session" s
+                                    WHERE s.sess->>'userId' = u.id::text AND s.expire > NOW()) AS abandoned
+                 FROM users u
+                 WHERE u.email IS NULL AND u.password IS NULL`
             );
-            for (const { id } of stale) {
-                await deleteAnonymousAccount(id);
-                disconnectSockets(`user:${id}`);
-            }
+            const tenMinutesAgo = Date.now() - 10 * 60 * 1000;
+            const stale = candidates.filter(u => anonExpired(u, { online: isOnline(u.id) })
+                || (u.abandoned && new Date(u.created_at).getTime() < tenMinutesAgo));
+            for (const { id } of stale) await expireAnonymousAccount(id);
             if (stale.length) log.info({ count: stale.length }, '[Anon] Удалены брошенные анонимные аккаунты');
         } catch (error) {
             // Таблицу сессий создаёт connect-pg-simple при первом входе — до
@@ -296,6 +304,16 @@ module.exports = function registerAuthRoutes(app, ctx) {
     }
 
     setInterval(sweepAnonymousAccounts, ANON_SWEEP_INTERVAL_MS).unref();
+
+    /*
+     * Срок вышел: аккаунт удаляется сразу, его сокеты отключаются, сессии
+     * стираются — не дожидаясь уборки.
+     */
+    async function expireAnonymousAccount(userId) {
+        await deleteAnonymousAccount(userId);
+        disconnectSockets(`user:${userId}`);
+        await dbRun(`DELETE FROM "session" WHERE sess->>'userId' = $1`, [String(userId)]).catch(() => {});
+    }
 
     app.post('/api/logout', async (req, res) => {
         const isAnonymous = req.session?.isAnonymous;
@@ -328,7 +346,7 @@ module.exports = function registerAuthRoutes(app, ctx) {
     app.get('/api/auth', async (req, res) => {
         if (!req.session.userId) return res.json({ authenticated: false });
         try {
-            const row = await dbGet('SELECT avatar FROM users WHERE id = $1', [req.session.userId]);
+            const row = await dbGet('SELECT avatar, created_at, last_active_at, anon_lifetime FROM users WHERE id = $1', [req.session.userId]);
             if (!row && req.session.isAnonymous) {
                 // Анонимный пользователь был удален, очищаем сессию
                 req.session.destroy(() => {});
@@ -339,19 +357,6 @@ module.exports = function registerAuthRoutes(app, ctx) {
             const avatar = row ? (row.avatar || '') : (req.session.avatar || '');
             req.session.avatar = avatar;
 
-            // Проверка времени жизни анонимной сессии
-            if (req.session.isAnonymous && req.session.createdAt) {
-                const sessionAge = Date.now() - req.session.createdAt;
-                const maxAge = 4 * 60 * 60 * 1000; // 4 часа
-                if (sessionAge > maxAge) {
-                    return res.json({
-                        authenticated: false,
-                        expired: true,
-                        message: 'Анонимная сессия истекла'
-                    });
-                }
-            }
-
             res.json({
                 authenticated: true,
                 user: {
@@ -359,7 +364,8 @@ module.exports = function registerAuthRoutes(app, ctx) {
                     username: req.session.username,
                     uniqueCode: req.session.uniqueCode,
                     avatar,
-                    isAnonymous: req.session.isAnonymous || false
+                    isAnonymous: req.session.isAnonymous || false,
+                    anon: req.session.isAnonymous ? anonInfo(row) : null,
                 }
             });
         } catch (error) {
@@ -474,5 +480,5 @@ module.exports = function registerAuthRoutes(app, ctx) {
         }
     });
 
-    return { startSession };
+    return { startSession, expireAnonymousAccount };
 };

@@ -32,7 +32,8 @@ const { createSocketServer } = require('./lib/sockets');
 const e2eeProxy = require('./lib/e2ee-proxy');
 const { createDevicesRouter } = require('./lib/devices');
 const { recordSecurityEvent } = require('./lib/security-events');
-const { emitToPeers } = require('./lib/presence');
+const { emitToPeers, isOnline } = require('./lib/presence');
+const { anonExpired, anonCookieMaxAge } = require('./lib/anon');
 const { startPlaintextPurge } = require('./lib/plaintext-purge');
 const {
     checkTorConnection,
@@ -345,6 +346,35 @@ function serveIndexWithNonce(req, res) {
 
 app.use('/api/', apiLimiter);
 
+/*
+ * Срок анонимного аккаунта — на каждом запросе, а не только при входе
+ * (lib/anon.js). Истёк — аккаунт удаляется сразу, запрос получает 401
+ * ANON_EXPIRED. Иначе запрос — это активность: отметка обновляется (не чаще
+ * раза в минуту), кука продлевается на выбранный срок.
+ */
+app.use('/api/', async (req, res, next) => {
+    if (!req.session || !req.session.userId || !req.session.isAnonymous) return next();
+    const userId = req.session.userId;
+    try {
+        const user = await dbGet('SELECT id, created_at, last_active_at, anon_lifetime FROM users WHERE id = $1', [userId]);
+        if (!user || anonExpired(user, { online: isOnline(userId) })) {
+            if (user) await ctx.expireAnonymousAccount(userId);
+            return req.session.destroy(() => res.status(401).json({
+                success: false, code: 'ANON_EXPIRED', message: 'Срок приватного аккаунта истёк — аккаунт удалён',
+            }));
+        }
+        if (!user.last_active_at || Date.now() - new Date(user.last_active_at).getTime() > 60 * 1000) {
+            await dbRun('UPDATE users SET last_active_at = now() WHERE id = $1', [userId]);
+            req.session.cookie.maxAge = anonCookieMaxAge(user);
+            // Изменённая сессия сохраняется заново — и кука уходит с новым сроком.
+            req.session.lastActiveAt = Date.now();
+        }
+        next();
+    } catch (error) {
+        next(error);
+    }
+});
+
 // Реестр устройств и прокси к e2ee-key-server.
 //
 // Прокси до сих пор не был смонтирован: модуль подключался через require, но
@@ -390,6 +420,28 @@ Object.assign(ctx, require('./routes/contacts')(app, ctx));
 Object.assign(ctx, require('./routes/messages')(app, ctx));
 Object.assign(ctx, require('./routes/files')(app, ctx));
 require('./routes/link')(app, ctx);
+
+// Сокет анонимного аккаунта: срок проверяется и при подключении (вернулся
+// после срока — аккаунт удаляется, сокет отключается), а подключение и
+// отключение — активность: срок бездействия считается от закрытия вкладки.
+io.on('connection', async socket => {
+    const session = socket.request.session;
+    if (!session || !session.userId || !session.isAnonymous) return;
+    const userId = session.userId;
+    const touch = () => dbRun('UPDATE users SET last_active_at = now() WHERE id = $1', [userId]).catch(() => {});
+    try {
+        const user = await dbGet('SELECT id, created_at, last_active_at, anon_lifetime FROM users WHERE id = $1', [userId]);
+        if (!user || anonExpired(user)) {
+            if (user) await ctx.expireAnonymousAccount(userId);
+            socket.disconnect(true);
+            return;
+        }
+        await touch();
+        socket.on('disconnect', touch);
+    } catch (error) {
+        log.error({ err: error }, '[Anon] Socket check error');
+    }
+});
 
 // security.txt (RFC 9116): куда сообщать об уязвимостях. Адрес — из
 // SECURITY_CONTACT; не задан — файла нет.

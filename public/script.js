@@ -21,6 +21,10 @@ const elements = {
     loginBtn: document.getElementById('login-btn'),
     registerBtn: document.getElementById('register-btn'),
     anonymousLoginBtn: document.getElementById('anonymous-login-btn'),
+    anonModal: document.getElementById('anon-modal'),
+    anonConfirmBtn: document.getElementById('anon-confirm-btn'),
+    anonNote: document.getElementById('anon-note'),
+    anonNoteText: document.getElementById('anon-note-text'),
     logoutBtn: document.getElementById('logout-btn'),
     jumpDown: document.getElementById('jump-down'),
     jumpDownCount: document.getElementById('jump-down-count'),
@@ -1083,6 +1087,7 @@ function showAuth() {
 function showApp() {
     // Истёкшее стирается сразу при запуске и дальше по таймеру.
     startExpirySweep();
+    showAnonNote(currentUser);
     elements.authScreen.classList.add('hidden');
     elements.app.classList.remove('hidden');
     loadMyRequests();
@@ -1220,7 +1225,57 @@ async function api(url, options = {}) {
     if (data && data.errorId && typeof data.message === 'string') {
         data.message = `${data.message}\nКод ошибки: ${data.errorId}`;
     }
+    if (data && data.code === 'ANON_EXPIRED') onAnonExpired();
     return data;
+}
+
+/* --- Приватный режим -------------------------------------------------------
+   Когда удалится аккаунт — строкой над кнопками профиля; за 10 минут до
+   потолка (7 дней с создания) — предупреждение. Срок вышел — сервер уже
+   удалил аккаунт; здесь стирается и то, что лежало в браузере. */
+
+const ANON_LIFETIME_TEXT = {
+    tab: 'через 30 мин после закрытия вкладки',
+    day: 'через 24 ч без активности',
+    week: 'через 7 дн без активности',
+};
+let anonWarnTimer = null;
+let anonExpiring = false;
+
+function showAnonNote(user) {
+    clearTimeout(anonWarnTimer);
+    const anon = user && user.isAnonymous ? user.anon : null;
+    elements.anonNote.hidden = !anon;
+    if (!anon) return;
+    const deadline = new Date(anon.deadline);
+    elements.anonNoteText.textContent = `Приватный режим · удалится ${ANON_LIFETIME_TEXT[anon.lifetime] || 'через 4 ч без активности'}`;
+    elements.anonNote.title = `И в любом случае не позже ${fullFormat.format(deadline)}`;
+    const warnIn = deadline.getTime() - 10 * 60 * 1000 - Date.now();
+    // setTimeout дальше ~24 дней не умеет — а потолок и так 7 дней.
+    if (warnIn < 2 ** 31 - 1) {
+        anonWarnTimer = setTimeout(() => showToast(
+            `Приватный аккаунт удалится через 10 минут (в ${timeFormat.format(deadline)}) вместе с перепиской. Сохраните нужное.`,
+            'error'), Math.max(0, warnIn));
+    }
+}
+
+async function onAnonExpired() {
+    if (anonExpiring || !currentUser) return;
+    anonExpiring = true;
+    try {
+        clearTimeout(anonWarnTimer);
+        if (e2ee && e2ee.isReady()) await e2ee.wipeDevice().catch(() => {});
+        e2eeDeviceId = null;
+        currentUser = null;
+        closeCurrentChat();
+        chatViews.clear();
+        for (const modal of document.querySelectorAll('dialog[open]')) closeModal(modal);
+        if (socket) socket.disconnect();
+        showAuth();
+        showToast('Срок приватного аккаунта истёк: аккаунт и переписка удалены', 'info');
+    } finally {
+        anonExpiring = false;
+    }
 }
 
 // В журнал ошибок страницы — маршрут без id: /api/messages/:id.
@@ -1332,8 +1387,12 @@ function setupEventListeners() {
         }
     }));
 
-    elements.anonymousLoginBtn.addEventListener('click', () => withBusy(elements.anonymousLoginBtn, async () => {
-        const data = await api('/api/register/anonymous', { method: 'POST' });
+    // Сначала — срок: сколько аккаунт живёт без активности.
+    elements.anonymousLoginBtn.addEventListener('click', () => openModal(elements.anonModal));
+    elements.anonConfirmBtn.addEventListener('click', () => withBusy(elements.anonConfirmBtn, async () => {
+        const lifetime = elements.anonModal.querySelector('input[name="anon-lifetime"]:checked').value;
+        const data = await api('/api/register/anonymous', { method: 'POST', body: JSON.stringify({ lifetime }) });
+        if (data.success) closeModal(elements.anonModal);
         if (data.success) {
             currentUser = data.user;
             showToast('Приватный режим активирован', 'success');
@@ -2750,7 +2809,12 @@ function setupConnectionStatus() {
         wasDisconnected = true;
         // Разрыв со стороны сервера (перезапуск, сессия сменилась) Socket.IO
         // сам не лечит — переподключаемся сами, если есть кем.
-        if (reason === 'io server disconnect' && currentUser) socket.connect();
+        // Приватный аккаунт мог истечь: сервер удалил его и отключил сокет.
+        // Сначала узнаём (ответ ANON_EXPIRED сам всё сотрёт), потом — назад.
+        if (reason === 'io server disconnect' && currentUser) {
+            const check = currentUser.isAnonymous ? api('/api/user').catch(() => null) : Promise.resolve();
+            check.then(() => { if (currentUser) socket.connect(); });
+        }
         clearTimeout(connectionTimer);
         // Короткие переподключения плашкой не мигают. «Переподключаемся» —
         // только если переподключение действительно идёт.

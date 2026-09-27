@@ -2824,6 +2824,23 @@ dialog.modal::backdrop {
 .invite-setting select,
 .invite-setting input { width: 10rem; flex: none; }
 
+/* Приватный режим: когда удалится аккаунт. */
+.anon-note {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0;
+    padding: 0.5rem 1.125rem;
+    border-top: 1px solid var(--border);
+    font-size: var(--fs-xs);
+    color: var(--text-2);
+}
+.anon-note[hidden] { display: none; }
+.anon-note .icon { flex: none; width: 0.9375rem; height: 0.9375rem; color: var(--accent); }
+@media (min-width: 641px) {
+    .sidebar.is-compact .anon-note span { display: none; }
+}
+
 /* QR при встрече. */
 #meet-modal .modal-body { display: grid; gap: 0.75rem; }
 #meet-modal .field-hint { margin: 0; }

@@ -162,7 +162,7 @@
                     <svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg>
                     Войти в приватном режиме
                 </button>
-                <p class="field-hint field-hint-center">Без email и пароля. Данные удалятся при выходе.</p>
+                <p class="field-hint field-hint-center">Без email и пароля. Аккаунт удалится при выходе или после выбранного срока.</p>
                 <button id="link-login-btn" class="btn btn-ghost btn-block" type="button">Войти по QR-коду с другого устройства</button>
             </div>
 
@@ -217,6 +217,12 @@
             <section id="my-requests" class="my-requests" aria-label="Запросы на вход" hidden></section>
 
             <div id="chats-list" class="chats-list"></div>
+
+            <!-- Приватный режим: когда аккаунт удалится. -->
+            <p id="anon-note" class="anon-note" hidden>
+                <svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg>
+                <span id="anon-note-text"></span>
+            </p>
 
             <div class="sidebar-footer">
                 <button id="profile-btn" class="btn btn-ghost" type="button">
@@ -380,6 +386,28 @@
 
     <!-- Три пути: личный чат, группа, вход по приглашению. Сначала выбор,
          потом шаг выбранного пути; «Назад» возвращает к выбору. -->
+    <!-- Приватный режим: сколько хранить аккаунт без активности. -->
+    <dialog id="anon-modal" class="modal" aria-labelledby="anon-modal-title">
+        <div class="modal-content modal-content-sm">
+            <div class="modal-header">
+                <h3 id="anon-modal-title">Приватный режим</h3>
+                <button class="icon-btn icon-btn-sm icon-btn-quiet close-modal" aria-label="Закрыть" type="button">
+                    <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <fieldset class="field expiry-options">
+                    <legend class="field-label">Сколько хранить аккаунт</legend>
+                    <label class="radio-row"><input type="radio" name="anon-lifetime" value="tab" checked> Пока открыта вкладка</label>
+                    <label class="radio-row"><input type="radio" name="anon-lifetime" value="day"> 1 день без активности</label>
+                    <label class="radio-row"><input type="radio" name="anon-lifetime" value="week"> 7 дней без активности</label>
+                    <p class="field-hint">Срок считается от последней активности: пока вкладка открыта, аккаунт жив. «Пока открыта вкладка» — удаление через 30 минут после того, как её закрыли. В любом случае не дольше 7 дней. Удаляется аккаунт вместе с перепиской: ваши сообщения исчезнут и у собеседников.</p>
+                </fieldset>
+                <button id="anon-confirm-btn" class="btn btn-primary btn-block" type="button">Войти</button>
+            </div>
+        </div>
+    </dialog>
+
     <dialog id="new-chat-modal" class="modal" aria-labelledby="new-chat-modal-title">
         <div class="modal-content">
             <div class="modal-header">
