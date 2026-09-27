@@ -82,7 +82,6 @@ const elements = {
     chatMessages: document.getElementById('chat-messages'),
     messageInput: document.getElementById('message-input'),
     sendBtn: document.getElementById('send-btn'),
-    attachBtn: document.getElementById('attach-btn'),
     fileInput: document.getElementById('file-input'),
     newChatBtn: document.getElementById('new-chat-btn'),
     chatHeader: document.getElementById('chat-header'),
@@ -181,6 +180,10 @@ const elements = {
     deleteMessageBtn: document.getElementById('delete-message-btn'),
     replyPreview: document.getElementById('reply-preview'),
     replyPreviewText: document.getElementById('reply-preview-text'),
+    replyPreviewAuthor: document.getElementById('reply-preview-author'),
+    editPreview: document.getElementById('edit-preview'),
+    editPreviewText: document.getElementById('edit-preview-text'),
+    cancelEditBtn: document.getElementById('cancel-edit-btn'),
     cancelReplyBtn: document.getElementById('cancel-reply-btn'),
     toast: document.getElementById('toast'),
     profileUsername: document.getElementById('profile-username'),
@@ -344,7 +347,8 @@ const SECURITY_EVENT_TEXT = {
 
 async function renderSecurityEvents() {
     const data = await api('/api/security-events').catch(() => null);
-    const events = data && data.success ? data.events : [];
+    if (!data || !data.success) return false;
+    const events = data.events;
     elements.securitySection.hidden = events.length === 0;
     elements.securityList.replaceChildren(...events.map(event => {
         const item = document.createElement('li');
@@ -360,12 +364,12 @@ async function renderSecurityEvents() {
         item.append(what, meta);
         return item;
     }));
+    return true;
 }
 
 async function renderDevices() {
     const list = await api('/api/devices').catch(() => null);
-    elements.devicesSection.hidden = !(list && list.success);
-    if (!list || !list.success) return;
+    if (!list || !list.success) return false;
     elements.devicesList.replaceChildren();
     for (const device of list.devices.filter(d => !d.revoked_at)) {
         const item = document.createElement('li');
@@ -401,6 +405,91 @@ async function renderDevices() {
         }
         elements.devicesList.appendChild(item);
     }
+    return true;
+}
+
+/* --- Профиль ----------------------------------------------------------------
+   Окно открывается сразу: имя, почта и цвет — из того, что уже известно,
+   остальные разделы — заготовками, и каждый заполняется по своему ответу
+   (запросы идут параллельно). Раздел, который не загрузился, говорит об
+   этом у себя и предлагает повторить, — остальные от него не зависят.
+   Второй раз окно показывает прошлое и тихо обновляется. */
+
+let profileLoaded = false;
+
+function fillProfileUser(user) {
+    elements.profileUsername.textContent = user.username || '';
+    elements.profileEmail.textContent = user.email || (user.email === undefined ? '' : 'Нет email (приватный режим)');
+    const avatarColor = user.avatar || DEFAULT_AVATAR;
+    elements.profileAvatar.style.background = avatarColor;
+    elements.profileAvatar.textContent = (user.username || '?').charAt(0).toUpperCase();
+    document.querySelectorAll('.color-option').forEach(o => {
+        o.classList.toggle('active', o.dataset.color.toLowerCase() === avatarColor.toLowerCase());
+    });
+    const anonymous = user.email === null || Boolean(user.isAnonymous);
+    elements.profileAnonBadge.classList.toggle('hidden', !anonymous);
+    elements.changePasswordBtn.classList.toggle('hidden', anonymous);
+    elements.linkDeviceBtn.hidden = anonymous;
+    if ('sendReadReceipts' in user) elements.readReceiptsToggle.checked = user.sendReadReceipts !== false;
+    if ('hidePresence' in user) elements.hidePresenceToggle.checked = Boolean(user.hidePresence);
+}
+
+async function loadProfileUser() {
+    const data = await api('/api/user').catch(() => null);
+    if (!data || !data.success) return false;
+    fillProfileUser(data.user);
+    return true;
+}
+
+// Раздел профиля: заполнить; не вышло — «Не удалось загрузить · Повторить»
+// на его месте.
+async function loadProfileSection(host, load) {
+    host.querySelector(':scope > .section-error')?.remove();
+    let ok = false;
+    try {
+        ok = await load();
+    } catch (error) {
+        console.warn('Раздел профиля не загрузился:', error);
+    }
+    if (ok) return;
+    const row = document.createElement('p');
+    row.className = 'section-error';
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'link-inline';
+    retry.textContent = 'Повторить';
+    retry.addEventListener('click', () => loadProfileSection(host, load));
+    row.append(createIcon('i-alert'), 'Не удалось загрузить · ', retry);
+    host.appendChild(row);
+}
+
+function profileSkeletons() {
+    const line = () => {
+        const li = document.createElement('li');
+        li.className = 'skeleton members-skeleton';
+        li.setAttribute('aria-hidden', 'true');
+        return li;
+    };
+    elements.devicesList.replaceChildren(line());
+    elements.userCodeDisplay.textContent = '';
+    elements.userCodeDisplay.parentElement.classList.add('is-loading');
+}
+
+async function openProfile() {
+    if (!profileLoaded) {
+        fillProfileUser({ ...currentUser, email: currentUser.isAnonymous ? null : currentUser.email });
+        profileSkeletons();
+    }
+    elements.notifyToggle.checked = notificationsOn();
+    openModal(elements.profileModal);
+    profileLoaded = true;
+    await Promise.allSettled([
+        loadProfileSection(elements.profileUsername.closest('.profile-info'), loadProfileUser),
+        loadProfileSection(elements.userCodeDisplay.closest('section'), renderUserCode),
+        loadProfileSection(elements.blockedSection, renderBlocked),
+        loadProfileSection(elements.devicesSection, renderDevices),
+        loadProfileSection(elements.securitySection, renderSecurityEvents),
+    ]);
 }
 
 /**
@@ -1614,6 +1703,7 @@ function setupEventListeners() {
         setMessageInput('');
         clearReply();
         editingMessageId = null;
+        showEditBar(false);
         showToast('Вы вышли из аккаунта', 'info');
         showAuth();
     };
@@ -1788,36 +1878,7 @@ function setupEventListeners() {
         if (event.key === 'Enter' && !event.isComposing) withBusy(elements.groupNameSave, renameGroup);
     });
 
-    elements.profileBtn.addEventListener('click', async () => {
-        const data = await api('/api/user');
-        if (data.success) {
-            elements.profileUsername.textContent = data.user.username;
-            elements.profileEmail.textContent = data.user.email || 'Нет email (приватный режим)';
-            const avatarColor = data.user.avatar || DEFAULT_AVATAR;
-            elements.profileAvatar.style.background = avatarColor;
-            elements.profileAvatar.textContent = data.user.username.charAt(0).toUpperCase();
-            document.querySelectorAll('.color-option').forEach(o => {
-                o.classList.toggle('active', o.dataset.color.toLowerCase() === avatarColor.toLowerCase());
-            });
-            if (data.user.email === null || data.user.email === undefined) {
-                elements.profileAnonBadge.classList.remove('hidden');
-                elements.changePasswordBtn.classList.add('hidden');
-                elements.linkDeviceBtn.hidden = true;
-            } else {
-                elements.profileAnonBadge.classList.add('hidden');
-                elements.changePasswordBtn.classList.remove('hidden');
-                elements.linkDeviceBtn.hidden = false;
-            }
-            elements.readReceiptsToggle.checked = data.user.sendReadReceipts !== false;
-            elements.hidePresenceToggle.checked = Boolean(data.user.hidePresence);
-            elements.notifyToggle.checked = notificationsOn();
-            await renderUserCode();
-            await renderBlocked();
-            await renderDevices();
-            await renderSecurityEvents();
-            openModal(elements.profileModal);
-        }
-    });
+    elements.profileBtn.addEventListener('click', openProfile);
 
     elements.hidePresenceToggle.addEventListener('change', async () => {
         const toggle = elements.hidePresenceToggle;
@@ -1898,7 +1959,15 @@ function setupEventListeners() {
         });
     });
 
-    elements.sendBtn.addEventListener('click', sendMessage);
+    // Кнопка не забирает фокус у поля: иначе на телефоне после отправки
+    // закрывалась бы клавиатура.
+    elements.sendBtn.addEventListener('mousedown', e => e.preventDefault());
+    elements.sendBtn.addEventListener('click', () => {
+        if (elements.sendBtn.dataset.mode === 'attach') return elements.fileInput.click();
+        elements.messageInput.focus({ preventScroll: true });
+        sendMessage();
+    });
+    elements.messageInput.addEventListener('input', updateSendButton);
     // keydown, а не устаревший keypress. Enter, которым подтверждают слово
     // в IME (японский, китайский, корейский ввод, часть экранных
     // клавиатур), не должен отправлять недописанное сообщение: isComposing,
@@ -1908,8 +1977,7 @@ function setupEventListeners() {
         if (e.key === 'Escape' && (editingMessageId || replyToMessageId)) {
             e.preventDefault();
             if (editingMessageId) {
-                editingMessageId = null;
-                setMessageInput('');
+                cancelEdit();
             } else {
                 clearReply();
             }
@@ -1919,15 +1987,17 @@ function setupEventListeners() {
         // экранной клавиатуре Shift+Enter не набрать.
         if (e.key !== 'Enter' || e.shiftKey || e.isComposing || e.keyCode === 229 || coarsePointer()) return;
         e.preventDefault();
+        // Зажатый Enter повторяется — это не второе сообщение.
+        if (e.repeat) return;
         sendMessage();
     });
 
-    elements.attachBtn.addEventListener('click', () => elements.fileInput.click());
     elements.fileInput.addEventListener('change', handleFileUpload);
     elements.cancelReplyBtn.addEventListener('click', clearReply);
 
     elements.replyMessageBtn.addEventListener('click', () => {
-        startReply({ id: elements.messageMenu.dataset.forMessage, text: elements.messageMenu.dataset.forMessageText });
+        startReply({ id: elements.messageMenu.dataset.forMessage, text: elements.messageMenu.dataset.forMessageText,
+            author: elements.messageMenu.dataset.forMessageAuthor });
         hideMessageMenu();
     });
 
@@ -1958,10 +2028,13 @@ function setupEventListeners() {
     elements.editMessageBtn.addEventListener('click', () => {
         editingMessageId = elements.messageMenu.dataset.forMessage;
         const text = elements.messageMenu.dataset.forMessageText;
+        clearReply();
         setMessageInput(text);
+        showEditBar(true, text);
         elements.messageInput.focus();
         hideMessageMenu();
     });
+    elements.cancelEditBtn.addEventListener('click', cancelEdit);
 
     elements.deleteMessageBtn.addEventListener('click', () => {
         hideMessageMenu();
@@ -2484,12 +2557,13 @@ function applyRoomState() {
     elements.roomEmpty.classList.toggle('is-strip', history);
     elements.chatMessages.hidden = empty && !history;
     const blocked = Boolean(meta && meta.kind === 'direct' && meta.peer_blocked);
-    for (const control of [elements.messageInput, elements.attachBtn, elements.sendBtn]) control.disabled = empty || blocked;
+    for (const control of [elements.messageInput, elements.sendBtn]) control.disabled = empty || blocked;
     elements.messageInput.placeholder = empty ? 'Сначала пригласите участников'
         : blocked ? 'Вы заблокировали собеседника' : 'Введите сообщение';
     if (empty) {
         clearReply();
         editingMessageId = null;
+        showEditBar(false);
     }
 }
 
@@ -2518,6 +2592,7 @@ function rememberChatView() {
     });
     // Правка и ответ относятся к сообщению этого чата — в другой не переносятся.
     editingMessageId = null;
+    showEditBar(false);
     clearReply();
 }
 
@@ -3117,17 +3192,19 @@ function startExpirySweep() {
    (lib/read-state.js), а сюда — наши. */
 
 const STATUS_VIEW = {
+    sending: ['', 'Отправляется'],
     sent: ['○', 'Отправлено'],
     delivered: ['✓', 'Доставлено'],
     read: ['✓✓', 'Прочитано'],
 };
-const STATUS_RANK = { sent: 0, delivered: 1, read: 2 };
+const STATUS_RANK = { sending: -1, sent: 0, delivered: 1, read: 2 };
 
 function setMessageStatus(span, status) {
     const [mark, label] = STATUS_VIEW[status] || STATUS_VIEW.sent;
     const changed = span.isConnected && span.textContent && span.textContent !== mark;
     span.dataset.status = status in STATUS_VIEW ? status : 'sent';
     span.textContent = mark;
+    if (status === 'sending') span.appendChild(createIcon('i-timer'));
     // ✓ → ✓✓ не скачком: новая отметка проявляется. Только прозрачность —
     // её оставляем и при «уменьшить движение».
     if (changed && span.animate) span.animate([{ opacity: 0.2 }, { opacity: 1 }], { duration: 200, easing: 'ease-out' });
@@ -3426,9 +3503,14 @@ function dayGroup(date, container = elements.chatMessages) {
 function appendMessage(message, { fresh = false, container = elements.chatMessages } = {}) {
     const el = createMessageElement(message);
     if (message.id) shownMessageIds.add(message.id);
-    // Уже показанный пузырь с тем же id заменяется, а не повторяется.
-    const existing = message.id && elements.chatMessages.querySelector(`.message[data-message-id="${message.id}"], .message-system[data-message-id="${message.id}"]`);
+    // Уже показанный пузырь с тем же id — или своё «отправляемое» с тем же
+    // clientId — заменяется, а не повторяется.
+    const existing = (message.id && elements.chatMessages.querySelector(`.message[data-message-id="${message.id}"], .message-system[data-message-id="${message.id}"]`))
+        || (message.client_id && sendingBubble(message.client_id));
     if (existing && container === elements.chatMessages) {
+        // Своё «отправляемое» уже появилось с анимацией — принятое встаёт на
+        // его место новым, но второй раз не въезжает.
+        if (existing.classList.contains('is-new')) el.classList.add('is-new', 'is-settled');
         existing.replaceWith(el);
         refreshMessageTabStop();
         regroupMessages();
@@ -3732,7 +3814,9 @@ function createMessageElement(message) {
     const isMine = isOwnMessage(message);
     const div = document.createElement('div');
     div.className = `message ${isMine ? 'sent' : 'received'}`;
-    div.dataset.messageId = message.id;
+    if (message.id) div.dataset.messageId = message.id;
+    if (message.client_id && isMine) div.dataset.clientId = message.client_id;
+    if (message.status === 'sending') div.classList.add('is-sending');
     if (message.sender_username) div.dataset.sender = message.sender_username;
     div.dataset.senderKey = `${isMine ? 'me' : message.user_id}:${Number(message.sent) ? 1 : 0}`;
     const at = messageDate(message);
@@ -4015,12 +4099,15 @@ function menuItems() {
 let menuBubble = null;
 
 function showMessageMenu(x, y, message, trigger = null, bubble = trigger) {
+    // Пока сообщение не принято сервером, делать с ним нечего.
+    if (!message.id) return;
     const menu = elements.messageMenu;
     menuBubble = bubble;
     // Не data-message-id: по этому атрибуту ищут пузыри сообщений, и после
     // удаления пузыря находилось бы само меню.
     menu.dataset.forMessage = message.id;
     menu.dataset.forMessageText = message.text || '';
+    menu.dataset.forMessageAuthor = isOwnMessage(message) ? 'Вы' : (message.sender_username || '');
     const isMine = isOwnMessage(message);
     // Правка зашифрованного сообщения ушла бы на сервер открытым текстом,
     // поэтому её нет вовсе — удалить и отправить заново можно.
@@ -4212,12 +4299,19 @@ async function handleNewMessage(message) {
     }
 }
 
-// Ответ на сообщение: из меню и свайпом вправо.
+// Ответ на сообщение: из меню и свайпом. Курсор — сразу в поле: ответ
+// начинают печатать тут же.
+let replyContext = null;
 function startReply(message) {
     if (!message || !message.id) return;
     replyToMessageId = message.id;
+    const author = isOwnMessage(message) ? 'Вы' : (message.sender_username || message.author || '');
+    replyContext = { id: Number(message.id), author, text: message.text || '' };
+    elements.replyPreviewAuthor.textContent = author;
+    elements.replyPreviewAuthor.hidden = !author;
     elements.replyPreviewText.textContent = (message.text || 'Сообщение').substring(0, 100);
     elements.replyPreview.classList.remove('hidden');
+    elements.messageInput.focus({ preventScroll: true });
 }
 
 function checkExpiryOption(seconds) {
@@ -4231,10 +4325,22 @@ function hideMessageMenu() {
 
 function clearReply() {
     replyToMessageId = null;
+    replyContext = null;
     elements.replyPreview.classList.add('hidden');
     elements.replyPreviewText.textContent = '';
 }
 
+/*
+ * Отправка. Своё сообщение появляется сразу: поле и плашка ответа
+ * очищаются по нажатию, пузырь «отправляется» (⏲) встаёт в ленту, а
+ * шифрование и запрос идут в фоне. Раньше текст висел в поле, пока шли
+ * шифрование, запрос и запись в IndexedDB, — и второй Enter отправлял его
+ * ещё раз с новым clientId.
+ *
+ * Дальше пузырь либо получает id и галочку, либо становится «Не
+ * отправлено · Повторить · Удалить» (повтор — с тем же clientId: сервер
+ * не заведёт второе сообщение), либо — «Ждёт ключей собеседника».
+ */
 async function sendMessage() {
     const text = elements.messageInput.value.trim();
     if (!text) return;
@@ -4242,33 +4348,137 @@ async function sendMessage() {
         showToast('Выберите чат', 'error');
         return;
     }
-    const payload = { chatId: currentChatId, text };
-    if (replyToMessageId) payload.replyToId = replyToMessageId;
+    if (editingMessageId) return saveEdit(editingMessageId, text);
 
-    if (editingMessageId) {
-        const data = await api(`/api/messages/${editingMessageId}`, {
-            method: 'PUT',
-            body: JSON.stringify({ text }),
-        });
-        if (!data.success) return showToast(data.message || 'Не удалось изменить сообщение', 'error');
-        showToast('Сообщение изменено', 'success');
-        const el = elements.chatMessages.querySelector(`[data-message-id="${editingMessageId}"] .message-text`);
-        if (el) el.textContent = text;
-        editingMessageId = null;
-    } else if (currentChatIsBot) {
-        // Бот отвечает на текст, который видит, — единственный чат без
-        // шифрования.
-        const data = await api('/api/messages', { method: 'POST', body: JSON.stringify({ ...payload, clientId: newClientId() }) });
-        if (!data.success) return showToast(data.message || 'Сообщение не отправлено', 'error');
-    } else {
-        // Не отправилось — текст остаётся в поле: иначе его пришлось бы
-        // набирать заново. Открытым текстом не уходит никогда.
-        const outcome = await sendEncrypted(text, payload);
-        if (outcome === 'failed') return;
-    }
-
+    const chatId = currentChatId;
+    const isBot = currentChatIsBot;
+    const reply = replyContext;
+    const clientId = newClientId();
     setMessageInput('');
     clearReply();
+    appendSendingBubble(chatId, { clientId, text, reply });
+    updateChatPreviewInList({ chat_id: chatId, room_id: currentRoomId, user_id: currentUser.id, sent: 1,
+        created_at: new Date().toISOString() }, text);
+    await deliverText({ chatId, isBot, text, replyToId: reply ? reply.id : null, clientId });
+}
+
+// Плашка «Редактирование» над полем — как у ответа.
+function showEditBar(show, text = '') {
+    elements.editPreview.classList.toggle('hidden', !show);
+    elements.editPreviewText.textContent = text.substring(0, 100);
+    updateSendButton();
+}
+
+function cancelEdit() {
+    editingMessageId = null;
+    setMessageInput('');
+    showEditBar(false);
+}
+
+// Правка: новый текст — сразу в пузыре; не удалось — прежний возвращается.
+async function saveEdit(messageId, text) {
+    const el = elements.chatMessages.querySelector(`[data-message-id="${messageId}"] .message-text`);
+    const before = el ? el.firstChild && el.firstChild.nodeType === 3 ? el.firstChild.textContent : el.textContent : null;
+    const setText = value => {
+        if (!el) return;
+        const spacer = el.querySelector('.meta-spacer');
+        el.textContent = value;
+        if (spacer) el.appendChild(spacer);
+    };
+    editingMessageId = null;
+    setMessageInput('');
+    showEditBar(false);
+    setText(text);
+    const data = await api(`/api/messages/${messageId}`, { method: 'PUT', body: JSON.stringify({ text }) });
+    if (!data.success) {
+        if (before !== null) setText(before);
+        showToast(data.message || 'Не удалось изменить сообщение', 'error');
+    }
+}
+
+// Свой пузырь, пока сообщение не принято сервером.
+function appendSendingBubble(chatId, { clientId, text, reply }) {
+    if (chatId !== currentChatId) return;
+    const local = {
+        client_id: clientId, user_id: currentUser.id, sent: 1, text, message_type: 'text',
+        created_at: new Date().toISOString(), status: 'sending', encrypted: !currentChatIsBot,
+        reply_to: reply ? { id: reply.id, sender_username: reply.author, text: reply.text } : null,
+    };
+    appendMessage(local, { fresh: true });
+    scrollToBottom();
+}
+
+const sendingBubble = clientId => elements.chatMessages.querySelector(`.message[data-client-id="${CSS.escape(clientId)}"]`);
+
+function setBubbleSending(clientId) {
+    const bubble = sendingBubble(clientId);
+    if (!bubble) return;
+    bubble.classList.remove('is-failed');
+    bubble.classList.add('is-sending');
+    bubble.querySelector('.message-failed')?.remove();
+    updateInlineMeta(bubble);
+}
+
+// Не отправлено: в пузыре — «Повторить» (тот же clientId) и «Удалить».
+function markSendFailed(clientId, retry) {
+    const bubble = sendingBubble(clientId);
+    if (!bubble) return;
+    bubble.classList.remove('is-sending');
+    bubble.classList.add('is-failed');
+    bubble.querySelector('.message-failed')?.remove();
+    const row = document.createElement('div');
+    row.className = 'message-failed';
+    const label = document.createElement('span');
+    label.append(createIcon('i-alert'), 'Не отправлено');
+    const again = document.createElement('button');
+    again.type = 'button';
+    again.className = 'link-inline';
+    again.textContent = 'Повторить';
+    again.addEventListener('click', () => retry());
+    const drop = document.createElement('button');
+    drop.type = 'button';
+    drop.className = 'link-inline';
+    drop.textContent = 'Удалить';
+    drop.addEventListener('click', () => removeMessageElement(bubble));
+    row.append(label, ' · ', again, ' · ', drop);
+    bubble.querySelector('.message-content')?.appendChild(row);
+    updateInlineMeta(bubble);
+}
+
+async function deliverText({ chatId, isBot, text, replyToId, clientId }) {
+    setBubbleSending(clientId);
+    const retry = () => deliverText({ chatId, isBot, text, replyToId, clientId });
+    if (isBot) {
+        // Бот отвечает на текст, который видит, — единственный чат без
+        // шифрования.
+        const data = await api('/api/messages', { method: 'POST', body: JSON.stringify({ chatId, text, replyToId, clientId }) })
+            .catch(() => ({ success: false, message: 'Нет связи с сервером' }));
+        if (!data.success) {
+            markSendFailed(clientId, retry);
+            return showToast(data.message || 'Сообщение не отправлено', 'error');
+        }
+        if (chatId === currentChatId) appendMessage({ ...data.message, client_id: clientId });
+        return;
+    }
+    // Открытым текстом не уходит никогда.
+    if (!e2ee || !e2ee.isReady()) {
+        // «Повторить» сначала поднимает шифрование заново.
+        const again = async () => {
+            if (!e2ee || !e2ee.isReady()) await setupE2EE();
+            if (currentChatId) refreshEncryptionBadge(currentChatId, currentChatIsBot);
+            retry();
+        };
+        markSendFailed(clientId, again);
+        return reportE2eeUnavailable('Сообщение не отправлено', again);
+    }
+    try {
+        const encoded = e2ee.encodeText(text);
+        const result = await sendEncryptedPayload(chatId, encoded, { replyToId, clientId });
+        if (result.waiting) await queuePending(chatId, encoded, replyToId, result.missing, clientId);
+    } catch (error) {
+        markSendFailed(clientId, retry);
+        reportEncryptedSendError('Сообщение не отправлено', chatId, error, retry);
+    }
 }
 
 /**
@@ -4328,7 +4538,7 @@ async function sendEncryptedPayload(chatId, encoded, { replyToId = null, blobIds
     updateChatPreviewInList(data.message, preview);
 
     if (chatId === currentChatId) {
-        const local = { ...data.message };
+        const local = { ...data.message, client_id: clientId };
         applyDecryptedContent(local, content);
         await resolveReplyQuote(local);
         appendMessage(local, { fresh: true });
@@ -4392,7 +4602,7 @@ async function queuePending(chatId, encoded, replyToId, missing, clientId = newC
     await withPendingLock(async () => e2ee.pending.save([...(await e2ee.pending.list()), item]));
     if (chatId === currentChatId) {
         appendPendingElement(item);
-        scrollToBottom();
+        if (!sendingBubble(clientId)) scrollToBottom();
     }
     showToast(`Нет ключей у ${namesList(missing)} — сообщение отправится, когда они появятся`, 'info');
 }
@@ -4428,7 +4638,9 @@ function appendPendingElement(item) {
     meta.append(label, cancel);
     body.append(text, meta);
     div.appendChild(body);
-    dayGroup(new Date(item.createdAt), elements.chatMessages).appendChild(div);
+    const sending = item.clientId && sendingBubble(item.clientId);
+    if (sending) sending.replaceWith(div);
+    else dayGroup(new Date(item.createdAt), elements.chatMessages).appendChild(div);
     regroupMessages();
 }
 
@@ -4500,72 +4712,9 @@ function devicesGenitive(n) {
     return `${n} ${one ? 'устройства' : 'устройств'}`;
 }
 
-/*
- * Итог: 'sent', 'queued' (ждёт ключей собеседника на устройстве) или
- * 'failed'. Открытого пути нет: раньше, если шифрование на устройстве не
- * поднялось или сервер отдавал пустой список устройств собеседника, текст
- * молча уходил открытым — и взломанному серверу было достаточно «потерять»
- * ключи, чтобы клиент сам прислал ему переписку.
- */
-async function sendEncrypted(text, payload) {
-    const chatId = currentChatId;
-    const replyToId = payload.replyToId || null;
-    if (!e2ee || !e2ee.isReady()) {
-        const clientId = newClientId();
-        reportE2eeUnavailable('Сообщение не отправлено', () => retryAfterSetup(chatId, text, replyToId, clientId));
-        return 'failed';
-    }
-    const clientId = newClientId();
-    try {
-        const encoded = e2ee.encodeText(text);
-        const result = await sendEncryptedPayload(chatId, encoded, { replyToId, clientId });
-        if (result.waiting) {
-            await queuePending(chatId, encoded, replyToId, result.missing, clientId);
-            return 'queued';
-        }
-        return 'sent';
-    } catch (error) {
-        reportEncryptedSendError('Сообщение не отправлено', chatId, error,
-            () => resendText(chatId, text, replyToId, clientId));
-        return 'failed';
-    }
-}
-
 function reportE2eeUnavailable(prefix, retry) {
     showToast(`${prefix}: шифрование на этом устройстве не работает — ${e2eeFailure || 'причина неизвестна'}`,
         'error', { action: retry ? { label: 'Повторить', onClick: retry } : null });
-}
-
-// «Повторить», когда не поднялось шифрование: сначала поднять его заново.
-async function retryAfterSetup(chatId, text, replyToId, clientId) {
-    if (!e2ee || !e2ee.isReady()) await setupE2EE();
-    if (currentChatId) refreshEncryptionBadge(currentChatId, currentChatIsBot);
-    if (!e2ee || !e2ee.isReady()) {
-        reportE2eeUnavailable('Сообщение не отправлено', () => retryAfterSetup(chatId, text, replyToId, clientId));
-        return;
-    }
-    await resendText(chatId, text, replyToId, clientId);
-}
-
-/**
- * «Повторить» из тоста об ошибке. Раньше кнопка вызывала sendMessage, а
- * та берёт текущий чат и то, что сейчас в поле ввода: переключился на
- * другой чат — и повтор уходил туда. Теперь повторяется то же сообщение в
- * тот же чат; текст из поля убирается, только если это он и есть.
- */
-async function resendText(chatId, text, replyToId, clientId = newClientId()) {
-    try {
-        const encoded = e2ee.encodeText(text);
-        const result = await sendEncryptedPayload(chatId, encoded, { replyToId, clientId });
-        if (result.waiting) await queuePending(chatId, encoded, replyToId, result.missing, clientId);
-        if (chatId === currentChatId && elements.messageInput.value.trim() === text) {
-            setMessageInput('');
-            clearReply();
-        }
-    } catch (error) {
-        reportEncryptedSendError('Сообщение не отправлено', chatId, error,
-            () => resendText(chatId, text, replyToId, clientId));
-    }
 }
 
 function reportEncryptedSendError(prefix, chatId, error, retry = null) {
@@ -4871,6 +5020,21 @@ function autosizeMessageInput() {
 function setMessageInput(value) {
     elements.messageInput.value = value;
     autosizeMessageInput();
+    updateSendButton();
+}
+
+const SEND_BUTTON = {
+    attach: 'Прикрепить файл',
+    send: 'Отправить',
+    save: 'Сохранить изменения',
+};
+function updateSendButton() {
+    const mode = editingMessageId ? 'save' : elements.messageInput.value.trim() ? 'send' : 'attach';
+    const button = elements.sendBtn;
+    if (button.dataset.mode === mode) return;
+    button.dataset.mode = mode;
+    button.title = SEND_BUTTON[mode];
+    button.setAttribute('aria-label', SEND_BUTTON[mode]);
 }
 
 /* --- Ширина списка чатов ------------------------------------------------
@@ -5401,8 +5565,9 @@ async function setBlocked(userId, username, blocked) {
 }
 
 async function renderBlocked() {
-    const data = await api('/api/blocks');
-    const list = (data.success && data.blocked) || [];
+    const data = await api('/api/blocks').catch(() => null);
+    if (!data || !data.success) return false;
+    const list = data.blocked;
     elements.blockedSection.hidden = list.length === 0;
     elements.blockedList.replaceChildren(...list.map(user => {
         const li = document.createElement('li');
@@ -5423,15 +5588,18 @@ async function renderBlocked() {
         li.append(info, button);
         return li;
     }));
+    return true;
 }
 
 /* --- Свой код в профиле ---------------------------------------------------- */
 
 async function renderUserCode() {
-    const data = await api('/api/user/code');
-    if (!data.success) return;
+    const data = await api('/api/user/code').catch(() => null);
+    if (!data || !data.success) return false;
+    elements.userCodeDisplay.parentElement.classList.remove('is-loading');
     elements.userCodeDisplay.textContent = data.code;
     elements.codeRequestsToggle.checked = data.requestsEnabled;
+    return true;
 }
 
 /* --- QR при встрече ---------------------------------------------------------
@@ -5531,21 +5699,33 @@ async function showInviteLink(link) {
     elements.inviteExpiry.value = !link.expires_at ? '0' : left > 86400 * 1.5 ? '604800' : left > 3600 * 1.5 ? '86400' : '3600';
     elements.inviteLimit.value = link.member_limit || '';
     elements.inviteApproval.checked = link.require_approval;
-    try {
-        await drawQr(elements.inviteQr, [[inviteUrl(link.code), 'Byte']]);
-        elements.inviteQr.hidden = false;
-    } catch {
-        elements.inviteQr.hidden = true;
-    }
+    elements.inviteQr.hidden = false;
+    drawQr(elements.inviteQr, [[inviteUrl(link.code), 'Byte']]).catch(() => { elements.inviteQr.hidden = true; });
 }
 
+// Окно — сразу, ссылка и QR — как придут.
 async function openInviteModal(chatId = currentChatId) {
     if (!chatId) return;
-    const data = await api(`/api/chats/${chatId}/link`);
-    if (!data.success) return showToast(data.message, 'error');
     inviteChatId = chatId;
-    await showInviteLink(data.link);
+    elements.inviteCodeBox.hidden = true;
+    elements.disableInviteBtn.hidden = true;
+    elements.resetInviteBtn.disabled = true;
+    elements.inviteText.replaceChildren(Object.assign(document.createElement('span'), {
+        className: 'skeleton invite-skeleton', ariaHidden: 'true' }));
     openModal(elements.inviteModal);
+    const data = await api(`/api/chats/${chatId}/link`).catch(() => null);
+    if (inviteChatId !== chatId || !elements.inviteModal.open) return;
+    elements.resetInviteBtn.disabled = false;
+    if (!data || !data.success) {
+        const retry = document.createElement('button');
+        retry.type = 'button';
+        retry.className = 'link-inline';
+        retry.textContent = 'Повторить';
+        retry.addEventListener('click', () => openInviteModal(chatId));
+        elements.inviteText.replaceChildren(`${(data && data.message) || 'Не удалось загрузить'} · `, retry);
+        return;
+    }
+    await showInviteLink(data.link);
 }
 
 async function saveInviteLink() {

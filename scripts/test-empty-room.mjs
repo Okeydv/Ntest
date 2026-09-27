@@ -43,7 +43,7 @@ const view = page => page.evaluate(() => ({
     strip: document.getElementById('room-empty').classList.contains('is-strip'),
     feed: !document.getElementById('chat-messages').hidden,
     input: !document.getElementById('message-input').disabled,
-    attach: !document.getElementById('attach-btn').disabled,
+    attach: !document.getElementById('send-btn').disabled,
 }));
 
 const alice = await openApp('alice');
@@ -61,7 +61,7 @@ check('новая группа — экран «Пригласите участ�
 check('поле ввода и скрепка выключены', !state.input && !state.attach, JSON.stringify(state));
 check('на экране — кнопка ссылки-приглашения', await alice.isVisible('#room-empty-invite'));
 await alice.click('#room-empty-invite');
-await alice.waitForFunction(() => document.getElementById('invite-modal').open);
+await alice.waitForFunction(() => document.getElementById('invite-modal').open && !document.getElementById('reset-invite-btn').disabled);
 check('ссылки поначалу нет — окно предлагает её создать', await alice.evaluate(() =>
     document.getElementById('invite-code-box').hidden && document.getElementById('reset-invite-btn').textContent === 'Создать ссылку'));
 await alice.uncheck('#invite-approval');

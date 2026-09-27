@@ -213,7 +213,7 @@ check('клик мимо закрывает меню', !(await menuOpen()));
 check('вход по ссылке виден в переписке строкой, не пузырём', await page.evaluate(() =>
     [...document.querySelectorAll('#chat-messages .message-system')].some(el => el.textContent === 'bob в группе · по ссылке')));
 await page.click('#get-chat-code-btn');
-await page.waitForFunction(() => document.getElementById('invite-modal').open);
+await page.waitForFunction(() => document.getElementById('invite-modal').open && !document.getElementById('reset-invite-btn').disabled);
 const shownCode = await page.textContent('#invite-code-display');
 check('ссылка-приглашение с QR-кодом и условиями', await page.evaluate(() =>
     !document.getElementById('invite-qr').hidden && document.getElementById('invite-qr').width === document.getElementById('invite-qr').height

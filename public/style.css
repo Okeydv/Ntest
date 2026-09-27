@@ -72,9 +72,15 @@
     --tr-label: 0.085em;
 
     /* --- Движение ------------------------------------------------------------ */
-    /* Без «отскока» и не дольше четверти секунды: интерфейс, который часто
-       открывают, должен отвечать, а не показывать анимацию. */
+    /* Правила — в docs/motion.md. Появление и уход — ease-out, движение —
+       ease-in-out, шторки и экраны телефона — «ящик». --ease — только для
+       цвета и фона. ease-in не используется. */
     --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+    --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+    --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+    --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+    --dur-press: 120ms;
+    --dur-screen: 250ms;
     --dur-1: 120ms;
     --dur-2: 180ms;
     --dur-3: 240ms;
@@ -292,7 +298,7 @@ body { overscroll-behavior: none; }
     border: 2px solid transparent;
     background-clip: content-box;
 }
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     ::-webkit-scrollbar-thumb:hover { background-clip: padding-box; }
 }
 
@@ -412,7 +418,7 @@ code, .input-code, .mono {
     cursor: pointer;
     white-space: nowrap;
     transition:
-        transform var(--dur-1) var(--ease),
+        transform var(--dur-press) var(--ease-out),
         box-shadow var(--dur-2) var(--ease),
         background var(--dur-2) var(--ease),
         border-color var(--dur-2) var(--ease),
@@ -431,17 +437,14 @@ code, .input-code, .mono {
     box-shadow: var(--sh-accent), var(--inset-highlight);
 }
 
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .btn-primary:hover {
         transform: translateY(-2px);
         box-shadow: var(--sh-accent-hover), var(--inset-highlight);
     }
 }
 
-.btn-primary:active {
-    transform: translateY(0) scale(0.99);
-    box-shadow: var(--sh-1), var(--inset-highlight);
-}
+.btn-primary:active:not(:disabled) { box-shadow: var(--sh-1), var(--inset-highlight); }
 
 .btn-secondary {
     background: var(--control);
@@ -450,7 +453,7 @@ code, .input-code, .mono {
     box-shadow: var(--sh-1);
 }
 
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .btn-secondary:hover {
         border-color: var(--accent-line);
         background: var(--control-hover);
@@ -470,7 +473,7 @@ code, .input-code, .mono {
     font-size: var(--fs-sm);
 }
 
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .btn-ghost:hover {
         color: var(--text);
         background: var(--accent-soft);
@@ -484,7 +487,7 @@ code, .input-code, .mono {
     box-shadow: var(--sh-danger), var(--inset-highlight);
 }
 
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .btn-danger:hover {
         transform: translateY(-2px);
         filter: brightness(1.06);
@@ -512,14 +515,14 @@ code, .input-code, .mono {
     color: var(--text-2);
     cursor: pointer;
     transition:
-        transform var(--dur-1) var(--ease),
+        transform var(--dur-press) var(--ease-out),
         background var(--dur-2) var(--ease),
         border-color var(--dur-2) var(--ease),
         color var(--dur-2) var(--ease),
         box-shadow var(--dur-2) var(--ease);
 }
 
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .icon-btn:hover {
         color: var(--text);
         background: var(--accent-soft);
@@ -528,9 +531,36 @@ code, .input-code, .mono {
     }
 }
 
-.icon-btn:active { transform: translateY(0) scale(0.94); }
+/* Отклик на нажатие — у всех кнопок один: чуть сжаться (docs/motion.md).
+   translateY(0) — у кнопок, что приподнимаются при наведении. Строки
+   списка чатов не сжимаются. */
+.btn:active:not(:disabled),
+.icon-btn:active:not(:disabled),
+.toast-action:active,
+.reaction:active,
+.reaction-choice:active,
+.reaction-pick:active { transform: translateY(0) scale(0.96); }
+.toast-action,
+.reaction-pick { transition: transform var(--dur-press) var(--ease-out), background var(--dur-2) var(--ease); }
+
+/* Маленькие кнопки (крестики окон, копирование, отмена загрузки, тема) на
+   тач-экране — с невидимой зоной нажатия 44×44. */
+@media (pointer: coarse) {
+    .icon-btn-sm::before { content: ''; position: absolute; inset: calc((2.125rem - 44px) / 2); }
+}
+
+/* Касания: без задержки на «двойной тап — увеличить» (двойной тап по
+   сообщению — ❤️, а не масштаб), без выделения и системного меню при
+   долгом нажатии на кнопки и строки. */
+button, a, [role="button"], .chat-item, .message { touch-action: manipulation; }
+button, [role="button"], .chat-item, .menu-item {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+}
 
 .icon-btn-sm {
+    position: relative;
     width: 2.125rem;
     height: 2.125rem;
 }
@@ -549,7 +579,7 @@ code, .input-code, .mono {
     box-shadow: var(--sh-accent), var(--inset-highlight);
 }
 
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .icon-btn-accent:hover {
         background: linear-gradient(140deg, var(--accent) 0%, var(--accent-2) 100%);
         border-color: transparent;
@@ -827,7 +857,7 @@ input.is-invalid:focus {
     border-radius: var(--r-2xl);
     background: var(--layer-3);
     box-shadow: var(--sh-3);
-    animation: riseIn var(--dur-3) var(--ease) both;
+    animation: riseIn var(--dur-3) var(--ease-out) both;
 }
 
 @keyframes riseIn {
@@ -881,7 +911,7 @@ input.is-invalid:focus {
     transition: color var(--dur-2) var(--ease), background var(--dur-2) var(--ease), box-shadow var(--dur-2) var(--ease);
 }
 
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .auth-tab:hover:not(.active) { color: var(--text); }
 }
 
@@ -895,7 +925,7 @@ input.is-invalid:focus {
 
 .auth-form.active {
     display: block;
-    animation: fadeIn var(--dur-2) var(--ease) both;
+    animation: fadeIn var(--dur-2) var(--ease-out) both;
 }
 
 @keyframes fadeIn {
@@ -978,7 +1008,7 @@ input.is-invalid:focus {
     transition: background var(--dur-2) var(--ease), border-color var(--dur-2) var(--ease);
 }
 
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .chat-item:hover {
         background: var(--accent-soft);
         border-color: var(--border);
@@ -1146,7 +1176,7 @@ input.is-invalid:focus {
     width: 2px;
     transition: background var(--dur-1) var(--ease);
 }
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .sidebar-resizer:hover::after { background: var(--accent-line); }
 }
 .sidebar-resizer:focus-visible { outline: none; }
@@ -1295,7 +1325,7 @@ input.is-invalid:focus {
 
 /* В зашифрованном чате индикатор — вход в сверку ключей. */
 .encryption-badge:not(:disabled) { cursor: pointer; }
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .encryption-badge:not(:disabled):hover { text-decoration: underline; text-underline-offset: 0.2em; }
 }
 
@@ -1322,7 +1352,7 @@ input.is-invalid:focus {
     cursor: pointer;
     border-radius: var(--r-xs);
 }
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .expiry-badge:hover { text-decoration: underline; text-underline-offset: 0.2em; }
 }
 .expiry-badge .icon { flex: none; width: 0.8125rem; height: 0.8125rem; }
@@ -1340,7 +1370,7 @@ input.is-invalid:focus {
     cursor: pointer;
 }
 .radio-row input { width: 1.125rem; height: 1.125rem; margin: 0; accent-color: var(--accent); }
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .radio-row:hover { background: var(--accent-soft); }
 }
 .radio-row:has(input:checked) { font-weight: 600; }
@@ -1417,7 +1447,7 @@ input.is-invalid:focus {
 }
 
 .message.is-new {
-    animation: messageIn var(--dur-2) var(--ease) both;
+    animation: messageIn var(--dur-2) var(--ease-out) both;
 }
 
 @keyframes messageIn {
@@ -1495,7 +1525,7 @@ input.is-invalid:focus {
 }
 
 .message-more .icon { width: 0.875rem; height: 0.875rem; }
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .message:hover .message-more,
     .message:focus-within .message-more { opacity: 1; }
 }
@@ -1607,10 +1637,10 @@ input.is-invalid:focus {
 .message-image {
     height: auto;
     cursor: pointer;
-    transition: transform var(--dur-2) var(--ease);
+    transition: transform var(--dur-2) var(--ease-out);
 }
 
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .message-image:hover { transform: scale(1.015); }
 }
 
@@ -1627,7 +1657,7 @@ input.is-invalid:focus {
     transition: background var(--dur-2) var(--ease);
 }
 
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .file-attachment a:hover { background: var(--bubble-inset-hover); }
 }
 .file-attachment .icon { width: 1rem; height: 1rem; }
@@ -1653,11 +1683,11 @@ input.is-invalid:focus {
     font-size: var(--fs-sm);
     color: inherit;
     cursor: pointer;
-    transition: transform var(--dur-1) var(--ease), background var(--dur-2) var(--ease), border-color var(--dur-2) var(--ease);
+    transition: transform var(--dur-press) var(--ease-out), background var(--dur-2) var(--ease), border-color var(--dur-2) var(--ease);
 }
 .reaction .emoji { width: 1.125rem; height: 1.125rem; }
 .reaction-count { min-width: 0.5rem; font-size: 0.75rem; font-weight: 600; font-variant-numeric: tabular-nums; }
-.reaction-count.count-bump { animation: countBump 200ms var(--ease); }
+.reaction-count.count-bump { animation: countBump 200ms var(--ease-out); }
 @keyframes countBump {
     from { opacity: 0; transform: translateY(-40%); }
     to { opacity: 1; transform: none; }
@@ -1666,7 +1696,7 @@ input.is-invalid:focus {
 .reaction.mine { border-color: var(--accent); background: var(--accent-soft); }
 .message.sent .reaction.mine { border-color: rgba(255, 255, 255, 0.75); background: rgba(255, 255, 255, 0.18); }
 
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .reaction:hover { background: var(--bubble-inset-hover); transform: scale(1.08); }
 }
 
@@ -1682,6 +1712,22 @@ input.is-invalid:focus {
 
 /* Ждёт ключей собеседника: пузырь бледнее, под ним — часы и «Отменить». */
 .message.is-pending { opacity: 0.75; }
+.message.is-new.is-settled { animation: none; }
+/* Своё, пока сервер его не принял: сразу в ленте, с часиками вместо
+   галочки. Не ушло — строка «Не отправлено · Повторить · Удалить». */
+.message.is-sending .message-status .icon { width: 0.8125rem; height: 0.8125rem; vertical-align: -0.125rem; }
+.message.is-failed { opacity: 0.85; }
+.message-failed {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.25rem;
+    margin-top: 0.375rem;
+    font-size: var(--fs-xs);
+}
+.message-failed span { display: inline-flex; align-items: center; gap: 0.3rem; font-weight: 600; }
+.message-failed .icon { width: 0.875rem; height: 0.875rem; }
+.message.sent .message-failed .link-inline { color: inherit; font-weight: 600; }
 .message-pending {
     justify-content: space-between;
     gap: 0.75rem;
@@ -1715,7 +1761,7 @@ input.is-invalid:focus {
         user-select: text;
     }
 }
-.message { transition: transform var(--dur-1) var(--ease); }
+.message { transition: transform var(--dur-press) var(--ease-out); }
 .message.is-swipe-ready { box-shadow: -3px 0 0 var(--accent); }
 
 /* Время в конце последней строки: строка времени — в правом нижнем углу,
@@ -1738,12 +1784,12 @@ input.is-invalid:focus {
 
 /* Цитата ведёт к исходному сообщению. */
 .reply-to[data-reply-id] { cursor: pointer; }
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .reply-to[data-reply-id]:hover { background: var(--bubble-inset-hover); }
 }
 
 /* Новая реакция всплывает с небольшим «переростом»: 0.9 → 1.1 → 1. */
-.reaction.is-new { animation: reactionIn 240ms var(--ease) both; }
+.reaction.is-new { animation: reactionIn 240ms var(--ease-out) both; }
 @keyframes reactionIn {
     0% { opacity: 0; transform: scale(0.9); }
     60% { opacity: 1; transform: scale(1.1); }
@@ -1830,7 +1876,7 @@ input.is-invalid:focus {
     color: var(--text);
     box-shadow: var(--sh-1);
     cursor: pointer;
-    animation: fadeIn var(--dur-2) var(--ease) both;
+    animation: fadeIn var(--dur-2) var(--ease-out) both;
 }
 .jump-down .icon { width: 1.25rem; height: 1.25rem; transform: rotate(-90deg); }
 .jump-down-count {
@@ -1901,7 +1947,7 @@ input.is-invalid:focus {
     cursor: pointer;
 }
 .reaction-pick .emoji { width: 1.625rem; height: 1.625rem; }
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .reaction-pick:hover { background: var(--accent-soft); }
 }
 
@@ -1986,9 +2032,10 @@ input.is-invalid:focus {
     color: var(--accent);
 }
 
-.reply-preview span {
-    flex: 1;
-    min-width: 0;
+.reply-preview-body { display: grid; flex: 1; min-width: 0; }
+.reply-preview-author { font-size: var(--fs-xs); font-weight: 600; color: var(--accent); }
+.reply-preview-quote,
+.reply-preview-author {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -2043,7 +2090,7 @@ input.is-invalid:focus {
     background: var(--layer-3);
     font-size: var(--fs-sm);
     color: var(--text-2);
-    animation: fadeIn var(--dur-1) var(--ease) both;
+    animation: fadeIn var(--dur-1) var(--ease-out) both;
 }
 .upload-status > .icon { flex: none; width: 1rem; height: 1rem; color: var(--accent); }
 .upload-status-text {
@@ -2096,7 +2143,7 @@ input.is-invalid:focus {
     font-weight: 600;
     color: var(--text);
     pointer-events: none;
-    animation: fadeIn var(--dur-1) var(--ease) both;
+    animation: fadeIn var(--dur-1) var(--ease-out) both;
 }
 .drop-zone { flex-direction: column; }
 .drop-zone-title { display: inline-flex; align-items: center; gap: 0.5rem; }
@@ -2245,6 +2292,38 @@ input.is-invalid:focus {
     background: none;
 }
 
+/* Правая кнопка поля: скрепка / «Отправить» / «Сохранить». Значок
+   меняется проявлением из маленького и размытого — единственное место,
+   где размытие анимируется (4px, коротко; docs/motion.md). */
+.composer-btn { display: grid; place-items: center; }
+.composer-btn[data-mode="send"],
+.composer-btn[data-mode="save"] {
+    background: linear-gradient(140deg, var(--accent) 0%, var(--accent-strong) 100%);
+    border-color: transparent;
+    color: var(--accent-ink);
+    box-shadow: 0 1px 2px rgb(0 0 0 / 0.25), var(--inset-highlight);
+}
+.composer-icon {
+    grid-area: 1 / 1;
+    opacity: 0;
+    transform: scale(0.25);
+    filter: blur(4px);
+    transition:
+        opacity 200ms cubic-bezier(0.2, 0, 0, 1),
+        transform 200ms cubic-bezier(0.2, 0, 0, 1),
+        filter 200ms cubic-bezier(0.2, 0, 0, 1);
+}
+.composer-btn[data-mode="attach"] .composer-icon[data-for="attach"],
+.composer-btn[data-mode="send"] .composer-icon[data-for="send"],
+.composer-btn[data-mode="save"] .composer-icon[data-for="save"] {
+    opacity: 1;
+    transform: none;
+    filter: none;
+}
+@media (prefers-reduced-motion: reduce) {
+    .composer-icon { transform: none; filter: none; transition: opacity 150ms var(--ease-out); }
+}
+
 .input-wrapper textarea:disabled {
     cursor: not-allowed;
     opacity: 0.6;
@@ -2289,7 +2368,7 @@ dialog.modal::backdrop {
     border-radius: var(--r-2xl);
     background: var(--layer-4);
     box-shadow: var(--sh-3);
-    animation: modalIn var(--dur-2) var(--ease) both;
+    animation: modalIn var(--dur-2) var(--ease-out) both;
 }
 
 .modal-content-sm { width: min(24rem, calc(100vw - 2.5rem)); }
@@ -2312,7 +2391,7 @@ dialog.modal::backdrop {
 .modal-body .field:last-of-type { margin-bottom: 1.25rem; }
 .modal-body > .btn:last-child { margin-bottom: 0; }
 
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .close-modal:hover {
         background: var(--danger-soft);
         border-color: transparent;
@@ -2393,10 +2472,10 @@ dialog.modal::backdrop {
     border-radius: var(--r-pill);
     cursor: pointer;
     box-shadow: var(--sh-1);
-    transition: transform var(--dur-1) var(--ease), box-shadow var(--dur-2) var(--ease);
+    transition: transform var(--dur-press) var(--ease-out), box-shadow var(--dur-2) var(--ease);
 }
 
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .color-option:hover { transform: scale(1.12); }
 }
 
@@ -2577,7 +2656,7 @@ dialog.modal::backdrop {
         border-radius: var(--r-2xl) var(--r-2xl) 0 0;
         border-bottom: 0;
         padding-bottom: env(safe-area-inset-bottom, 0px);
-        animation: sheetIn var(--dur-2) var(--ease) both;
+        animation: sheetIn var(--dur-2) var(--ease-out) both;
     }
 }
 @keyframes sheetIn {
@@ -2688,7 +2767,7 @@ dialog.modal::backdrop {
     cursor: pointer;
     transition: border-color var(--dur-2) var(--ease), background var(--dur-2) var(--ease);
 }
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .choice-card:hover { border-color: var(--accent-line); background: var(--control-hover); }
 }
 .choice-icon {
@@ -2908,6 +2987,18 @@ dialog.modal::backdrop {
 .members-section .field-label { margin-bottom: 0.5rem; }
 .members-list { display: grid; gap: 0.25rem; margin: 0; padding: 0; list-style: none; }
 .members-skeleton { height: 3rem; border-radius: var(--r-md); }
+.invite-skeleton { display: block; height: 2.5rem; border-radius: var(--r-md); }
+/* Раздел профиля, который не загрузился. */
+.section-error {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    margin: 0.5rem 0 0;
+    font-size: var(--fs-sm);
+    color: var(--text-2);
+}
+.section-error .icon { flex: none; width: 1rem; height: 1rem; color: var(--danger); }
+.invite-code-container.is-loading { min-height: 3.5rem; background: var(--skeleton-base); border-color: transparent; }
 
 .member-row {
     display: flex;
@@ -2950,7 +3041,7 @@ dialog.modal::backdrop {
     border-radius: var(--r-lg);
     background: var(--layer-4);
     box-shadow: var(--sh-3);
-    animation: menuIn var(--dur-1) var(--ease) both;
+    animation: menuIn var(--dur-1) var(--ease-out) both;
 }
 
 /* Меню раскрывается из точки, где его открыли: transform-origin ставит
@@ -2979,15 +3070,15 @@ dialog.modal::backdrop {
 }
 
 .menu-item .icon { width: 1rem; height: 1rem; color: var(--text-3); }
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .menu-item:hover { background: var(--accent-soft); }
 }
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .menu-item:hover .icon { color: var(--accent); }
 }
 .menu-item.danger { color: var(--danger); }
 .menu-item.danger .icon { color: var(--danger); }
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .menu-item.danger:hover { background: var(--danger-soft); }
 }
 
@@ -3012,7 +3103,7 @@ dialog.modal::backdrop {
     font-weight: 500;
     color: var(--toast-ink);
     box-shadow: var(--sh-3);
-    animation: toastIn var(--dur-2) var(--ease) both;
+    animation: toastIn var(--dur-2) var(--ease-out) both;
 }
 
 /* display — только у открытого: иначе авторское flex перебило бы
@@ -3055,7 +3146,7 @@ dialog.modal .toast { top: calc(1rem + env(safe-area-inset-top, 0px)); bottom: a
     cursor: pointer;
 }
 
-@media (hover: hover) {
+@media (hover: hover) and (pointer: fine) {
     .toast-action:hover { background: var(--accent-soft); }
 }
 
@@ -3091,7 +3182,7 @@ dialog.modal .toast { top: calc(1rem + env(safe-area-inset-top, 0px)); bottom: a
         z-index: 50;
         /* Поверх экрана целиком — безопасную область отступает сам. */
         padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) 0 env(safe-area-inset-left, 0px);
-        transition: transform var(--dur-3) var(--ease), visibility 0s;
+        transition: transform var(--dur-3) var(--ease-out), visibility 0s;
     }
 
     /* Список уезжает влево и после этого скрывается совсем: иначе его
@@ -3099,7 +3190,7 @@ dialog.modal .toast { top: calc(1rem + env(safe-area-inset-top, 0px)); bottom: a
     .sidebar.hidden-mobile {
         transform: translateX(-100%);
         visibility: hidden;
-        transition: transform var(--dur-3) var(--ease), visibility 0s var(--dur-3);
+        transition: transform var(--dur-3) var(--ease-out), visibility 0s var(--dur-3);
     }
 
     /* Простая стрелка без круга; нажимается квадрат 44×44. */

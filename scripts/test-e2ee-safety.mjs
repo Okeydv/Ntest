@@ -92,6 +92,10 @@ async function send(app, text) {
         input: document.getElementById('message-input').value,
     }));
 }
+const failedBubble = (page, text) => page.evaluate(t => {
+    const bubble = [...document.querySelectorAll('#chat-messages .message.is-failed')].find(m => m.textContent.includes(t));
+    return bubble ? bubble.querySelector('.message-failed')?.textContent.replace(/\s+/g, ' ').trim() : null;
+}, text);
 const roomMessages = async roomId =>
     Number((await db.query('SELECT count(*) FROM messages WHERE room_id = $1', [roomId])).rows[0].count);
 const seesText = (app, text) => app.page.evaluate(t =>
@@ -163,7 +167,9 @@ const before = await roomMessages(roomId);
 const blocked = await send(alice, 'это не должно уйти');
 check('отправка остановлена до повторной сверки',
     await roomMessages(roomId) === before && /сверьте код заново/.test(blocked.toast), blocked.toast);
-check('набранный текст не пропал', blocked.input === 'это не должно уйти');
+check('набранный текст не пропал: в ленте «Не отправлено · Повторить · Удалить»',
+    blocked.input === '' && (await failedBubble(alice.page, 'это не должно уйти')) === 'Не отправлено · Повторить · Удалить',
+    String(await failedBubble(alice.page, 'это не должно уйти')));
 
 
 const a3 = await safety(alice);

@@ -320,7 +320,8 @@ check('вернувшееся в сеть узнаёт о подключённо
     await toastText(laptop.page));
 
 await laptop.page.click('#toast .toast-action');
-await laptop.page.waitForFunction(() => document.getElementById('profile-modal').open);
+await laptop.page.waitForFunction(() => document.getElementById('profile-modal').open
+    && document.querySelector('#devices-list .device-item'));
 const listed = await laptop.page.evaluate(() => [...document.querySelectorAll('#devices-list .device-item')].length);
 check('«Устройства» открывает профиль со списком', listed === 3, `${listed} в списке`);
 laptop.page.once('dialog', d => d.accept());

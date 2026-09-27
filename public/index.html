@@ -332,9 +332,24 @@
             <div id="message-input-container" class="message-input-container hidden">
                 <div id="reply-preview" class="reply-preview hidden">
                     <svg class="icon reply-preview-icon" aria-hidden="true"><use href="#i-reply"/></svg>
-                    <span id="reply-preview-text"></span>
+                    <span class="reply-preview-body">
+                        <strong id="reply-preview-author" class="reply-preview-author" hidden></strong>
+                        <span id="reply-preview-text" class="reply-preview-quote"></span>
+                    </span>
                     <span class="reply-preview-hint" aria-hidden="true">Esc — отменить</span>
                     <button id="cancel-reply-btn" class="icon-btn icon-btn-quiet reply-cancel" title="Отменить ответ" aria-label="Отменить ответ" type="button">
+                        <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
+                    </button>
+                </div>
+                <!-- Правка своего сообщения: что правим и как отменить. -->
+                <div id="edit-preview" class="reply-preview edit-preview hidden">
+                    <svg class="icon reply-preview-icon" aria-hidden="true"><use href="#i-edit"/></svg>
+                    <span class="reply-preview-body">
+                        <strong class="reply-preview-author">Редактирование</strong>
+                        <span id="edit-preview-text" class="reply-preview-quote"></span>
+                    </span>
+                    <span class="reply-preview-hint" aria-hidden="true">Esc — отменить</span>
+                    <button id="cancel-edit-btn" class="icon-btn icon-btn-quiet reply-cancel" title="Отменить правку" aria-label="Отменить правку" type="button">
                         <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
                     </button>
                 </div>
@@ -352,13 +367,15 @@
                     </button>
                 </div>
                 <div class="input-wrapper">
-                    <button id="attach-btn" class="icon-btn" title="Прикрепить файл" aria-label="Прикрепить файл" type="button">
-                        <svg class="icon" aria-hidden="true"><use href="#i-attach"/></svg>
-                    </button>
                     <!-- Enter отправляет, Shift+Enter — перенос строки. -->
                     <textarea id="message-input" rows="1" placeholder="Введите сообщение" maxlength="4000" autocomplete="off" enterkeyhint="send" aria-label="Сообщение"></textarea>
-                    <button id="send-btn" class="icon-btn icon-btn-accent" title="Отправить" aria-label="Отправить" type="button">
-                        <svg class="icon" aria-hidden="true"><use href="#i-send"/></svg>
+                    <!-- Одна кнопка на три случая: пустое поле — скрепка, есть текст —
+                         «Отправить», правка — «Сохранить». Значки все в разметке,
+                         видимый выбирает data-mode. -->
+                    <button id="send-btn" class="icon-btn composer-btn" data-mode="attach" title="Прикрепить файл" aria-label="Прикрепить файл" type="button">
+                        <svg class="icon composer-icon" data-for="attach" aria-hidden="true"><use href="#i-attach"/></svg>
+                        <svg class="icon composer-icon" data-for="send" aria-hidden="true"><use href="#i-send"/></svg>
+                        <svg class="icon composer-icon" data-for="save" aria-hidden="true"><use href="#i-check"/></svg>
                     </button>
                 </div>
                 <!-- Пока поле в фокусе: как отправить и как перенести строку. -->
