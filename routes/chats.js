@@ -22,6 +22,9 @@ module.exports = function registerChatRoutes(app, ctx) {
             const chats = await dbAll(`
                 SELECT c.id, c.name, c.avatar, c.is_bot, c.room_id, r.kind, me.role AS my_role,
                        c.pin_position, c.muted, c.archived_at IS NOT NULL AS archived,
+                       -- Аватар собеседника — у личного чата.
+                       CASE WHEN r.kind = 'direct' THEN (SELECT u.avatar FROM room_participants o JOIN users u ON u.id = o.user_id
+                            WHERE o.room_id = c.room_id AND o.user_id <> c.user_id LIMIT 1) END AS peer_avatar,
                        -- Сколько ждут одобрения — только администраторам.
                        CASE WHEN r.kind = 'direct' THEN EXISTS (SELECT 1 FROM blocks b
                             JOIN room_participants o ON o.room_id = c.room_id AND o.user_id <> c.user_id
@@ -631,7 +634,7 @@ module.exports = function registerChatRoutes(app, ctx) {
             const chat = await loadGroupChat(req.params.chatId, req.session.userId);
             if (!chat) return notFound(res);
             const members = await dbAll(
-                `SELECT u.id AS user_id, u.username, rp.role, rp.joined_at
+                `SELECT u.id AS user_id, u.username, u.avatar, rp.role, rp.joined_at
                  FROM room_participants rp JOIN users u ON u.id = rp.user_id
                  WHERE rp.room_id = $1 ORDER BY (rp.role = 'admin') DESC, rp.id`, [chat.room_id]);
             res.json({ success: true, kind: chat.kind, name: chat.room_name, my_role: chat.role, members });

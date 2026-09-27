@@ -158,7 +158,7 @@ await alice.waitForTimeout(300);
 await send(bob, 'пока Алиса читает историю');
 await alice.waitForTimeout(500);
 const jump = await alice.evaluate(() => ({
-    shown: !document.getElementById('jump-down').hidden,
+    shown: document.getElementById('jump-down').classList.contains('is-visible'),
     count: document.getElementById('jump-down-count').textContent,
     top: document.getElementById('chat-messages').scrollTop,
 }));
@@ -167,7 +167,7 @@ await alice.click('#jump-down');
 await alice.waitForTimeout(900);
 const after = await alice.evaluate(() => {
     const list = document.getElementById('chat-messages');
-    return { hidden: document.getElementById('jump-down').hidden, gap: list.scrollHeight - list.scrollTop - list.clientHeight };
+    return { hidden: !document.getElementById('jump-down').classList.contains('is-visible'), gap: list.scrollHeight - list.scrollTop - list.clientHeight };
 });
 check('«↓» ведёт вниз и прячется', after.hidden && after.gap < 5, JSON.stringify(after));
 

@@ -236,6 +236,134 @@ const hit = await phone.evaluate(() => {
 check('маленькие кнопки на тач-экране — зона 44×44', hit.content !== 'none' && Math.abs(parseFloat(hit.inset) + 5) < 0.5,
     JSON.stringify(hit));
 
+/* ------------------------- вид чата ------------------------- */
+
+await alice.locator(ROOM).first().click();
+await alice.waitForTimeout(800);
+const look = await alice.evaluate(() => {
+    const header = document.getElementById('chat-header');
+    const list = document.getElementById('chat-messages');
+    const sent = [...document.querySelectorAll('#chat-messages .message.sent.group-end')].at(-1);
+    const received = document.querySelector('#chat-messages .message.received');
+    return {
+        headerBg: getComputedStyle(header).backgroundColor,
+        blur: getComputedStyle(header).backdropFilter,
+        topPad: parseFloat(getComputedStyle(list).paddingTop),
+        headerH: header.getBoundingClientRect().height,
+        tail: sent ? getComputedStyle(sent, '::after').content : null,
+        receivedBorder: received ? getComputedStyle(received).borderTopWidth : null,
+        pattern: getComputedStyle(document.querySelector('.main-content'), '::before').maskImage !== 'none'
+            || getComputedStyle(document.querySelector('.main-content'), '::before').webkitMaskImage !== 'none',
+        themeColor: document.querySelector('meta[name="theme-color"]').content,
+    };
+});
+check('шапка полупрозрачная с размытием, лента начинается под ней',
+    /rgba?\(.*,\s*0\.\d+\)|\/ 0\.\d+\)|color-mix/.test(look.headerBg) && look.blur.includes('blur') && look.topPad >= look.headerH, JSON.stringify(look));
+check('хвостик у последнего своего, чужой пузырь без рамки, узор фона', look.tail && look.tail !== 'none'
+    && look.receivedBorder === '0px' && look.pattern, JSON.stringify(look));
+check('строка состояния — цвет шапки', ['#14141f', '#ffffff'].includes(look.themeColor), look.themeColor);
+check('«1 день» в системной строке не рвётся', await alice.evaluate(() =>
+    systemLineText('bob включил(а) исчезающие сообщения: 1 день').includes('1 день')));
+
+/* ------------------------- настройки ------------------------- */
+
+check('в нижней панели «Настройки» вместо «Выйти»', await alice.evaluate(() =>
+    Boolean(document.querySelector('.sidebar-footer #settings-btn')) && !document.querySelector('.sidebar-footer #logout-btn')));
+await alice.click('#settings-btn');
+await alice.waitForFunction(() => document.getElementById('settings-modal').open);
+const settings = await alice.evaluate(() => ({
+    logout: Boolean(document.querySelector('#settings-modal #logout-btn')),
+    typing: document.getElementById('typing-toggle').checked,
+    sounds: document.getElementById('sounds-toggle').checked,
+}));
+check('в «Настройках» — «печатает», звуки (выключены), выход', settings.logout && settings.typing && !settings.sounds, JSON.stringify(settings));
+await alice.check('input[name="chat-bg"][value="plain"]');
+check('«Фон: без фона»', await alice.evaluate(() => document.documentElement.dataset.chatBg === 'plain'));
+await alice.check('input[name="chat-bg"][value="gradient"]');
+await alice.keyboard.press('Escape');
+
+/* ------------------------- «печатает…» ------------------------- */
+
+await bob.locator(ROOM).first().click();
+await bob.waitForTimeout(600);
+await bob.type('#message-input', 'пишу');
+await alice.waitForTimeout(600);
+const typing = await alice.evaluate(() => ({
+    header: document.getElementById('chat-status').textContent,
+    dots: document.querySelectorAll('#chat-status .typing-dots i').length,
+    list: document.querySelector('.chat-item.active')?.classList.contains('is-typing'),
+}));
+check('собеседник печатает — в шапке «печатает» с тремя точками, в списке тоже', /печатает/.test(typing.header) && typing.dots === 3
+    && typing.list, JSON.stringify(typing));
+await bob.press('#message-input', 'Enter');
+await alice.waitForTimeout(1200);
+check('пришло сообщение — «печатает» снялось', await alice.evaluate(() => !/печатает/.test(document.getElementById('chat-status').textContent)));
+
+/* ------------------------- эмодзи ------------------------- */
+
+await alice.fill('#message-input', '🔥');
+await alice.press('#message-input', 'Enter');
+await alice.waitForTimeout(1000);
+const emoji = await alice.evaluate(() => {
+    const bubble = [...document.querySelectorAll('#chat-messages .message')].at(-1);
+    return { cls: bubble.classList.contains('is-emoji'), count: bubble.dataset.emojiCount,
+        size: getComputedStyle(bubble.querySelector('.message-text')).fontSize, bg: getComputedStyle(bubble).backgroundImage };
+});
+check('одно эмодзи — 64px, без пузыря', emoji.cls && emoji.count === '1' && emoji.size === '64px' && emoji.bg === 'none', JSON.stringify(emoji));
+check('«ок 🔥» — обычный пузырь', await alice.evaluate(() => emojiOnlyCount('ок 🔥') === 0 && emojiOnlyCount('👍👍👍') === 3
+    && emojiOnlyCount('👍👍👍👍') === 0 && emojiOnlyCount('🇷🇺') === 1));
+
+/* ------------------------- аватар ------------------------- */
+
+const badAvatar = await alice.evaluate(() => api('/api/user/avatar', { method: 'POST', body: JSON.stringify({ avatar: 'e:99:0' }) }));
+check('аватар не из набора — отказ', badAvatar.success === false);
+await alice.click('#profile-btn');
+await alice.waitForFunction(() => document.querySelectorAll('#avatar-emoji-picker .avatar-emoji').length > 0);
+await alice.locator('#avatar-emoji-picker .avatar-emoji').first().click();
+await alice.waitForTimeout(600);
+await alice.locator('#avatar-gradient-picker .color-option').nth(2).click();
+await alice.waitForTimeout(600);
+const avatar = await alice.evaluate(() => ({
+    text: document.getElementById('profile-avatar').textContent,
+    bg: getComputedStyle(document.getElementById('profile-avatar')).backgroundImage,
+    stored: currentUser.avatar,
+}));
+check('эмодзи на градиенте вместо буквы', avatar.text === '🦊' && avatar.bg.includes('gradient') && avatar.stored === 'e:0:2', JSON.stringify(avatar));
+await alice.keyboard.press('Escape');
+
+/* ------------------------- телефон: экраны и свайп назад ------------------------- */
+
+await phone.evaluate(async () => {
+    const r = await api('/api/login', { method: 'POST', body: JSON.stringify({ email: 'bob@example.com', password: 'password123' }) });
+    currentUser = r.user; showApp(); await setupE2EE(); await loadChats();
+});
+await phone.waitForTimeout(800);
+await phone.locator(ROOM).first().click();
+await phone.waitForTimeout(600);
+const opened = await phone.evaluate(() => ({
+    open: document.getElementById('app').classList.contains('is-chat-open'),
+    main: getComputedStyle(document.querySelector('.main-content')).transform,
+    side: getComputedStyle(document.getElementById('sidebar')).transform,
+}));
+check('телефон: чат въехал справа, список ушёл на четверть', opened.open && opened.main === 'none'
+    && /matrix\(1, 0, 0, 1, -97\.5/.test(opened.side), JSON.stringify(opened));
+const back = await phone.evaluate(async () => {
+    const area = document.querySelector('.main-content');
+    const at = (x, y) => new Touch({ identifier: 7, target: area, clientX: x, clientY: y });
+    area.dispatchEvent(new TouchEvent('touchstart', { touches: [at(60, 400)], changedTouches: [at(60, 400)], bubbles: true }));
+    const mid = [];
+    for (const x of [90, 140, 200]) {
+        area.dispatchEvent(new TouchEvent('touchmove', { touches: [at(x, 404)], changedTouches: [at(x, 404)], bubbles: true }));
+        mid.push(getComputedStyle(document.getElementById('app')).getPropertyValue('--back'));
+    }
+    const swiping = document.getElementById('app').classList.contains('is-swiping-back');
+    area.dispatchEvent(new TouchEvent('touchend', { changedTouches: [at(200, 404)], bubbles: true }));
+    await new Promise(r => setTimeout(r, 500));
+    return { mid, swiping, open: document.getElementById('app').classList.contains('is-chat-open') };
+});
+check('свайп вправо — чат идёт за пальцем, дальше 35% — назад к списку', back.swiping && Number(back.mid[2]) > 0.35 && !back.open,
+    JSON.stringify(back));
+
 check('ошибок на страницах нет', errors.length === 0, errors.join('; '));
 await finish(browser, fails);
 await db.end();

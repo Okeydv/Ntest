@@ -465,7 +465,7 @@ const errorCode = (failed.message.match(/\nКод ошибки: ([0-9a-f]{12})$/
 check('ошибка сервера показывается с кодом', Boolean(errorCode) && failed.errorId === errorCode, failed.message);
 
 await page.evaluate(() => console.error(`сломалось при проверке: ${location.origin}/api/chats?secret=1 и https://tracker.example/p?id=7`));
-await page.click('#profile-btn');
+await page.click('#settings-btn');
 await page.click('#error-report-btn');
 await page.waitForFunction(() => document.getElementById('error-report-modal').open);
 const report = await page.inputValue('#error-report-text');

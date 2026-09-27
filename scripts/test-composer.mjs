@@ -241,8 +241,8 @@ check('граница сообщает ширину экранному дикт�
 
 /* ------------------------- уведомления ------------------------- */
 
-await alice.click('#profile-btn');
-await alice.waitForFunction(() => document.getElementById('profile-modal').open);
+await alice.click('#settings-btn');
+await alice.waitForFunction(() => document.getElementById('settings-modal').open);
 await alice.locator('#notify-toggle').check();
 await alice.waitForTimeout(300);
 await alice.keyboard.press('Escape');
@@ -271,8 +271,8 @@ const notes = await alice.evaluate(() => window.__notes);
 check('сообщение в другом чате — уведомление', notes.length === 1, JSON.stringify(notes));
 check('в уведомлении нет ни текста, ни имени', notes.length && notes[0].title === 'Nyxo' && notes[0].body === 'Новое сообщение'
     && !JSON.stringify(notes).includes('секрет') && !JSON.stringify(notes).includes('bob'), JSON.stringify(notes));
-await alice.click('#profile-btn');
-await alice.waitForFunction(() => document.getElementById('profile-modal').open);
+await alice.click('#settings-btn');
+await alice.waitForFunction(() => document.getElementById('settings-modal').open);
 check('настройка видна включённой', await alice.isChecked('#notify-toggle'));
 await alice.locator('#notify-toggle').uncheck();
 await alice.keyboard.press('Escape');

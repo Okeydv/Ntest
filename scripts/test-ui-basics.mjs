@@ -221,8 +221,11 @@ const themeColors = () => alice.page.evaluate(() => ({
 }));
 const before = await themeColors();
 await alice.page.locator('[data-theme-toggle]:visible').first().click();
+// Смена темы идёт через View Transition — новая тема применяется чуть позже.
+await alice.page.waitForFunction(t => document.documentElement.dataset.theme !== t, before.theme);
 const after = await themeColors();
-const expectColor = t => t === 'light' ? '#f4f4f7' : '#08080e';
+// В приложении строка состояния — цвета шапки.
+const expectColor = t => t === 'light' ? '#ffffff' : '#14141f';
 check('ручная смена темы красит и строку состояния',
     before.theme !== after.theme && after.colors.length === 2 && after.colors.every(c => c === expectColor(after.theme))
     && before.colors.every(c => c === expectColor(before.theme)), JSON.stringify({ before, after }));
@@ -281,7 +284,10 @@ const longPress = await phone.evaluate(() => ({
     open: document.getElementById('message-menu').matches(':popover-open'),
     select: !document.getElementById('select-text-btn').hidden,
     userSelect: getComputedStyle(document.querySelector('#chat-messages .message')).userSelect,
+    lifted: Boolean(document.querySelector('#chat-messages .message.is-lifted')),
+    dim: Boolean(document.querySelector('.main-content > .message-dim.is-shown')),
 }));
+check('долгое нажатие приподнимает пузырь, остальное гаснет', longPress.lifted && longPress.dim, JSON.stringify(longPress));
 check('долгое нажатие (400 мс) открывает меню, в нём — «Выделить текст»', longPress.open && longPress.select, JSON.stringify(longPress));
 check('текст в пузыре не выделяется сам', longPress.userSelect === 'none', JSON.stringify(longPress));
 await phone.evaluate(([x, y]) => {
@@ -317,17 +323,26 @@ const swipe = await phone.evaluate(() => {
     const at = (x, y) => new Touch({ identifier: 2, target: bubble, clientX: x, clientY: y });
     const x = r.left + 10, y = r.top + r.height / 2;
     bubble.dispatchEvent(new TouchEvent('touchstart', { touches: [at(x, y)], changedTouches: [at(x, y)], bubbles: true }));
-    for (const dx of [15, 35, 60, 70]) {
-        bubble.dispatchEvent(new TouchEvent('touchmove', { touches: [at(x + dx, y + 2)], changedTouches: [at(x + dx, y + 2)], bubbles: true }));
+    const during = [];
+    for (const dx of [15, 35, 60, 90]) {
+        bubble.dispatchEvent(new TouchEvent('touchmove', { touches: [at(x - dx, y + 2)], changedTouches: [at(x - dx, y + 2)], bubbles: true }));
+        during.push(bubble.style.transform);
     }
-    bubble.dispatchEvent(new TouchEvent('touchend', { changedTouches: [at(x + 70, y + 2)], bubbles: true }));
+    const icon = bubble.querySelector('.swipe-reply-icon');
+    const iconState = icon && { opacity: icon.style.opacity, ready: icon.classList.contains('is-ready') };
+    const transition = bubble.style.transition;
+    bubble.dispatchEvent(new TouchEvent('touchend', { changedTouches: [at(x - 90, y + 2)], bubbles: true }));
     return {
+        during, iconState, transition,
         reply: !document.getElementById('reply-preview').classList.contains('hidden'),
         text: document.getElementById('reply-preview-text').textContent,
         menu: document.getElementById('message-menu').matches(':popover-open'),
     };
 });
-check('свайп вправо по сообщению — ответ на него', swipe.reply && swipe.text.length > 0 && !swipe.menu, JSON.stringify(swipe));
+check('свайп влево по сообщению — ответ на него', swipe.reply && swipe.text.length > 0 && !swipe.menu, JSON.stringify(swipe));
+check('пузырь идёт за пальцем без перехода, дальше 64px — с сопротивлением, значок ответа на пороге',
+    swipe.transition === 'none' && swipe.during[1] === 'translateX(-35px)' && swipe.during[3] === 'translateX(-69.2px)'
+    && swipe.iconState && swipe.iconState.opacity === '1' && swipe.iconState.ready, JSON.stringify(swipe));
 await phone.click('#cancel-reply-btn');
 const inline = await phone.evaluate(() => {
     const bubble = [...document.querySelectorAll('#chat-messages .message.inline-meta')].find(b => b.querySelector('.message-text').textContent.length < 20);
@@ -358,7 +373,9 @@ const phoneLayout = await phone.evaluate(() => {
     return {
         back: { w: Math.round(r.width), h: Math.round(r.height), display: style.display, bg: style.backgroundColor, border: style.borderTopWidth },
         invite: getComputedStyle(document.getElementById('get-chat-code-btn')).display,
-        short: document.querySelector('#chat-encryption .encryption-badge-short')?.textContent,
+        badgeText: [...document.querySelectorAll('#chat-encryption span')].map(el => getComputedStyle(el).width).join(),
+        badgeIcon: Boolean(document.querySelector('#chat-encryption .icon')),
+        badgeLabel: document.querySelector('#chat-encryption .encryption-badge-text')?.textContent,
         overscroll: [getComputedStyle(document.getElementById('chat-messages')).overscrollBehaviorY,
             getComputedStyle(document.getElementById('chats-list')).overscrollBehaviorY],
         manifest: document.querySelector('link[rel="manifest"]')?.getAttribute('href'),
@@ -367,7 +384,9 @@ const phoneLayout = await phone.evaluate(() => {
 check('«назад» — стрелка без круга, зона 44×44', phoneLayout.back.w === 44 && phoneLayout.back.h === 44 && phoneLayout.back.display === 'grid'
     && phoneLayout.back.border === '0px' && phoneLayout.back.bg === 'rgba(0, 0, 0, 0)', JSON.stringify(phoneLayout.back));
 check('кнопки приглашения в шапке телефона нет (она в меню чата)', phoneLayout.invite === 'none', phoneLayout.invite);
-check('статус шифрования — коротким словом', Boolean(phoneLayout.short), String(phoneLayout.short));
+check('статус шифрования — только значком, полная подпись — для диктора',
+    phoneLayout.badgeIcon && phoneLayout.badgeText.split(',').every(w => w === '1px' || w === '0px' || w === 'auto')
+    && Boolean(phoneLayout.badgeLabel), JSON.stringify(phoneLayout));
 check('потянуть список или ленту — не перезагрузка страницы', phoneLayout.overscroll.every(v => v === 'contain'), JSON.stringify(phoneLayout.overscroll));
 const manifest = await (await fetch('http://127.0.0.1:3006/manifest.webmanifest')).json();
 check('манифест: standalone и иконки', phoneLayout.manifest === '/manifest.webmanifest' && manifest.display === 'standalone'

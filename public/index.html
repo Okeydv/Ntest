@@ -87,6 +87,9 @@
         <symbol id="i-archive" viewBox="0 0 24 24">
             <rect x="3.5" y="4.5" width="17" height="4.5" rx="1.2"/><path d="M5 9v9.5a1.5 1.5 0 0 0 1.5 1.5h11a1.5 1.5 0 0 0 1.5-1.5V9M10 13h4"/>
         </symbol>
+        <symbol id="i-settings" viewBox="0 0 24 24">
+            <path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2.2"/><circle cx="8" cy="17" r="2.2"/>
+        </symbol>
         <symbol id="i-logout" viewBox="0 0 24 24">
             <path d="M9.5 20.5H6a2 2 0 0 1-2-2v-13a2 2 0 0 1 2-2h3.5"/><path d="M16 16.5l4.5-4.5L16 7.5"/><path d="M20.5 12H9.5"/>
         </symbol>
@@ -238,9 +241,9 @@
                     <svg class="icon" aria-hidden="true"><use href="#i-user"/></svg>
                     <span class="btn-label">Профиль</span>
                 </button>
-                <button id="logout-btn" class="btn btn-ghost" type="button">
-                    <svg class="icon" aria-hidden="true"><use href="#i-logout"/></svg>
-                    <span class="btn-label">Выйти</span>
+                <button id="settings-btn" class="btn btn-ghost" type="button">
+                    <svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg>
+                    <span class="btn-label">Настройки</span>
                 </button>
                 <button class="icon-btn icon-btn-sm theme-toggle" data-theme-toggle title="Переключить тему" aria-label="Переключить тему" type="button">
                     <svg class="icon icon-when-dark" aria-hidden="true"><use href="#i-moon"/></svg>
@@ -254,6 +257,8 @@
              aria-label="Ширина списка чатов" tabindex="0" aria-valuemin="76" aria-valuemax="480" aria-valuenow="340"></div>
 
         <div class="main-content">
+            <!-- Верх чата — поверх ленты, лента прокручивается под ним. -->
+            <div id="chat-top" class="chat-overlay-top">
             <div id="chat-header" class="chat-header hidden">
                 <!-- На телефоне список чатов и переписка — два экрана, это путь назад. -->
                 <button id="chat-back-btn" class="icon-btn chat-back" aria-label="К списку чатов" type="button">
@@ -294,6 +299,7 @@
                 <span id="join-requests-bar-text"></span>
                 <span class="join-requests-bar-action">Посмотреть</span>
             </button>
+            </div>
             <div id="chat-messages" class="chat-messages"></div>
             <!-- Группа, где пока только вы: писать некому, и сервер такое не примет —
                  шифровать не для кого, текст лёг бы на него открытым. -->
@@ -319,7 +325,7 @@
                 <span class="drop-zone-note">Автор, дата и место съёмки будут удалены из файлов</span>
             </div>
             <!-- Новое, пока читаешь историю: не прокручиваем, а показываем кнопку. -->
-            <button id="jump-down" class="jump-down" type="button" aria-label="К новым сообщениям" hidden>
+            <button id="jump-down" class="jump-down" type="button" aria-label="К новым сообщениям" inert>
                 <svg class="icon" aria-hidden="true"><use href="#i-back"/></svg>
                 <span id="jump-down-count" class="jump-down-count"></span>
             </button>
@@ -614,6 +620,12 @@
                         <button class="color-option" data-color="#F5A524" aria-label="Янтарный" type="button"></button>
                     </div>
                 </div>
+                <!-- Эмодзи на градиенте вместо буквы. Набор — public/avatars.json. -->
+                <div class="field">
+                    <span class="field-label">Или эмодзи</span>
+                    <div id="avatar-emoji-picker" class="avatar-emoji-picker" role="group" aria-label="Эмодзи аватара"></div>
+                    <div id="avatar-gradient-picker" class="color-picker avatar-gradient-picker" role="group" aria-label="Фон аватара"></div>
+                </div>
                 <!-- Код пользователя: по нему присылают запросы на личную переписку. -->
                 <section class="devices-section" aria-labelledby="user-code-title">
                     <h4 id="user-code-title" class="field-label">Ваш код</h4>
@@ -650,6 +662,25 @@
                     <h4 id="security-title" class="field-label">Журнал безопасности</h4>
                     <ul id="security-list" class="security-list"></ul>
                 </section>
+                <button id="change-password-btn" class="btn btn-secondary btn-block" type="button">
+                    <svg class="icon" aria-hidden="true"><use href="#i-lock"/></svg>
+                    Сменить пароль
+                </button>
+            </div>
+        </div>
+    </dialog>
+
+    <!-- Настройки: отметки, «в сети», уведомления, «печатает», звуки, фон
+         чата — и выход. -->
+    <dialog id="settings-modal" class="modal" aria-labelledby="settings-modal-title">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="settings-modal-title">Настройки</h3>
+                <button class="icon-btn icon-btn-sm icon-btn-quiet close-modal" aria-label="Закрыть" type="button">
+                    <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
+                </button>
+            </div>
+            <div class="modal-body">
                 <div class="field">
                     <label class="toggle-row">
                         <input type="checkbox" id="read-receipts-toggle">
@@ -671,11 +702,30 @@
                     </label>
                     <p class="field-hint">Только «Новое сообщение» — без текста и имени: уведомление видно и на заблокированном экране. Настройка действует в этом браузере.</p>
                 </div>
-                <button id="change-password-btn" class="btn btn-secondary btn-block" type="button">
-                    <svg class="icon" aria-hidden="true"><use href="#i-lock"/></svg>
-                    Сменить пароль
-                </button>
+                <div class="field">
+                    <label class="toggle-row">
+                        <input type="checkbox" id="typing-toggle">
+                        <span>Показывать, что я печатаю</span>
+                    </label>
+                    <p class="field-hint">Собеседники видят «печатает…», пока вы набираете. Сам текст никуда не уходит.</p>
+                </div>
+                <div class="field">
+                    <label class="toggle-row">
+                        <input type="checkbox" id="sounds-toggle">
+                        <span>Звуки отправки и получения</span>
+                    </label>
+                    <p class="field-hint">Короткие и тихие. Настройка действует в этом браузере.</p>
+                </div>
+                <fieldset class="field expiry-options">
+                    <legend class="field-label">Фон чата</legend>
+                    <label class="radio-row"><input type="radio" name="chat-bg" value="gradient"> Градиент с узором</label>
+                    <label class="radio-row"><input type="radio" name="chat-bg" value="plain"> Без фона</label>
+                </fieldset>
                 <button id="error-report-btn" class="btn btn-ghost btn-block" type="button">Отчёт об ошибке</button>
+                <button id="logout-btn" class="btn btn-danger btn-block settings-logout" type="button">
+                    <svg class="icon" aria-hidden="true"><use href="#i-logout"/></svg>
+                    <span class="btn-label">Выйти</span>
+                </button>
             </div>
         </div>
     </dialog>
