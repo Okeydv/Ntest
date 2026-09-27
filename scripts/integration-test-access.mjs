@@ -65,6 +65,23 @@ function client() {
                 cookies.set(pair.slice(0, i), pair.slice(i + 1));
             }
         },
+        // Устройство без ключей: серверу для конвертов нужен только его id.
+        async device() {
+            if (!c.deviceId) c.deviceId = (await c.req('POST', '/api/devices', { name: 'тест' })).json.device.id;
+            return c.deviceId;
+        },
+        // Сообщение в комнату — только зашифрованное. Шифрования здесь нет:
+        // вместо шифротекста — узнаваемая строка; проверяется сервер, а не
+        // крипта.
+        async send(chatId, text, extra = {}) {
+            await c.device();
+            const info = (await c.req('GET', `/api/chats/${chatId}/devices`)).json;
+            const envelopes = (info?.devices || []).filter(d => d.device_id !== c.deviceId).map(d => ({
+                recipientDeviceId: d.device_id, envelopeType: 1,
+                header: Buffer.from('h').toString('base64'), ciphertext: Buffer.from(text).toString('base64'),
+            }));
+            return c.req('POST', '/api/messages/encrypted', { chatId, envelopes, ...extra });
+        },
         // Сокет с кукой этого клиента; собирает все newMessage.
         socket(roomKey) {
             const sock = ioClient(BASE, { extraHeaders: { Cookie: c.header() }, transports: ['websocket'], reconnection: false });
@@ -93,6 +110,7 @@ async function login(name, password = 'password123') {
     return c;
 }
 async function roomChat(owner, name, ...guests) {
+    for (const member of [owner, ...guests]) await member.device();
     const created = await owner.req('POST', '/api/chats', { name });
     const code = (await owner.req('GET', `/api/chats/invite/${created.json.chat.id}`)).json.code;
     const chats = { [owner.userId]: created.json.chat.id };
@@ -116,20 +134,24 @@ const eve = await register('eve');
 const secret = await roomChat(alice, 'Секретный', bob);
 const eveRoom = await roomChat(eve, 'Свой у Евы', bob);
 
-const secretMsg = await alice.req('POST', '/api/messages', { chatId: secret.chats[alice.userId], text: 'пароль от сейфа 1234' });
-const secretId = secretMsg.json.message.id;
-const stolen = await eve.req('POST', '/api/messages', { chatId: eveRoom.chats[eve.userId], text: 'цитирую', replyToId: secretId });
+// Открытый текст в комнате остался только от прежних времён — кладём его
+// прямо в базу, как старые данные.
+const secretId = (await db.query(
+    `INSERT INTO messages (chat_id, room_id, user_id, text, message_type, sent, time, status)
+     VALUES ($1, $2, $3, 'пароль от сейфа 1234', 'text', 1, '00:00', 'sent') RETURNING id`,
+    [secret.chats[alice.userId], secret.roomId, alice.userId])).rows[0].id;
+const stolen = await eve.send(eveRoom.chats[eve.userId], 'цитирую', { replyToId: secretId });
 check('ответ на сообщение из чужого чата не принимается', stolen.json?.success === false, stolen.json?.message);
 
 // Такие ответы могли остаться в базе с прежних времён — история не должна
 // вытаскивать по ним чужой текст.
-const planted = await eve.req('POST', '/api/messages', { chatId: eveRoom.chats[eve.userId], text: 'старый ответ' });
+const planted = await eve.send(eveRoom.chats[eve.userId], 'старый ответ');
 await db.query('UPDATE messages SET reply_to_id = $1 WHERE id = $2', [secretId, planted.json.message.id]);
 const history = (await eve.req('GET', `/api/messages/${eveRoom.chats[eve.userId]}`)).json.messages;
 check('и старый такой ответ не открывает в истории чужую цитату',
     !JSON.stringify(history).includes('пароль от сейфа'), JSON.stringify(history.find(m => m.id === planted.json.message.id)?.reply_to));
 
-const ownReply = await bob.req('POST', '/api/messages', { chatId: secret.chats[bob.userId], text: 'понял', replyToId: secretId });
+const ownReply = await bob.send(secret.chats[bob.userId], 'понял', { replyToId: secretId });
 check('ответ внутри своего чата проходит', ownReply.json?.success === true && ownReply.json.message.reply_to_id === secretId,
     ownReply.json?.message?.reply_to_id);
 
@@ -137,7 +159,7 @@ check('ответ внутри своего чата проходит', ownReply
 
 const pageChat = eveRoom.chats[eve.userId];
 const sentIds = [];
-for (let i = 1; i <= 7; i++) sentIds.push((await eve.req('POST', '/api/messages', { chatId: pageChat, text: `номер ${i}` })).json.message.id);
+for (let i = 1; i <= 7; i++) sentIds.push((await eve.send(pageChat, `номер ${i}`)).json.message.id);
 const lastPage = (await eve.req('GET', `/api/messages/${pageChat}?limit=3`)).json;
 const olderPage = (await eve.req('GET', `/api/messages/${pageChat}?limit=3&before=${lastPage.messages[0].id}`)).json;
 check('история страницами: последние по возрастанию, перед ними следующие',
@@ -166,14 +188,14 @@ const dave = await register('dave');
 const trio = await roomChat(alice, 'Трое', bob, dave);
 const bobSock = await bob.socket(`room:${trio.roomId}`);
 const daveSock = await dave.socket(`room:${trio.roomId}`);
-await alice.req('POST', '/api/messages', { chatId: trio.chats[alice.userId], text: 'пока Боб здесь' });
+const before = await alice.send(trio.chats[alice.userId], 'пока Боб здесь');
 await sleep(400);
-check('участник получает сообщения по сокету', bobSock.received.some(m => m.text === 'пока Боб здесь'));
+check('участник получает сообщения по сокету', bobSock.received.some(m => m.id === before.json.message.id));
 await bob.req('DELETE', `/api/chats/${trio.chats[bob.userId]}`);
-const afterLeave = await alice.req('POST', '/api/messages', { chatId: trio.chats[alice.userId], text: 'Боб уже ушёл' });
+const afterLeave = await alice.send(trio.chats[alice.userId], 'Боб уже ушёл');
 await sleep(400);
-check('после выхода из чата — нет', afterLeave.json.success && daveSock.received.some(m => m.text === 'Боб уже ушёл')
-    && !bobSock.received.some(m => m.text === 'Боб уже ушёл'));
+check('после выхода из чата — нет', afterLeave.json?.success && daveSock.received.some(m => m.id === afterLeave.json.message.id)
+    && !bobSock.received.some(m => m.id === afterLeave.json.message.id), JSON.stringify(afterLeave.json));
 bobSock.close();
 daveSock.close();
 
@@ -224,18 +246,18 @@ check('и сам пользователь — свои', self.json?.message !== 
 /* ------------------------- дальние сроки исчезающих сообщений ------------------------- */
 
 const MONTH = 30 * 24 * 3600;
-const longLived = await bob.req('POST', '/api/messages', { chatId: eveRoom.chats[bob.userId], text: 'живу месяц', expirySeconds: MONTH });
+const longLived = await bob.send(eveRoom.chats[bob.userId], 'живу месяц', { expirySeconds: MONTH });
 await sleep(1500);
 const row = await db.query(
     `SELECT m.deleted, extract(epoch FROM e.expires_at - now()) AS left FROM messages m
      JOIN message_expiry e ON e.message_id = m.id WHERE m.id = $1`, [longLived.json.message.id]);
 check('сообщение со сроком в месяц не исчезло сразу', row.rows[0]?.deleted === 0, JSON.stringify(row.rows[0]));
 check('и срок записан верно', Math.abs(Number(row.rows[0]?.left) - MONTH) < 60, row.rows[0]?.left);
-const tooLong = await bob.req('POST', '/api/messages', { chatId: eveRoom.chats[bob.userId], text: 'десять лет', expirySeconds: 10 * 365 * 24 * 3600 });
+const tooLong = await bob.send(eveRoom.chats[bob.userId], 'десять лет', { expirySeconds: 10 * 365 * 24 * 3600 });
 check('срок больше года отклоняется', tooLong.json?.success === false, tooLong.json?.message);
-const negative = await bob.req('POST', '/api/messages', { chatId: eveRoom.chats[bob.userId], text: 'минус', expirySeconds: -5 });
+const negative = await bob.send(eveRoom.chats[bob.userId], 'минус', { expirySeconds: -5 });
 check('отрицательный — тоже', negative.json?.success === false, negative.json?.message);
-const short = await bob.req('POST', '/api/messages', { chatId: eveRoom.chats[bob.userId], text: 'две секунды', expirySeconds: 2 });
+const short = await bob.send(eveRoom.chats[bob.userId], 'две секунды', { expirySeconds: 2 });
 await sleep(3000);
 const shortRow = await db.query('SELECT deleted FROM messages WHERE id = $1', [short.json.message.id]);
 check('короткий срок по-прежнему срабатывает по таймеру', shortRow.rows[0]?.deleted === 1);

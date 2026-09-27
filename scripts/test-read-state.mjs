@@ -148,14 +148,12 @@ check('и новые сообщения снова приходят вживую
 /* ------------------------- файл ------------------------- */
 
 await bob.goto('about:blank');
+// Раньше сервер ставил файлу «прочитано» таймером через 2 секунды. Файл в
+// комнату уходит только зашифрованным — его и отправляем.
 const fileId = await alice.evaluate(async () => {
-    // Открытый путь: в комнате с шифрованием его не шлёт интерфейс, но
-    // сервер его принимает — и раньше ставил «прочитано» через 2 секунды.
-    const form = new FormData();
-    form.append('file', new Blob(['заметка'], { type: 'text/plain' }), 'note.txt');
-    form.append('chatId', String(currentChatId));
-    const r = await fetch('/api/messages/file', { method: 'POST', headers: { 'X-CSRF-Token': await csrfToken() }, body: form });
-    return (await r.json()).message.id;
+    await sendFiles([new File(['заметка'], 'note.txt', { type: 'text/plain' })]);
+    const own = (await api(`/api/messages/${currentChatId}`)).messages.filter(m => m.user_id === currentUser.id);
+    return own.at(-1)?.id;
 });
 await sleep(3000);
 const fileStatus = await alice.evaluate(async id =>

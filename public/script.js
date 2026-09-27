@@ -126,6 +126,25 @@ const elements = {
 
 let e2ee = null;          // модуль крипты, когда он загрузился
 let e2eeDeviceId = null;  // id этого устройства, если E2EE поднялся
+let e2eeFailure = null;   // почему шифрование на этом устройстве не поднялось
+
+/*
+ * Почему не поднялось шифрование — человеческими словами. Без него писать
+ * можно только боту: открытым текстом в чат клиент не отправляет, поэтому
+ * причину надо назвать, а не промолчать.
+ */
+async function describeE2eeFailure(detail) {
+    if (!window.isSecureContext || !(window.crypto && crypto.subtle)) {
+        return 'страница открыта не по HTTPS, и браузер отключил шифрование. Откройте адрес, начинающийся с https://';
+    }
+    try {
+        await crypto.subtle.generateKey({ name: 'Ed25519' }, false, ['sign', 'verify']);
+        await crypto.subtle.generateKey({ name: 'X25519' }, false, ['deriveBits']);
+    } catch {
+        return 'этот браузер не умеет ключи, которые нужны для шифрования (Ed25519 и X25519). Обновите его';
+    }
+    return `сервер ключей недоступен или не ответил${detail ? ` (${detail})` : ''}`;
+}
 
 function cryptoModule() {
     if (window.NyxoCrypto) return Promise.resolve(window.NyxoCrypto);
@@ -161,7 +180,8 @@ function deviceLabel(ua = navigator.userAgent) {
 async function setupE2EE() {
     e2ee = await cryptoModule();
     if (!e2ee) {
-        console.warn('[E2EE] модуль крипты не загрузился, работаем без шифрования');
+        console.warn('[E2EE] модуль крипты не загрузился');
+        e2eeFailure = await describeE2eeFailure('модуль шифрования не загрузился');
         return;
     }
     const result = await e2ee.bootstrap({
@@ -171,9 +191,11 @@ async function setupE2EE() {
     });
     if (!result) {
         e2eeDeviceId = null;
+        e2eeFailure = await describeE2eeFailure(e2ee.lastError());
         return;
     }
     e2eeDeviceId = result.deviceId;
+    e2eeFailure = null;
 
     // Сокет обязан переподключиться ПЕРЕД тем, как кто-то позовёт
     // joinChat: серверную комнату device:<id> выбирают по сессии в момент
@@ -190,6 +212,8 @@ async function setupE2EE() {
     checkNewDevices();
     // Хранилище устройства доступно — сразу стираем истёкшее, не дожидаясь таймера.
     sweepExpiredMessages();
+    // И отправляем то, что ждало ключей собеседника.
+    flushPending();
 }
 
 /* --- Новые устройства аккаунта --------------------------------------------
@@ -398,9 +422,19 @@ async function chatDevices(chatId) {
 
 const hasForeignDevices = info => Boolean(info && info.devices.some(d => d.device_id !== e2eeDeviceId));
 
-async function chatHasForeignDevices(chatId) {
-    if (!e2ee || !e2ee.isReady()) return false;
-    return hasForeignDevices(await chatDevices(chatId));
+// Собеседники (без себя) и те из них, у кого нет ни одного устройства.
+function peersOf(info) {
+    const others = ((info && info.participants) || []).filter(p => p.user_id !== (currentUser && currentUser.id));
+    const withDevices = new Set(((info && info.devices) || []).map(d => d.user_id));
+    return { others, withoutDevices: others.filter(p => !withDevices.has(p.user_id)) };
+}
+
+const namesList = users => users.map(u => u.username).join(', ');
+
+function noKeysText(users) {
+    return users.length === 1
+        ? `У ${users[0].username} нет устройства с шифрованием`
+        : `У ${namesList(users)} нет устройств с шифрованием`;
 }
 
 /**
@@ -416,13 +450,25 @@ async function refreshEncryptionBadge(chatId, isBot) {
     let mode = 'off';
     let icon = 'i-unlock';
     let text;
+    let checkable = true;
     if (isBot) {
         text = 'Без шифрования: бот';
     } else if (!e2ee || !e2ee.isReady()) {
-        text = 'Без шифрования: ключи устройства недоступны';
+        // Писать сюда не выйдет, пока шифрование не заработает.
+        mode = 'warn';
+        icon = 'i-alert';
+        checkable = false;
+        text = 'Шифрование на этом устройстве не работает';
     } else {
         const info = await chatDevices(chatId);
-        if (hasForeignDevices(info)) {
+        const { others, withoutDevices } = peersOf(info);
+        if (others.length > 0 && withoutDevices.length === others.length) {
+            // Сообщения будут ждать на устройстве, пока ключи не появятся.
+            mode = 'warn';
+            icon = 'i-timer';
+            checkable = false;
+            text = noKeysText(withoutDevices);
+        } else if (hasForeignDevices(info)) {
             const states = [...(await e2ee.verificationStatus(info.devices)).values()];
             if (states.includes('changed')) {
                 mode = 'warn';
@@ -444,8 +490,8 @@ async function refreshEncryptionBadge(chatId, isBot) {
     // Пока ждали ответа, могли открыть другой чат — не перезаписываем его.
     if (currentChatId !== chatId) return;
     badge.className = `encryption-badge is-${mode}`;
-    badge.disabled = mode === 'off';
-    badge.title = mode === 'off' ? '' : 'Сверить ключи';
+    badge.disabled = mode === 'off' || !checkable;
+    badge.title = badge.disabled ? (mode === 'warn' && e2eeFailure && !checkable ? e2eeFailure : '') : 'Сверить ключи';
     // Текст в отдельном элементе: на узком экране он обрезается
     // многоточием, а замок остаётся виден.
     const label = document.createElement('span');
@@ -1485,6 +1531,7 @@ function setupEventListeners() {
     setupReadMarks();
     setupFeed();
     setupComposer();
+    setupPending();
     setupSidebarResize();
     setupNotifications();
     setupConnectionStatus();
@@ -1754,6 +1801,7 @@ async function openChat(chatId, roomId, name, avatar, online, isBot) {
     // Что из этого чата лежит у нас расшифрованным — до запроса истории:
     // сообщение, пришедшее, пока она грузится, не должно попасть под чистку.
     const known = e2ee && e2ee.isReady() ? await e2ee.knownMessages({ id: chatId, room_id: roomId }) : [];
+    undeliveredCache = e2ee && e2ee.isReady() ? await e2ee.undeliveredNotes() : {};
     historyPaging.chatId = chatId;
     historyPaging.hasMore = false;
     historyPaging.oldestId = null;
@@ -1777,6 +1825,7 @@ async function openChat(chatId, roomId, name, avatar, online, isBot) {
     if (e2ee && data.keyEnvelopes) await e2ee.processKeyEnvelopes(data.keyEnvelopes);
     for (const msg of page) await appendMessageDecrypted(msg);
     if (currentChatId !== chatId) return;
+    await renderPendingFor(chatId);
     await fillScreenWithHistory();
     // Куда встать: туда, где были (возврат в чат), к «Непрочитанным» или вниз.
     const separator = reopening ? null : placeUnreadSeparator(Number(data.chat && data.chat.last_read_id) || 0);
@@ -2769,7 +2818,7 @@ function createMessageElement(message) {
     div.className = `message ${isMine ? 'sent' : 'received'}`;
     div.dataset.messageId = message.id;
     if (message.sender_username) div.dataset.sender = message.sender_username;
-    div.dataset.senderKey = `${isOwnMessage(message) ? 'me' : message.user_id}:${message.sent}`;
+    div.dataset.senderKey = `${isMine ? 'me' : message.user_id}:${Number(message.sent) ? 1 : 0}`;
     const at = messageDate(message);
     div.dataset.at = String(at ? at.getTime() : 0);
     div.tabIndex = -1;
@@ -2844,6 +2893,13 @@ function createMessageElement(message) {
             editedDiv.className = 'edited-label';
             editedDiv.textContent = 'изменено';
             contentDiv.appendChild(editedDiv);
+        }
+        const undelivered = isMine && undeliveredCache[message.id];
+        if (undelivered) {
+            const note = document.createElement('div');
+            note.className = 'message-undelivered';
+            note.append(createIcon('i-alert'), undeliveredText(undelivered));
+            contentDiv.appendChild(note);
         }
         if (message.reactions && message.reactions.length > 0) {
             const reactionsDiv = document.createElement('div');
@@ -3189,23 +3245,16 @@ async function sendMessage() {
         const el = elements.chatMessages.querySelector(`[data-message-id="${editingMessageId}"] .message-text`);
         if (el) el.textContent = text;
         editingMessageId = null;
+    } else if (currentChatIsBot) {
+        // Бот отвечает на текст, который видит, — единственный чат без
+        // шифрования.
+        const data = await api('/api/messages', { method: 'POST', body: JSON.stringify(payload) });
+        if (!data.success) return showToast(data.message || 'Сообщение не отправлено', 'error');
     } else {
-        const outcome = await sendEncrypted(text, payload);
         // Не отправилось — текст остаётся в поле: иначе его пришлось бы
-        // набирать заново.
+        // набирать заново. Открытым текстом не уходит никогда.
+        const outcome = await sendEncrypted(text, payload);
         if (outcome === 'failed') return;
-        if (outcome === 'plain') {
-            const data = await api('/api/messages', {
-                method: 'POST',
-                body: JSON.stringify(payload),
-            });
-            // Отказ сервера (например, в группе никого нет) — текст остаётся в поле.
-            if (!data.success) {
-                showToast(data.message || 'Сообщение не отправлено', 'error');
-                if (data.code === 'ROOM_EMPTY') { await loadChats(); applyRoomState(); }
-                return;
-            }
-        }
     }
 
     setMessageInput('');
@@ -3223,17 +3272,23 @@ async function sendMessage() {
  * Любая другая неудача — исключение: откатываться на открытый путь после
  * провала шифрования нельзя, человек считал бы переписку защищённой.
  */
+/*
+ * Зашифровать и отправить. { sent: true } — ушло; { waiting: true, missing }
+ * — прочитать не сможет ни один собеседник (ни у кого нет устройства с
+ * ключами), и сообщение должно подождать на устройстве. Подменённые ключи —
+ * исключение: ждать тут нечего, это повод сверить ключи.
+ */
 async function sendEncryptedPayload(chatId, encoded, { replyToId = null, blobIds = [] } = {}) {
     const encrypted = await e2ee.encryptForChat(chatId, encoded);
-    const { targets, rejected } = encrypted;
-    if (targets.length === 0) return { sent: false };
-    // Получатели есть, а прочитать не сможет никто: ключи не выдал сервер
-    // или все они подменены. Уходить в открытый текст здесь нельзя —
-    // индикатор обещает шифрование.
-    if (encrypted.readers === 0) {
-        throw new Error(rejected.length > 0
-            ? 'ключи устройств собеседника не совпадают с известными'
-            : 'не удалось получить ключи собеседника');
+    const { rejected, info } = encrypted;
+    const { others } = peersOf(info);
+    if (others.length === 0) throw new Error('в чате пока никого нет — сначала пригласите участников');
+    const readerUsers = new Set(info.devices
+        .filter(d => encrypted.readerIds.includes(d.device_id)).map(d => d.user_id));
+    const missingUsers = others.filter(p => !readerUsers.has(p.user_id));
+    if (missingUsers.length === others.length) {
+        if (rejected.length > 0) throw new Error('ключи устройств собеседника не совпадают с известными');
+        return { sent: false, waiting: true, missing: missingUsers };
     }
 
     // Попарно — конверт с содержимым на каждое устройство; в группе —
@@ -3270,12 +3325,145 @@ async function sendEncryptedPayload(chatId, encoded, { replyToId = null, blobIds
             : `Ключи ${devicesGenitive(rejected.length)} собеседника не совпадают с известными — им сообщение не отправлено`,
         'error');
     }
-    const missing = [...(data.missingDeviceIds || []), ...encrypted.undelivered]
-        .filter(id => id !== e2eeDeviceId && !rejected.includes(id));
-    if (missing.length > 0) {
-        showToast(`Сообщение не дойдёт до ${devicesGenitive(missing.length)}: нет ключей`, 'error');
+    // Кому из людей не дойдёт совсем — пометка под сообщением, а не
+    // молчаливый пропуск. Отдельные устройства без ключей у тех, кому
+    // дойдёт, — тостом, как раньше.
+    if (missingUsers.length > 0) {
+        const names = missingUsers.map(u => u.username);
+        await e2ee.rememberUndelivered(data.message.id, names);
+        markUndelivered(data.message.id, names);
+    } else {
+        const missing = [...(data.missingDeviceIds || []), ...encrypted.undelivered]
+            .filter(id => id !== e2eeDeviceId && !rejected.includes(id));
+        if (missing.length > 0) {
+            showToast(`Сообщение не дойдёт до ${devicesGenitive(missing.length)}: нет ключей`, 'error');
+        }
     }
     return { sent: true };
+}
+
+/* --- Не доставлено и ждущие сообщения ---------------------------------------
+   Кому в группе сообщение не ушло (нет ни одного устройства с ключами) —
+   видно под ним: «Не доставлено: Пётр — нет ключей». Если не может прочитать
+   никто, сообщение ждёт на устройстве («Ждёт ключей собеседника», его можно
+   отменить) и уходит само, когда у собеседника появятся ключи: об этом
+   сервер сообщает событием peerKeysReady. */
+
+let undeliveredCache = {};
+
+function undeliveredText(names) {
+    return `Не доставлено: ${names.join(', ')} — нет ключей`;
+}
+
+function markUndelivered(messageId, names) {
+    const bubble = elements.chatMessages.querySelector(`.message[data-message-id="${messageId}"]`);
+    if (!bubble || bubble.querySelector('.message-undelivered')) return;
+    const note = document.createElement('div');
+    note.className = 'message-undelivered';
+    note.append(createIcon('i-alert'), undeliveredText(names));
+    bubble.querySelector('.message-content')?.appendChild(note);
+}
+
+async function queuePending(chatId, encoded, replyToId, missing) {
+    const item = {
+        localId: `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
+        chatId, encoded, replyToId, createdAt: new Date().toISOString(),
+        waitingFor: missing.map(u => u.username),
+    };
+    await withPendingLock(async () => e2ee.pending.save([...(await e2ee.pending.list()), item]));
+    if (chatId === currentChatId) {
+        appendPendingElement(item);
+        scrollToBottom();
+    }
+    showToast(`Нет ключей у ${namesList(missing)} — сообщение отправится, когда они появятся`, 'info');
+}
+
+// Две вкладки не должны отправить одно и то же ждущее сообщение дважды.
+function withPendingLock(fn) {
+    return navigator.locks ? navigator.locks.request('nyxo-pending', fn) : fn();
+}
+
+function appendPendingElement(item) {
+    if (elements.chatMessages.querySelector(`[data-pending-id="${item.localId}"]`)) return;
+    const content = e2ee.decodePayload(item.encoded);
+    const div = document.createElement('div');
+    div.className = 'message sent is-pending';
+    div.dataset.pendingId = item.localId;
+    div.dataset.senderKey = 'me:1';
+    div.dataset.at = String(Date.parse(item.createdAt) || 0);
+    const body = document.createElement('div');
+    body.className = 'message-content';
+    const text = document.createElement('div');
+    text.className = 'message-text';
+    text.textContent = content && content.t === 'text' ? content.body : '';
+    const meta = document.createElement('div');
+    meta.className = 'message-meta message-pending';
+    const label = document.createElement('span');
+    label.append(createIcon('i-timer'), 'Ждёт ключей собеседника');
+    label.title = item.waitingFor && item.waitingFor.length ? `Нет ключей у ${item.waitingFor.join(', ')}` : '';
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'link-inline pending-cancel';
+    cancel.textContent = 'Отменить';
+    cancel.addEventListener('click', () => cancelPending(item.localId));
+    meta.append(label, cancel);
+    body.append(text, meta);
+    div.appendChild(body);
+    dayGroup(new Date(item.createdAt), elements.chatMessages).appendChild(div);
+    regroupMessages();
+}
+
+async function cancelPending(localId) {
+    await withPendingLock(async () =>
+        e2ee.pending.save((await e2ee.pending.list()).filter(p => p.localId !== localId)));
+    const el = elements.chatMessages.querySelector(`[data-pending-id="${localId}"]`);
+    if (el) removeMessageElement(el);
+    showToast('Сообщение отменено', 'info');
+}
+
+async function renderPendingFor(chatId) {
+    if (!e2ee || !e2ee.isReady()) return;
+    for (const item of await e2ee.pending.list()) {
+        if (item.chatId === chatId && currentChatId === chatId) appendPendingElement(item);
+    }
+}
+
+let flushing = false;
+async function flushPending() {
+    if (!e2ee || !e2ee.isReady() || flushing) return;
+    flushing = true;
+    try {
+        await withPendingLock(async () => {
+            for (const item of await e2ee.pending.list()) {
+                let result;
+                try {
+                    result = await sendEncryptedPayload(item.chatId, item.encoded, { replyToId: item.replyToId });
+                } catch (error) {
+                    // Чат удалён, ключи подменены, сеть — сообщение остаётся ждать.
+                    console.warn('[E2EE] ждущее сообщение пока не отправлено:', error.message);
+                    continue;
+                }
+                if (result.waiting) continue;
+                await e2ee.pending.save((await e2ee.pending.list()).filter(p => p.localId !== item.localId));
+                const el = elements.chatMessages.querySelector(`[data-pending-id="${item.localId}"]`);
+                if (el) removeMessageElement(el);
+            }
+        });
+    } finally {
+        flushing = false;
+    }
+}
+
+function setupPending() {
+    socket.on('peerKeysReady', () => {
+        flushPending();
+        if (currentChatId) refreshEncryptionBadge(currentChatId, currentChatIsBot);
+    });
+    socket.on('connect', () => flushPending());
+    // Страховка на случай пропущенного события: раз в минуту.
+    setInterval(async () => {
+        if (e2ee && e2ee.isReady() && (await e2ee.pending.list()).length) flushPending();
+    }, 60000);
 }
 
 /** «до 1 устройства», «до 5 устройств», «до 21 устройства». */
@@ -3284,23 +3472,49 @@ function devicesGenitive(n) {
     return `${n} ${one ? 'устройства' : 'устройств'}`;
 }
 
-/** Итог: 'sent', 'plain' (шифровать не для кого) или 'failed'. */
+/*
+ * Итог: 'sent', 'queued' (ждёт ключей собеседника на устройстве) или
+ * 'failed'. Открытого пути нет: раньше, если шифрование на устройстве не
+ * поднялось или сервер отдавал пустой список устройств собеседника, текст
+ * молча уходил открытым — и взломанному серверу было достаточно «потерять»
+ * ключи, чтобы клиент сам прислал ему переписку.
+ */
 async function sendEncrypted(text, payload) {
-    if (!e2ee || !e2ee.isReady()) return 'plain';
     const chatId = currentChatId;
+    const replyToId = payload.replyToId || null;
+    if (!e2ee || !e2ee.isReady()) {
+        reportE2eeUnavailable('Сообщение не отправлено', () => retryAfterSetup(chatId, text, replyToId));
+        return 'failed';
+    }
     try {
-        const result = await sendEncryptedPayload(chatId, e2ee.encodeText(text), {
-            replyToId: payload.replyToId || null,
-        });
-        // В чате не для кого шифровать (бот, никто не присоединился) —
-        // это единственный случай, когда уходим на открытый путь.
-        return result.sent ? 'sent' : 'plain';
+        const encoded = e2ee.encodeText(text);
+        const result = await sendEncryptedPayload(chatId, encoded, { replyToId });
+        if (result.waiting) {
+            await queuePending(chatId, encoded, replyToId, result.missing);
+            return 'queued';
+        }
+        return 'sent';
     } catch (error) {
-        const replyToId = payload.replyToId || null;
         reportEncryptedSendError('Сообщение не отправлено', chatId, error,
             () => resendText(chatId, text, replyToId));
         return 'failed';
     }
+}
+
+function reportE2eeUnavailable(prefix, retry) {
+    showToast(`${prefix}: шифрование на этом устройстве не работает — ${e2eeFailure || 'причина неизвестна'}`,
+        'error', { action: retry ? { label: 'Повторить', onClick: retry } : null });
+}
+
+// «Повторить», когда не поднялось шифрование: сначала поднять его заново.
+async function retryAfterSetup(chatId, text, replyToId) {
+    if (!e2ee || !e2ee.isReady()) await setupE2EE();
+    if (currentChatId) refreshEncryptionBadge(currentChatId, currentChatIsBot);
+    if (!e2ee || !e2ee.isReady()) {
+        reportE2eeUnavailable('Сообщение не отправлено', () => retryAfterSetup(chatId, text, replyToId));
+        return;
+    }
+    await resendText(chatId, text, replyToId);
 }
 
 /**
@@ -3311,11 +3525,9 @@ async function sendEncrypted(text, payload) {
  */
 async function resendText(chatId, text, replyToId) {
     try {
-        const result = await sendEncryptedPayload(chatId, e2ee.encodeText(text), { replyToId });
-        if (!result.sent) {
-            const data = await api('/api/messages', { method: 'POST', body: JSON.stringify({ chatId, text, replyToId }) });
-            if (!data.success) throw new Error(data.message || 'ошибка сервера');
-        }
+        const encoded = e2ee.encodeText(text);
+        const result = await sendEncryptedPayload(chatId, encoded, { replyToId });
+        if (result.waiting) await queuePending(chatId, encoded, replyToId, result.missing);
         if (chatId === currentChatId && elements.messageInput.value.trim() === text) {
             setMessageInput('');
             clearReply();
@@ -3367,7 +3579,7 @@ async function sendEncryptedFile(chatId, file, progress = silentProgress) {
     const result = await sendEncryptedPayload(chatId, e2ee.encodeFile({ blob: uploaded.blobId, ...meta }), {
         blobIds: [uploaded.blobId],
     });
-    // Между проверкой и отправкой собеседник мог выйти из чата. Файл при
+    // Между проверкой и отправкой ключи собеседника могли пропасть. Файл при
     // этом уже загружен — его уберёт уборщик, а пользователю говорим прямо.
     if (!result.sent) throw new Error('в чате больше не для кого шифровать');
 }
@@ -3474,9 +3686,21 @@ async function sendFile(chatId, file, label) {
         return true;
     };
     try {
-        // Если в чате есть для кого шифровать — только зашифрованный путь.
-        // Ошибка шифрования не откатывает на открытую загрузку.
-        if (await chatHasForeignDevices(chatId)) {
+        // Открытый путь — только у бота. Во всех остальных чатах файл
+        // уходит зашифрованным или не уходит вовсе.
+        const meta = chatsMeta.get(chatId);
+        if (!(meta ? meta.is_bot : currentChatIsBot)) {
+            if (!e2ee || !e2ee.isReady()) {
+                reportE2eeUnavailable('Файл не отправлен', null);
+                return true;
+            }
+            // Файл не ждёт ключей, как текст: он уже был бы загружен на
+            // сервер. Прочитать некому — не отправляем.
+            const { others, withoutDevices } = peersOf(await chatDevices(chatId));
+            if (others.length > 0 && withoutDevices.length === others.length) {
+                showToast(`Файл не отправлен. ${noKeysText(withoutDevices)}`, 'error');
+                return true;
+            }
             try {
                 await sendEncryptedFile(chatId, file, progress);
             } catch (error) {
@@ -3769,6 +3993,11 @@ async function deleteChat() {
     const data = await api(`/api/chats/${currentChatId}`, { method: 'DELETE' });
     if (data.success) {
         if (e2ee) await e2ee.forgetConversation(leaving);
+        // Ждущим ключей сообщениям этого чата больше некуда уходить.
+        if (e2ee && e2ee.isReady()) {
+            await withPendingLock(async () =>
+                e2ee.pending.save((await e2ee.pending.list()).filter(p => p.chatId !== leaving.id)));
+        }
         showToast('Чат удалён', 'success');
         closeModal(elements.chatMenuModal);
         chatViews.delete(currentChatId);

@@ -8,7 +8,7 @@ const { normalizeExpiry } = require('../lib/disappearing-messages');
 const { sanitizeText } = require('../lib/privacy');
 const { onlyStrings, BAD_FIELDS, getCurrentTime, getSocketRoomKey } = require('../lib/helpers');
 const { receiptsFor, statusFor } = require('../lib/read-state');
-const { ROOM_EMPTY, canWriteTo } = require('../lib/rooms');
+const { E2EE_REQUIRED, ROOM_EMPTY, canWriteTo } = require('../lib/rooms');
 const { BLOB_ID_RE, MAX_BLOBS_PER_MESSAGE, purgeMessageContent } = require('../lib/storage');
 
 
@@ -573,8 +573,7 @@ module.exports = function registerMessageRoutes(app, ctx) {
         try {
             const chat = await dbGet('SELECT * FROM chats WHERE id = $1 AND user_id = $2', [chatId, req.session.userId]);
             if (!chat) return res.json({ success: false, message: 'Чат не найден' });
-            // В комнате без собеседников текст лёг бы на сервер открытым.
-            if (!(await canWriteTo(chat, req.session.userId))) return res.status(409).json(ROOM_EMPTY);
+            if (!chat.is_bot) return res.status(409).json(E2EE_REQUIRED);
             const reply = await replyTargetFor(chat, replyToId);
             if (reply.error) return res.json({ success: false, message: reply.error });
             const replyTo = reply.id;
@@ -663,8 +662,10 @@ module.exports = function registerMessageRoutes(app, ctx) {
             if (message.encrypted) {
                 return res.status(409).json({ success: false, message: 'Зашифрованные сообщения нельзя редактировать' });
             }
-            // Новый текст — тоже открытый: в опустевшей комнате его не принимаем.
-            if (!(await canWriteTo(message, req.session.userId))) return res.status(409).json(ROOM_EMPTY);
+            // Новый текст — открытый: править так можно только в чате с ботом.
+            // Старое открытое сообщение в комнате (до шифрования) не правится.
+            const where = await dbGet('SELECT is_bot FROM chats WHERE id = $1', [message.chat_id]);
+            if (message.room_id || !where || !where.is_bot) return res.status(409).json(E2EE_REQUIRED);
             const editedAt = new Date().toISOString();
             const trimmedText = text.trim();
             await dbRun('UPDATE messages SET text = $1, edited_at = $2 WHERE id = $3', [trimmedText, editedAt, messageId]);

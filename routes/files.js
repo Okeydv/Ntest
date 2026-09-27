@@ -12,7 +12,7 @@ const { pool, dbGet, dbAll, dbRun } = require('../lib/db');
 const { shared } = require('../lib/shared');
 const { stripMetadataInWorker } = require('../lib/metadata-stripper');
 const { getCurrentTime, getSocketRoomKey } = require('../lib/helpers');
-const { ROOM_EMPTY, canWriteTo } = require('../lib/rooms');
+const { E2EE_REQUIRED, ROOM_EMPTY, canWriteTo } = require('../lib/rooms');
 const {
     BLOBS_DIR, BLOB_ID_RE, MAX_BLOB_BYTES, MIN_BLOB_BYTES, ORPHAN_BLOB_TTL_MS, blobPath,
 } = require('../lib/storage');
@@ -246,12 +246,12 @@ module.exports = function registerFileRoutes(app, ctx) {
             cleanupUploadedFile(file);
             return res.status(400).json({ success: false, message: 'Указан чат' });
         }
-        // До разбора файла: в пустую комнату он всё равно не уйдёт.
+        // До разбора файла: открытый файл уходит только в чат с ботом.
         try {
-            const target = await dbGet('SELECT room_id FROM chats WHERE id = $1 AND user_id = $2', [chatId, req.session.userId]);
-            if (target && !(await canWriteTo(target, req.session.userId))) {
+            const target = await dbGet('SELECT is_bot FROM chats WHERE id = $1 AND user_id = $2', [chatId, req.session.userId]);
+            if (target && !target.is_bot) {
                 cleanupUploadedFile(file);
-                return res.status(409).json(ROOM_EMPTY);
+                return res.status(409).json(E2EE_REQUIRED);
             }
         } catch (error) {
             log.error({ err: error }, 'Room check error');

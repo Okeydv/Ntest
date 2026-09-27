@@ -32,6 +32,7 @@ const { createSocketServer } = require('./lib/sockets');
 const e2eeProxy = require('./lib/e2ee-proxy');
 const { createDevicesRouter } = require('./lib/devices');
 const { recordSecurityEvent } = require('./lib/security-events');
+const { emitToPeers } = require('./lib/presence');
 const {
     checkTorConnection,
     getTorHiddenServiceConfig,
@@ -357,6 +358,11 @@ app.use(createDevicesRouter({
     },
     onDeviceRevoked: (userId, device) => recordSecurityEvent(userId, 'device_revoked', { label: device.name }),
 }));
+
+// У собеседника появилось устройство с ключами — пусть его клиенты отправят
+// то, что ждало (public/script.js, «Ждёт ключей собеседника»).
+e2eeProxy.setKeysPublished((userId, deviceId) =>
+    emitToPeers(io, userId, 'peerKeysReady', { user_id: userId, device_id: deviceId }));
 
 // Ключи собеседника — только при общем чате (см. requirePeer в e2ee-proxy).
 e2eeProxy.setPeerCheck(async (userId, otherUserId) => Boolean(await dbGet(

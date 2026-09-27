@@ -1587,6 +1587,28 @@ input.is-invalid:focus {
     line-height: 1.4;
 }
 
+/* Ждёт ключей собеседника: пузырь бледнее, под ним — часы и «Отменить». */
+.message.is-pending { opacity: 0.75; }
+.message-pending {
+    justify-content: space-between;
+    gap: 0.75rem;
+    font-size: 0.75rem;
+}
+.message-pending span { display: inline-flex; align-items: center; gap: 0.3rem; }
+.message-pending .icon { width: 0.875rem; height: 0.875rem; }
+.message.sent .pending-cancel { color: inherit; font-weight: 600; }
+
+/* Кому в группе сообщение не ушло. */
+.message-undelivered {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    margin-top: 0.375rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+.message-undelivered .icon { width: 0.875rem; height: 0.875rem; flex: none; }
+
 /* Цитата ведёт к исходному сообщению. */
 .reply-to[data-reply-id] { cursor: pointer; }
 @media (hover: hover) {

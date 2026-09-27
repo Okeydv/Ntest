@@ -201,15 +201,19 @@ check('«Отменить» вернул прежний срок — и у со�
     `${await expiryBadge(alice.page)} / ${await expiryBadge(bob.page)}`);
 await alice.page.keyboard.press('Escape');
 
-// Файл по открытому пути тоже получает срок чата.
+// Файл тоже получает срок чата. Открытым в комнату он не уходит вовсе:
+// только зашифрованным, как и текст.
 const fileExpiry = await alice.page.evaluate(async () => {
     const form = new FormData();
     form.append('file', new Blob(['заметка'], { type: 'text/plain' }), 'note.txt');
     form.append('chatId', String(currentChatId));
-    const r = await fetch('/api/messages/file', { method: 'POST', headers: { 'X-CSRF-Token': await csrfToken() }, body: form });
-    return (await r.json()).message?.expires_at || null;
+    const plain = await fetch('/api/messages/file', { method: 'POST', headers: { 'X-CSRF-Token': await csrfToken() }, body: form });
+    await sendFiles([new File(['заметка'], 'note.txt', { type: 'text/plain' })]);
+    const own = (await api(`/api/messages/${currentChatId}`)).messages.filter(m => m.user_id === currentUser.id);
+    return { plain: (await plain.json()).code, expires: own.at(-1)?.expires_at || null };
 });
-check('файл без шифрования тоже получает срок чата', Boolean(fileExpiry), String(fileExpiry));
+check('открытый файл в комнату сервер не принимает', fileExpiry.plain === 'E2EE_REQUIRED', JSON.stringify(fileExpiry));
+check('зашифрованный файл получает срок чата', Boolean(fileExpiry.expires), JSON.stringify(fileExpiry));
 
 await bob.page.fill('#message-input', 'исчезнет через час');
 await bob.page.click('#send-btn');

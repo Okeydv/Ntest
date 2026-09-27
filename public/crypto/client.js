@@ -47,12 +47,23 @@ async function publishIdentity() {
     return result;
 }
 
+/*
+ * Опубликовать ключи устройства. Раньше ответы не проверялись: если сервер
+ * ключей их не принял, устройство всё равно считалось готовым — собеседники
+ * не могли под него шифровать, а повторить публикацию было некому (при
+ * следующем входе устройство просто привязывалось). Теперь неудача —
+ * исключение, а успех отмечается в meta: bootstrap без отметки публикует
+ * заново (сервер ключей принимает это повторно).
+ */
 async function publishKeys() {
-    await publishIdentity();
-    await state.api('/api/keys/signed-prekey', {
+    const identity = await publishIdentity();
+    if (!identity || !identity.success) throw new Error((identity && identity.message) || 'ключи устройства не опубликованы');
+    const spk = await state.api('/api/keys/signed-prekey', {
         method: 'PUT',
         body: JSON.stringify(state.signedPrekey.upload),
     });
+    if (!spk || !spk.success) throw new Error((spk && spk.message) || 'ключи устройства не опубликованы');
+    await store.meta.set('keysPublished', true);
 }
 
 async function createOneTimePrekeys(count) {
@@ -208,6 +219,9 @@ async function bootstrapNow({ api, userId, deviceName = 'Браузер' }) {
                 state.deviceId = storedDeviceId;
                 state.identity = storedIdentity;
                 state.signedPrekey = storedSpk;
+                // Прошлая публикация не дошла — без неё под это устройство не
+                // зашифровать, и готовым оно не считается.
+                if (!(await store.meta.get('keysPublished'))) await publishKeys();
                 state.ready = true;
                 if (!(await store.meta.get('identityDhSigned'))) {
                     await publishIdentity().catch(e => console.warn('[E2EE] подпись ключа личности не опубликована:', e.message));
@@ -229,11 +243,44 @@ async function bootstrapNow({ api, userId, deviceName = 'Браузер' }) {
     } catch (e) {
         console.warn('[E2EE] шифрование недоступно:', e.message);
         state.ready = false;
+        state.lastError = e.message;
         return null;
     }
 }
 
 export const isReady = () => state.ready;
+// Почему шифрование не поднялось — клиент объясняет это человеку вместо
+// того, чтобы молча отправить открытым текстом.
+export const lastError = () => state.lastError || null;
+
+/* ------------------------------------------------------------------
+   Ждущие сообщения и пометки о недоставке
+   ------------------------------------------------------------------ */
+
+/*
+ * Сообщение, которому пока не для кого шифроваться (у собеседника нет ни
+ * одного устройства с ключами), ждёт здесь, на устройстве, и уходит, когда
+ * ключи появятся. Лежит там же, где расшифрованная переписка, и стирается
+ * вместе с ней при выходе.
+ */
+export const pending = {
+    list: async () => (await store.meta.get('pending')) || [],
+    save: list => store.meta.set('pending', list),
+};
+
+// «Не доставлено: Пётр — нет ключей» у своих сообщений. Знает об этом
+// только отправитель — пометка живёт у него на устройстве.
+const MAX_NOTES = 500;
+export async function rememberUndelivered(messageId, names) {
+    const notes = (await store.meta.get('undelivered')) || {};
+    notes[messageId] = names;
+    const ids = Object.keys(notes).map(Number).sort((a, b) => a - b);
+    for (const id of ids.slice(0, Math.max(0, ids.length - MAX_NOTES))) delete notes[id];
+    await store.meta.set('undelivered', notes);
+}
+export async function undeliveredNotes() {
+    return (await store.meta.get('undelivered')) || {};
+}
 export const currentDeviceId = () => state.deviceId;
 
 /* ================================================================== */
@@ -583,12 +630,14 @@ async function encryptForChatNow(chatId, plaintext) {
     if (!info || !info.success) throw new Error('не удалось получить список устройств чата');
 
     // Собственное устройство исключается: свой открытый текст кладётся в
-    // локальное хранилище, и конверт себе не нужен.
+    // локальное хранилище, и конверт себе не нужен. info уходит вызывающему:
+    // по участникам он видит, у кого из людей нет ни одного устройства,
+    // которое прочтёт сообщение (readerIds).
     const targets = info.devices.filter(d => d.device_id !== state.deviceId);
     if (targets.length === 0) {
         return {
             mode: 'none', envelopes: [], keyEnvelopes: [], group: null, targets,
-            rejected: [], undelivered: [], readers: 0, commit: noop,
+            rejected: [], undelivered: [], readers: 0, readerIds: [], info, commit: noop,
         };
     }
     // До запроса bundle: он расходует одноразовые prekeys, а отправка всё
@@ -597,13 +646,14 @@ async function encryptForChatNow(chatId, plaintext) {
 
     const users = new Set(info.devices.map(d => d.user_id));
     if (info.room_id && users.size >= GROUP_MIN_USERS) {
-        return encryptForGroup(info.room_id, targets, plaintext);
+        return { ...(await encryptForGroup(info.room_id, targets, plaintext)), info };
     }
 
     const { envelopes, rejected } = await encryptPairwise(targets, plaintext);
     return {
         mode: 'pairwise', envelopes, keyEnvelopes: [], group: null, targets,
-        rejected, undelivered: [], readers: envelopes.length, commit: noop,
+        rejected, undelivered: [], readers: envelopes.length,
+        readerIds: envelopes.map(e => e.recipientDeviceId), info, commit: noop,
     };
 }
 
@@ -644,9 +694,11 @@ async function encryptForGroup(roomId, targets, plaintext) {
     if (readers === 0) {
         return {
             mode: 'group', envelopes: [], keyEnvelopes: [], group: null, targets,
-            rejected, undelivered, readers: 0, commit: noop,
+            rejected, undelivered, readers: 0, readerIds: [], commit: noop,
         };
     }
+    const readerIds = targets.map(t => t.device_id)
+        .filter(id => senderKey.sentTo.includes(id) || delivered.includes(id));
 
     const encrypted = await encryptGroup(senderKey, plaintext);
     // Цепочка сохраняется ДО отправки — см. encryptGroup: повтор номера с
@@ -667,6 +719,7 @@ async function encryptForGroup(roomId, targets, plaintext) {
         rejected,
         undelivered,
         readers,
+        readerIds,
         commit: () => serialized(async () => {
             const current = await store.senderKeys.load(roomId);
             // Пока шла отправка, ключ мог смениться — тогда отметка не нужна.

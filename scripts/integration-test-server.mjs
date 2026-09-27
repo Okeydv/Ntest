@@ -114,7 +114,13 @@ const anon = client();
 const anonReg = await anon.req('POST', '/api/register/anonymous', {});
 await anon.req('POST', '/api/chats/join', { code });
 const anonChat = (await anon.req('GET', '/api/chats')).json.chats.find(c => c.room_id === created.json.chat.room_id);
-const anonMessage = (await anon.req('POST', '/api/messages', { chatId: anonChat.id, text: 'от гостя' })).json.message;
+// В комнату — только зашифрованное: устройства без ключей и условный
+// конверт каждому (проверяется сервер, а не крипта).
+await bob.req('POST', '/api/devices', { name: 'тест' });
+const anonDevice = (await anon.req('POST', '/api/devices', { name: 'тест' })).json.device.id;
+const roomDevices = (await anon.req('GET', `/api/chats/${anonChat.id}/devices`)).json.devices.filter(d => d.device_id !== anonDevice);
+const anonMessage = (await anon.req('POST', '/api/messages/encrypted', { chatId: anonChat.id, envelopes: roomDevices.map(d => ({
+    recipientDeviceId: d.device_id, envelopeType: 1, header: 'aA==', ciphertext: Buffer.from('от гостя').toString('base64') })) })).json.message;
 const sock = ioClient(BASE, { extraHeaders: { Cookie: bob.header() }, transports: ['websocket'], reconnection: false });
 const deleted = [];
 sock.on('messageDeleted', m => deleted.push(m.id));

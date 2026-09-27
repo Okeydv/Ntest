@@ -109,12 +109,17 @@ module.exports = function registerChatRoutes(app, ctx) {
                 [req.params.chatId, req.session.userId]);
             if (!chat) return res.status(404).json({ success: false, message: 'Чат не найден' });
             const devices = await resolveEnvelopeRecipients(chat);
-            // Имена участников — для окна сверки ключей: код безопасности
-            // строится на каждого собеседника, и подписать его нужно по-человечески.
+            // Участники — все, а не только те, у кого есть устройства: иначе
+            // собеседник без ключей пропадал бы молча, и клиент не мог бы
+            // сказать «у Марии нет устройства с шифрованием». Имена — и для
+            // этого, и для окна сверки ключей.
+            const participants = chat.room_id
+                ? await dbAll(
+                    `SELECT u.id, u.username FROM room_participants rp JOIN users u ON u.id = rp.user_id
+                     WHERE rp.room_id = $1 ORDER BY rp.id`, [chat.room_id])
+                : chat.is_bot ? [] : await dbAll('SELECT id, username FROM users WHERE id = $1', [chat.user_id]);
             const userIds = [...new Set(devices.map(d => d.user_id))];
-            const users = userIds.length
-                ? await dbAll('SELECT id, username FROM users WHERE id = ANY($1::int[])', [userIds])
-                : [];
+            const users = participants.filter(u => userIds.includes(u.id));
             res.json({
                 success: true,
                 // room_id нужен клиенту для sender keys: у каждого участника своя
@@ -122,6 +127,7 @@ module.exports = function registerChatRoutes(app, ctx) {
                 room_id: chat.room_id || null,
                 devices: devices.map(d => ({ device_id: d.id, user_id: d.user_id })),
                 users: users.map(u => ({ user_id: u.id, username: u.username })),
+                participants: participants.map(u => ({ user_id: u.id, username: u.username })),
             });
         } catch (error) {
             log.error({ err: error }, 'Chat devices error');

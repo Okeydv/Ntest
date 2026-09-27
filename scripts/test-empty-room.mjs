@@ -1,8 +1,8 @@
 // Пустая группа.
 //
-//   - сервер не принимает в комнату без собеседников ни текст, ни файл, ни
-//     зашифрованное сообщение, ни вложение, ни правку: шифровать там не для
-//     кого, и текст лёг бы на сервер открытым. Чат с ботом — не комната;
+//   - сервер не принимает в комнату открытый текст, открытый файл и правку
+//     (открытым — только боту), а в комнату без собеседников — и
+//     зашифрованное сообщение и вложение: шифровать там не для кого;
 //   - в пустой группе вместо ленты экран «Пригласите участников», поле
 //     ввода выключено; кто-то вошёл — поле включается само, без
 //     перезагрузки, и сообщения уходят зашифрованными;
@@ -74,7 +74,7 @@ const post = (path, body, headers = { 'Content-Type': 'application/json' }) => a
 }, [path, body, headers]);
 
 const plain = await post('/api/messages', { chatId: chat.id, text: 'секрет в пустой комнате' });
-check('открытый текст в пустую комнату — отказ', plain.status === 409 && plain.code === 'ROOM_EMPTY', JSON.stringify(plain));
+check('открытый текст в комнату — отказ (открытым только боту)', plain.status === 409 && plain.code === 'E2EE_REQUIRED', JSON.stringify(plain));
 const stored = (await db.query("SELECT count(*)::int AS n FROM messages WHERE text LIKE '%секрет в пустой%'")).rows[0].n;
 check('на сервере текста нет', stored === 0, String(stored));
 
@@ -85,7 +85,7 @@ const file = await alice.evaluate(async id => {
     const r = await fetch('/api/messages/file', { method: 'POST', headers: { 'X-CSRF-Token': await csrfToken() }, body: form });
     return { status: r.status, ...(await r.json()) };
 }, chat.id);
-check('файл в пустую комнату — отказ', file.status === 409 && file.code === 'ROOM_EMPTY', JSON.stringify(file));
+check('открытый файл в комнату — отказ', file.status === 409 && file.code === 'E2EE_REQUIRED', JSON.stringify(file));
 
 const blob = await alice.evaluate(async id => {
     const r = await fetch(`/api/blobs?chatId=${id}`, { method: 'POST',
@@ -144,7 +144,7 @@ const edit = await alice.evaluate(async id => {
         headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': await csrfToken() }, body: JSON.stringify({ text: 'новый секрет' }) });
     return { status: r.status, ...(await r.json()) };
 }, old);
-check('правка в опустевшей комнате — отказ', edit.status === 409 && edit.code === 'ROOM_EMPTY', JSON.stringify(edit));
+check('старое открытое сообщение в комнате не правится', edit.status === 409 && edit.code === 'E2EE_REQUIRED', JSON.stringify(edit));
 
 await alice.locator(BOT).first().click();
 await alice.waitForTimeout(800);
