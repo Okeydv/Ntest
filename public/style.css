@@ -2824,6 +2824,40 @@ dialog.modal::backdrop {
 .invite-setting select,
 .invite-setting input { width: 10rem; flex: none; }
 
+/* Закреплённые, «Без звука», архив. */
+.chat-marks { display: inline-flex; gap: 0.25rem; flex: none; color: var(--text-3); }
+.chat-marks .icon { width: 0.875rem; height: 0.875rem; }
+.chat-item.is-dragging { opacity: 0.5; }
+.chat-item.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.chat-item.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+/* Черта между закреплёнными и остальными — и в узком списке. */
+.chats-separator { height: 1px; margin: 0.375rem 0.75rem; background: var(--border-2); }
+.chat-badge.is-muted { background: var(--control); color: var(--text-2); box-shadow: none; }
+.archive-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    width: calc(100% - 1rem);
+    margin: 0.25rem 0.5rem;
+    padding: 0.625rem 0.75rem;
+    border: 1px dashed var(--border-2);
+    border-radius: var(--r-md);
+    background: none;
+    color: var(--text-2);
+    font: inherit;
+    font-size: var(--fs-sm);
+    cursor: pointer;
+}
+.archive-toggle .icon { width: 1rem; height: 1rem; }
+@media (min-width: 641px) {
+    .sidebar.is-compact .archive-toggle span { display: none; }
+    .sidebar.is-compact .chat-marks { display: none; }
+}
+.chat-menu-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; margin-bottom: 0.75rem; }
+.chat-menu-row .btn { flex-direction: column; gap: 0.25rem; padding: 0.625rem 0.25rem; font-size: var(--fs-xs); white-space: normal; }
+.icon-up { transform: rotate(90deg); }
+.icon-down { transform: rotate(-90deg); }
+
 /* Приватный режим: когда удалится аккаунт. */
 .anon-note {
     display: flex;

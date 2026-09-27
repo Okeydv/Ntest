@@ -21,6 +21,7 @@ module.exports = function registerChatRoutes(app, ctx) {
         try {
             const chats = await dbAll(`
                 SELECT c.id, c.name, c.avatar, c.is_bot, c.room_id, r.kind, me.role AS my_role,
+                       c.pin_position, c.muted, c.archived_at IS NOT NULL AS archived,
                        -- Сколько ждут одобрения — только администраторам.
                        CASE WHEN r.kind = 'direct' THEN EXISTS (SELECT 1 FROM blocks b
                             JOIN room_participants o ON o.room_id = c.room_id AND o.user_id <> c.user_id
@@ -46,7 +47,9 @@ module.exports = function registerChatRoutes(app, ctx) {
                     ORDER BY m.id DESC LIMIT 1
                 ) lm ON true
                 WHERE c.user_id = $1
-                ORDER BY lm.id DESC NULLS LAST
+                -- Закреплённые — сверху, в своём порядке; остальные — по
+                -- последнему сообщению.
+                ORDER BY c.pin_position NULLS LAST, lm.id DESC NULLS LAST
             `, [req.session.userId]);
             // «В сети» — если в сети хоть кто-то из собеседников; сколько их
             // всего — для подписи группы. Кто из них в сети сейчас — чтобы
@@ -790,6 +793,124 @@ module.exports = function registerChatRoutes(app, ctx) {
         } catch (error) {
             log.error({ err: error }, 'Delete chat error');
             res.status(500).json({ success: false, message: 'Ошибка удаления чата' });
+        }
+    });
+
+    /* ------------------------------------------------------------------
+       Закрепление, «Без звука», архив
+       ------------------------------------------------------------------ */
+
+    const MAX_PINNED = 5;
+    const pinsChanged = userId => io.to(`user:${userId}`).emit('chatListChanged');
+
+    /*
+     * Закрепить ({ pinned: true }) или открепить. Закреплённый встаёт
+     * последним среди закреплённых; открепили — остальные сдвигаются, дыр
+     * в порядке нет. Закрепить архивный — значит вернуть его из архива.
+     */
+    app.post('/api/chats/:chatId/pin', async (req, res) => {
+        if (!req.session.userId) return res.status(401).json({ success: false, message: 'Не авторизован' });
+        if (typeof (req.body && req.body.pinned) !== 'boolean') return res.status(400).json(BAD_FIELDS);
+        const userId = req.session.userId;
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+            // Два устройства закрепляют разом — по очереди.
+            await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`pins:${userId}`]);
+            const chat = (await client.query('SELECT id, pin_position FROM chats WHERE id = $1 AND user_id = $2',
+                [req.params.chatId, userId])).rows[0];
+            if (!chat) {
+                await client.query('ROLLBACK');
+                return res.status(404).json({ success: false, message: 'Чат не найден' });
+            }
+            if (req.body.pinned && chat.pin_position === null) {
+                const { n } = (await client.query(
+                    'SELECT count(*)::int AS n FROM chats WHERE user_id = $1 AND pin_position IS NOT NULL', [userId])).rows[0];
+                if (n >= MAX_PINNED) {
+                    await client.query('ROLLBACK');
+                    return res.status(409).json({ success: false, code: 'PIN_LIMIT', message: `Закрепить можно не больше ${MAX_PINNED} чатов` });
+                }
+                await client.query('UPDATE chats SET pin_position = $1, archived_at = NULL WHERE id = $2', [n + 1, chat.id]);
+            } else if (!req.body.pinned && chat.pin_position !== null) {
+                await client.query('UPDATE chats SET pin_position = NULL WHERE id = $1', [chat.id]);
+                await client.query(
+                    'UPDATE chats SET pin_position = pin_position - 1 WHERE user_id = $1 AND pin_position > $2',
+                    [userId, chat.pin_position]);
+            }
+            await client.query('COMMIT');
+            res.json({ success: true, pinned: req.body.pinned });
+            pinsChanged(userId);
+        } catch (error) {
+            await client.query('ROLLBACK').catch(() => {});
+            log.error({ err: error }, 'Pin chat error');
+            res.status(500).json({ success: false, message: 'Не удалось закрепить чат' });
+        } finally {
+            client.release();
+        }
+    });
+
+    // Новый порядок закреплённых: { order: [id чатов] } — ровно те же, что
+    // закреплены сейчас.
+    app.put('/api/chats/pins', async (req, res) => {
+        if (!req.session.userId) return res.status(401).json({ success: false, message: 'Не авторизован' });
+        const order = req.body && req.body.order;
+        if (!Array.isArray(order) || order.length > MAX_PINNED || !order.every(id => Number.isInteger(id) && id > 0)
+            || new Set(order).size !== order.length) {
+            return res.status(400).json(BAD_FIELDS);
+        }
+        const userId = req.session.userId;
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+            await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`pins:${userId}`]);
+            const pinned = (await client.query(
+                'SELECT id FROM chats WHERE user_id = $1 AND pin_position IS NOT NULL', [userId])).rows.map(r => r.id);
+            if (pinned.length !== order.length || !pinned.every(id => order.includes(id))) {
+                await client.query('ROLLBACK');
+                return res.status(409).json({ success: false, message: 'Закреплённые чаты изменились — обновите список' });
+            }
+            for (const [i, id] of order.entries()) {
+                await client.query('UPDATE chats SET pin_position = $1 WHERE id = $2 AND user_id = $3', [i + 1, id, userId]);
+            }
+            await client.query('COMMIT');
+            res.json({ success: true });
+            pinsChanged(userId);
+        } catch (error) {
+            await client.query('ROLLBACK').catch(() => {});
+            log.error({ err: error }, 'Reorder pins error');
+            res.status(500).json({ success: false, message: 'Не удалось изменить порядок' });
+        } finally {
+            client.release();
+        }
+    });
+
+    // «Без звука» ({ muted }) и архив ({ archived }): у каждого участника свои.
+    // В архив уходит и закреплённый — тогда он открепляется.
+    app.post('/api/chats/:chatId/flags', async (req, res) => {
+        if (!req.session.userId) return res.status(401).json({ success: false, message: 'Не авторизован' });
+        const { muted, archived } = req.body || {};
+        if ((muted !== undefined && typeof muted !== 'boolean') || (archived !== undefined && typeof archived !== 'boolean')
+            || (muted === undefined && archived === undefined)) {
+            return res.status(400).json(BAD_FIELDS);
+        }
+        const userId = req.session.userId;
+        try {
+            const chat = await dbGet('SELECT id, pin_position FROM chats WHERE id = $1 AND user_id = $2', [req.params.chatId, userId]);
+            if (!chat) return res.status(404).json({ success: false, message: 'Чат не найден' });
+            if (muted !== undefined) await dbRun('UPDATE chats SET muted = $1 WHERE id = $2', [muted, chat.id]);
+            if (archived !== undefined) {
+                await dbRun('UPDATE chats SET archived_at = CASE WHEN $1 THEN now() END, pin_position = CASE WHEN $1 THEN NULL ELSE pin_position END WHERE id = $2',
+                    [archived, chat.id]);
+                if (archived && chat.pin_position !== null) {
+                    await dbRun('UPDATE chats SET pin_position = pin_position - 1 WHERE user_id = $1 AND pin_position > $2',
+                        [userId, chat.pin_position]);
+                }
+            }
+            res.json({ success: true });
+            pinsChanged(userId);
+        } catch (error) {
+            log.error({ err: error }, 'Chat flags error');
+            res.status(500).json({ success: false, message: 'Не удалось изменить настройки чата' });
         }
     });
 

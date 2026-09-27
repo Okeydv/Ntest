@@ -25,6 +25,10 @@ const elements = {
     anonConfirmBtn: document.getElementById('anon-confirm-btn'),
     anonNote: document.getElementById('anon-note'),
     anonNoteText: document.getElementById('anon-note-text'),
+    pinChatBtn: document.getElementById('pin-chat-btn'),
+    muteChatBtn: document.getElementById('mute-chat-btn'),
+    archiveChatBtn: document.getElementById('archive-chat-btn'),
+    chatItemMenu: document.getElementById('chat-item-menu'),
     logoutBtn: document.getElementById('logout-btn'),
     jumpDown: document.getElementById('jump-down'),
     jumpDownCount: document.getElementById('jump-down-count'),
@@ -1229,6 +1233,192 @@ async function api(url, options = {}) {
     return data;
 }
 
+/* --- Закрепление, «Без звука», архив ---------------------------------------
+   Хранятся у записи чата на сервере — одинаковы на всех устройствах, другие
+   узнают событием chatListChanged. Закрепить можно до пяти; закреплённые
+   сверху в своём порядке, переставляются перетаскиванием, Alt+↑/↓ или
+   пунктами «Выше»/«Ниже». Архив прячет чат из списка, ничего не удаляя. */
+
+let archiveShown = false;
+
+async function chatListAction(chatId, action) {
+    const chat = chatsMeta.get(Number(chatId));
+    if (!chat) return false;
+    const request = action === 'pin'
+        ? api(`/api/chats/${chat.id}/pin`, { method: 'POST', body: JSON.stringify({ pinned: !chat.pin_position }) })
+        : api(`/api/chats/${chat.id}/flags`, { method: 'POST', body: JSON.stringify(
+            action === 'mute' ? { muted: !chat.muted } : { archived: !chat.archived }) });
+    const data = await request;
+    if (!data.success) {
+        showToast(data.message, 'error');
+        return false;
+    }
+    const done = {
+        pin: chat.pin_position ? 'Чат откреплён' : 'Чат закреплён',
+        mute: chat.muted ? 'Звук включён' : 'Без звука: уведомлений от этого чата не будет',
+        archive: chat.archived ? 'Чат вернулся из архива' : 'Чат в архиве — он внизу списка',
+    }[action];
+    await loadChats();
+    applyRoomState();
+    showToast(done, 'success');
+    return true;
+}
+
+function pinnedOrder() {
+    return [...chatsMeta.values()].filter(c => c.pin_position && !c.archived)
+        .sort((a, b) => a.pin_position - b.pin_position).map(c => c.id);
+}
+
+async function savePinnedOrder(order) {
+    const data = await api('/api/chats/pins', { method: 'PUT', body: JSON.stringify({ order }) });
+    if (!data.success) showToast(data.message, 'error');
+    await loadChats();
+    return data.success;
+}
+
+async function movePinned(chatId, step) {
+    const order = pinnedOrder();
+    const from = order.indexOf(chatId);
+    const to = from + step;
+    if (from < 0 || to < 0 || to >= order.length) return;
+    order.splice(to, 0, order.splice(from, 1)[0]);
+    if (await savePinnedOrder(order)) {
+        const item = elements.chatsList.querySelector(`.chat-item[data-id="${chatId}"]`);
+        if (item) {
+            elements.chatsList.querySelectorAll('.chat-item').forEach(i => { i.tabIndex = -1; });
+            item.tabIndex = 0;
+            item.focus();
+        }
+    }
+}
+
+let chatItemMenuShownAt = 0;
+
+function openChatItemMenu(item, x, y) {
+    const menu = elements.chatItemMenu;
+    const chat = chatsMeta.get(Number(item.dataset.id));
+    if (!chat) return;
+    menu.dataset.forChat = chat.id;
+    const order = pinnedOrder();
+    const at = order.indexOf(chat.id);
+    const set = (action, text, hidden = false) => {
+        const button = menu.querySelector(`[data-action="${action}"]`);
+        button.hidden = hidden;
+        button.querySelector('span').textContent = text;
+    };
+    set('pin', chat.pin_position ? 'Открепить' : 'Закрепить');
+    set('up', 'Выше', !chat.pin_position || at <= 0);
+    set('down', 'Ниже', !chat.pin_position || at < 0 || at >= order.length - 1);
+    set('mute', chat.muted ? 'Со звуком' : 'Без звука');
+    set('archive', chat.archived ? 'Из архива' : 'В архив');
+    chatItemMenuShownAt = Date.now();
+    if (menu.matches(':popover-open')) menu.hidePopover();
+    menu.showPopover();
+    const margin = 8;
+    menu.style.left = `${Math.max(margin, Math.min(x, window.innerWidth - menu.offsetWidth - margin))}px`;
+    menu.style.top = `${Math.max(margin, Math.min(y, window.innerHeight - menu.offsetHeight - margin))}px`;
+    menu.querySelector('.menu-item:not([hidden])').focus();
+}
+
+function hideChatItemMenu() {
+    if (elements.chatItemMenu.matches(':popover-open')) elements.chatItemMenu.hidePopover();
+}
+
+function setupChatItemMenu() {
+    const list = elements.chatsList;
+    const menu = elements.chatItemMenu;
+    list.addEventListener('contextmenu', event => {
+        const item = event.target.closest && event.target.closest('.chat-item');
+        if (!item || !item.closest('#chats-list')) return;
+        event.preventDefault();
+        openChatItemMenu(item, event.clientX, event.clientY);
+    });
+    // Долгое нажатие на телефоне. Меню ручное: светлое закрытие сработало
+    // бы на том же отпускании пальца.
+    let pressTimer = null;
+    list.addEventListener('touchstart', event => {
+        const item = event.target.closest && event.target.closest('.chat-item');
+        if (!item) return;
+        const touch = event.touches[0];
+        pressTimer = setTimeout(() => {
+            if (navigator.vibrate) navigator.vibrate(10);
+            openChatItemMenu(item, touch.clientX, touch.clientY);
+        }, LONG_PRESS_MS);
+    }, { passive: true });
+    for (const type of ['touchend', 'touchmove', 'touchcancel']) {
+        list.addEventListener(type, () => clearTimeout(pressTimer), { passive: true });
+    }
+    // Отпускание после долгого нажатия — не «открыть чат».
+    list.addEventListener('click', event => {
+        if (Date.now() - chatItemMenuShownAt < 600 && menu.matches(':popover-open')) {
+            event.stopPropagation();
+            event.preventDefault();
+        }
+    }, true);
+    document.addEventListener('pointerdown', event => {
+        if (!menu.contains(event.target)) hideChatItemMenu();
+    }, true);
+    menu.addEventListener('keydown', event => {
+        const items = [...menu.querySelectorAll('.menu-item:not([hidden])')];
+        const index = items.indexOf(document.activeElement);
+        if (event.key === 'Escape') {
+            hideChatItemMenu();
+            list.querySelector(`.chat-item[data-id="${menu.dataset.forChat}"]`)?.focus();
+        } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+            event.preventDefault();
+            items[(index + (event.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length].focus();
+        }
+    });
+    list.addEventListener('scroll', hideChatItemMenu, { passive: true });
+    menu.addEventListener('click', async event => {
+        const button = event.target.closest('[data-action]');
+        if (!button) return;
+        const chatId = Number(menu.dataset.forChat);
+        hideChatItemMenu();
+        const action = button.dataset.action;
+        if (action === 'up' || action === 'down') await movePinned(chatId, action === 'up' ? -1 : 1);
+        else await chatListAction(chatId, action);
+    });
+}
+
+// Перетаскивание закреплённых мышью.
+function setupPinDrag() {
+    const list = elements.chatsList;
+    let dragged = null;
+    const clear = () => list.querySelectorAll('.drop-before, .drop-after').forEach(el => el.classList.remove('drop-before', 'drop-after'));
+    list.addEventListener('dragstart', event => {
+        const item = event.target.closest && event.target.closest('.chat-item.is-pinned');
+        if (!item) return;
+        dragged = item;
+        item.classList.add('is-dragging');
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('text/plain', item.dataset.id);
+    });
+    list.addEventListener('dragover', event => {
+        const target = event.target.closest && event.target.closest('.chat-item.is-pinned');
+        if (!dragged || !target || target === dragged) return;
+        event.preventDefault();
+        clear();
+        const r = target.getBoundingClientRect();
+        target.classList.add(event.clientY < r.top + r.height / 2 ? 'drop-before' : 'drop-after');
+    });
+    list.addEventListener('drop', event => {
+        const target = event.target.closest && event.target.closest('.chat-item.is-pinned');
+        if (!dragged || !target || target === dragged) return;
+        event.preventDefault();
+        const order = pinnedOrder().filter(id => id !== Number(dragged.dataset.id));
+        const after = target.classList.contains('drop-after');
+        order.splice(order.indexOf(Number(target.dataset.id)) + (after ? 1 : 0), 0, Number(dragged.dataset.id));
+        clear();
+        savePinnedOrder(order);
+    });
+    list.addEventListener('dragend', () => {
+        if (dragged) dragged.classList.remove('is-dragging');
+        dragged = null;
+        clear();
+    });
+}
+
 /* --- Приватный режим -------------------------------------------------------
    Когда удалится аккаунт — строкой над кнопками профиля; за 10 минут до
    потолка (7 дней с создания) — предупреждение. Срок вышел — сервер уже
@@ -1576,6 +1766,14 @@ function setupEventListeners() {
         }
     });
 
+    for (const [button, action] of [[elements.pinChatBtn, 'pin'], [elements.muteChatBtn, 'mute'], [elements.archiveChatBtn, 'archive']]) {
+        button.addEventListener('click', () => withBusy(button, async () => {
+            if (await chatListAction(currentChatId, action)) closeModal(elements.chatMenuModal);
+        }));
+    }
+    setupChatItemMenu();
+    setupPinDrag();
+
     elements.chatMenuMembersBtn.addEventListener('click', () => {
         closeModal(elements.chatMenuModal);
         openMembersModal();
@@ -1882,6 +2080,11 @@ function setupEventListeners() {
     });
 
     socket.on('joinRequestDecided', onJoinRequestDecided);
+    // Закрепили, переставили, отправили в архив на другом устройстве.
+    socket.on('chatListChanged', async () => {
+        await loadChats();
+        applyRoomState();
+    });
     socket.on('directRequestsChanged', loadDirectRequests);
     socket.on('directRequestAccepted', onDirectRequestAccepted);
     socket.on('joinRequestsChanged', onJoinRequestsChanged);
@@ -1984,16 +2187,20 @@ async function loadChats() {
         return;
     }
 
-    elements.chatsList.innerHTML = '';
     if (!data.chats.length) {
+        elements.chatsList.innerHTML = '';
         renderChatsPlaceholder('Чатов пока нет');
         return;
     }
 
     // for...of, а не forEach: превью зашифрованных чатов лежит в IndexedDB,
-    // и его чтение асинхронно.
+    // и его чтение асинхронно. Строки собираются целиком и ставятся разом:
+    // два одновременных loadChats иначе перемешали бы список.
     chatsMeta.clear();
     presenceHidden = Boolean(data.presenceHidden);
+    const rows = [];
+    const archived = [];
+    let pinnedCount = 0;
     for (const chat of data.chats) {
         chatsMeta.set(chat.id, chat);
         if (chat.peer_ids && chat.peer_ids.length === 1) peerLastSeen.set(Number(chat.peer_ids[0]), chat.last_seen || null);
@@ -2001,8 +2208,36 @@ async function loadChats() {
         // Открытый чат, который сейчас на экране, — прочитан, даже если
         // отметка ещё в пути.
         if (chat.id === currentChatId && document.visibilityState === 'visible') chat.unread = 0;
-        elements.chatsList.appendChild(await chatListItem(chat));
+        if (chat.archived) {
+            archived.push(chat);
+            continue;
+        }
+        if (chat.pin_position) pinnedCount++;
+        rows.push(await chatListItem(chat));
     }
+    // Закреплённые сверху и отделены чертой.
+    if (pinnedCount && rows.length > pinnedCount) {
+        const line = document.createElement('div');
+        line.className = 'chats-separator';
+        line.setAttribute('role', 'separator');
+        rows.splice(pinnedCount, 0, line);
+    }
+    if (archived.length) {
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'archive-toggle';
+        toggle.setAttribute('aria-expanded', String(archiveShown));
+        const label = document.createElement('span');
+        label.textContent = `Архив · ${archived.length}`;
+        toggle.append(createIcon('i-archive'), label);
+        toggle.addEventListener('click', () => {
+            archiveShown = !archiveShown;
+            loadChats();
+        });
+        rows.push(toggle);
+        if (archiveShown) for (const chat of archived) rows.push(await chatListItem(chat));
+    }
+    elements.chatsList.replaceChildren(...rows);
     updateTitleCounter();
     refreshPresenceDots();
     refreshChatListTabStop();
@@ -2011,6 +2246,10 @@ async function loadChats() {
 async function chatListItem(chat) {
     const div = chatItemElement(chat, await chatPreview(chat));
     div.dataset.roomId = chat.room_id || '';
+    if (chat.pin_position) {
+        div.classList.add('is-pinned');
+        div.draggable = true;
+    }
     div.classList.toggle('active', chat.id === currentChatId);
     div.querySelector('.chat-avatar-small')?.classList.toggle('is-online', !chat.is_bot && chatOnline(chat));
     div.addEventListener('click', () => openChat(chat.id, chat.room_id, chat.name, chat.avatar, chat.online, chat.is_bot));
@@ -2033,8 +2272,11 @@ async function refreshOpenChatItem(message) {
     chat.unread = 0;
     const fresh = await chatListItem(chat);
     if (!item.isConnected) return;
+    if (chat.pin_position || chat.archived) return item.replaceWith(fresh);
     item.remove();
-    elements.chatsList.prepend(fresh);
+    const line = elements.chatsList.querySelector('.chats-separator');
+    if (line) line.after(fresh);
+    else elements.chatsList.prepend(fresh);
 }
 
 /**
@@ -2220,6 +2462,9 @@ function applyRoomState() {
     elements.chatMenuInviteBtn.hidden = !admin;
     elements.roomEmptyInvite.hidden = !admin;
     elements.chatMenuMembersBtn.hidden = !group;
+    elements.pinChatBtn.querySelector('span').textContent = meta && meta.pin_position ? 'Открепить' : 'Закрепить';
+    elements.muteChatBtn.querySelector('span').textContent = meta && meta.muted ? 'Со звуком' : 'Без звука';
+    elements.archiveChatBtn.querySelector('span').textContent = meta && meta.archived ? 'Из архива' : 'В архив';
     const direct = Boolean(meta && meta.kind === 'direct');
     elements.blockPeerBtn.hidden = !direct || !meta.peer_count;
     elements.blockPeerLabel.textContent = direct && meta.peer_blocked ? 'Разблокировать' : 'Заблокировать';
@@ -2948,7 +3193,7 @@ function applyReceipts({ room_id, read, delivered }) {
 // Непрочитанное по всем чатам — в заголовке вкладки.
 const BASE_TITLE = document.title;
 function updateTitleCounter() {
-    const total = [...elements.chatsList.querySelectorAll('.chat-badge:not(.is-requests)')]
+    const total = [...elements.chatsList.querySelectorAll('.chat-badge:not(.is-requests):not(.is-muted)')]
         .reduce((sum, badge) => sum + (Number(badge.textContent) || 0), 0);
     document.title = total ? `(${total}) ${BASE_TITLE}` : BASE_TITLE;
 }
@@ -4690,6 +4935,17 @@ function setupChatListKeyboard() {
             event.preventDefault();
             item.click();
             return;
+        } else if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+            event.preventDefault();
+            const r = item.getBoundingClientRect();
+            openChatItemMenu(item, r.left + 24, r.bottom - 8);
+            return;
+        }
+        // Alt+↑/↓ — переставить закреплённый.
+        if (event.altKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown') && item.classList.contains('is-pinned')) {
+            event.preventDefault();
+            movePinned(Number(item.dataset.id), event.key === 'ArrowUp' ? -1 : 1);
+            return;
         }
         if (!next) return;
         event.preventDefault();
@@ -4781,6 +5037,9 @@ function setupNotifications() {
 
 function notifyNewMessage(message) {
     if (!notificationsOn() || isOwnMessage(message) || message.message_type === 'system') return;
+    const chat = [...chatsMeta.values()].find(c => (message.room_id ? Number(c.room_id) === Number(message.room_id)
+        : c.id === Number(message.chat_id)));
+    if (chat && chat.muted) return;
     const open = isForOpenChat(message);
     if (open && document.visibilityState === 'visible') return;
     try {
@@ -5598,6 +5857,20 @@ function chatItemElement(chat, previewText) {
     const top = document.createElement('div');
     top.className = 'chat-top';
     top.appendChild(name);
+    // Закреплён, без звука: значком и словами для экранного диктора.
+    const marks = [chat.pin_position && ['i-pin', 'закреплён'], chat.muted && ['i-bell-off', 'без звука']].filter(Boolean);
+    if (marks.length) {
+        const box = document.createElement('span');
+        box.className = 'chat-marks';
+        for (const [icon, label] of marks) {
+            const mark = createIcon(icon);
+            mark.setAttribute('role', 'img');
+            mark.setAttribute('aria-label', label);
+            mark.removeAttribute('aria-hidden');
+            box.appendChild(mark);
+        }
+        top.appendChild(box);
+    }
     const at = chat.last_at ? new Date(chat.last_at) : null;
     if (at && !Number.isNaN(at.getTime())) {
         const time = document.createElement('time');
@@ -5618,7 +5891,7 @@ function chatItemElement(chat, previewText) {
     div.append(avatar, info);
     if (chat.unread > 0) {
         const badge = document.createElement('div');
-        badge.className = 'chat-badge';
+        badge.className = chat.muted ? 'chat-badge is-muted' : 'chat-badge';
         badge.textContent = String(chat.unread);
         div.appendChild(badge);
     }
