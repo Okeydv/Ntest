@@ -4194,6 +4194,8 @@ async function handleNewMessage(message) {
             await loadChats();
             renderChatStatus(currentChatIsBot);
             applyRoomState();
+            // Состав сменился — и то, для кого шифровать.
+            refreshEncryptionBadge(currentChatId, currentChatIsBot);
         } else {
             refreshOpenChatItem(message);
         }
