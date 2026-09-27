@@ -1,0 +1,9 @@
+# Railway: основной сервер (корень репозитория). Сервис ключей описан в
+# e2ee-key-server/railway.toml — см. README, «Railway: два сервиса».
+[deploy]
+startCommand = "npm start"
+# /healthz отвечает 200, только когда живы база и сервер ключей.
+healthcheckPath = "/healthz"
+healthcheckTimeout = 120
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
