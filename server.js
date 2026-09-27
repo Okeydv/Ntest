@@ -33,6 +33,7 @@ const e2eeProxy = require('./lib/e2ee-proxy');
 const { createDevicesRouter } = require('./lib/devices');
 const { recordSecurityEvent } = require('./lib/security-events');
 const { emitToPeers } = require('./lib/presence');
+const { startPlaintextPurge } = require('./lib/plaintext-purge');
 const {
     checkTorConnection,
     getTorHiddenServiceConfig,
@@ -426,4 +427,7 @@ databaseReady.then(() => server.listen(PORT, HOST, async () => {
     const sweepUploads = () => sweepOrphanUploads(UPLOADS_DIR, { dbAll, ttlMs: ORPHAN_UPLOAD_TTL_MS })
         .catch(error => log.error({ err: error }, 'Uploads sweep error'));
     setInterval(sweepUploads, ORPHAN_UPLOAD_TTL_MS).unref();
+
+    // Старый открытый текст в комнатах — по сроку из migrations/009.
+    startPlaintextPurge(io);
 }));

@@ -1951,6 +1951,21 @@ input.is-invalid:focus {
     margin-bottom: 1.25rem;
 }
 
+.plaintext-notice {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.625rem 1.5rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--layer-2);
+    font-size: var(--fs-sm);
+    color: var(--text-2);
+}
+.plaintext-notice .icon { flex: none; width: 1rem; height: 1rem; color: var(--danger); }
+@media (max-width: 640px) {
+    .plaintext-notice { padding-inline: 1rem; }
+}
+
 /* Пустая группа: вместо ленты — приглашение. Если история уже есть,
    приглашение встаёт полосой над полем ввода. */
 .room-empty {

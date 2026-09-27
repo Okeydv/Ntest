@@ -66,6 +66,7 @@ const elements = {
     sidebar: document.querySelector('.sidebar'),
     mainContent: document.querySelector('.main-content'),
     roomEmpty: document.getElementById('room-empty'),
+    plaintextNotice: document.getElementById('plaintext-notice'),
     roomEmptyInvite: document.getElementById('room-empty-invite'),
     chatBackBtn: document.getElementById('chat-back-btn'),
     chatName: document.getElementById('chat-name'),
@@ -1794,6 +1795,7 @@ async function openChat(chatId, roomId, name, avatar, online, isBot) {
     resetNewBelow();
     if (!reopening) restoreDraft(chatId);
     showChatExpiry(null);
+    showPlaintextNotice(null);
     applyRoomState();
     // Скелетон — только если история грузится заметно долго.
     const skeletonTimer = setTimeout(renderMessagesSkeleton, 150);
@@ -1812,6 +1814,7 @@ async function openChat(chatId, roomId, name, avatar, online, isBot) {
     if (!data.success) return;
     const page = data.messages || [];
     showChatExpiry(data.expirySeconds);
+    showPlaintextNotice(data.plaintextPurge);
     historyPaging.hasMore = Boolean(data.hasMore);
     historyPaging.oldestId = page.length ? page[0].id : null;
     // Удалённое и исчезнувшее, пока устройство было не в сети, стираем и
@@ -1838,6 +1841,28 @@ async function openChat(chatId, roomId, name, avatar, online, isBot) {
     }
     scheduleReadMark();
     applyRoomState();
+}
+
+/* --- Старый открытый текст ---------------------------------------------------
+   Сообщения, написанные в комнате без шифрования (до него), сервер сотрёт
+   в назначенный день (migrations/009, lib/plaintext-purge.js). До этого
+   дня в чате — предупреждение: сохранить нужное можно только сейчас. */
+
+
+function showPlaintextNotice(notice) {
+    const box = elements.plaintextNotice;
+    const date = notice ? new Date(notice.purgeAfter) : null;
+    if (!notice || !notice.count || Number.isNaN(date.getTime())) {
+        box.hidden = true;
+        box.replaceChildren();
+        return;
+    }
+    const n = notice.count;
+    const words = ['старое сообщение', 'старых сообщения', 'старых сообщений'][pluralForm(n)];
+    const when = date <= new Date() ? 'в ближайшее время' : dayWithYearFormat.format(date);
+    box.replaceChildren(createIcon('i-alert'),
+        `Здесь ${n} ${words} без шифрования. Они будут удалены с сервера ${when} — сохраните нужное.`);
+    box.hidden = false;
 }
 
 /* --- Пустая группа ---------------------------------------------------------

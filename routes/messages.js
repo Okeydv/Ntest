@@ -9,6 +9,7 @@ const { sanitizeText } = require('../lib/privacy');
 const { onlyStrings, BAD_FIELDS, getCurrentTime, getSocketRoomKey } = require('../lib/helpers');
 const { receiptsFor, statusFor } = require('../lib/read-state');
 const { E2EE_REQUIRED, ROOM_EMPTY, canWriteTo } = require('../lib/rooms');
+const { plaintextNotice } = require('../lib/plaintext-purge');
 const { BLOB_ID_RE, MAX_BLOBS_PER_MESSAGE, purgeMessageContent } = require('../lib/storage');
 
 
@@ -469,9 +470,11 @@ module.exports = function registerMessageRoutes(app, ctx) {
             const expirySeconds = before === null
                 ? (await ctx.disappearingMessagesManager.getChatSettings(chat.id))?.default_message_expiry || null
                 : undefined;
+            // Старый открытый текст в комнате ждёт чистки — плашка в чате.
+            const plaintextPurge = before === null ? await plaintextNotice(chat.room_id) : undefined;
 
             if (messages.length === 0) {
-                return res.json({ success: true, messages: [], hasMore: false, chat, expirySeconds });
+                return res.json({ success: true, messages: [], hasMore: false, chat, expirySeconds, plaintextPurge });
             }
 
             const messageIds = messages.map(m => m.id);
@@ -556,7 +559,7 @@ module.exports = function registerMessageRoutes(app, ctx) {
                 reply_to: m.reply_to_id ? { id: m.reply_to_id, text: m.reply_to_text, deleted: Number(m.reply_to_deleted) === 1, sender_username: m.reply_to_sender_username, sender_avatar: m.reply_to_sender_avatar } : null
             }));
 
-            res.json({ success: true, messages, hasMore, chat, keyEnvelopes, expirySeconds });
+            res.json({ success: true, messages, hasMore, chat, keyEnvelopes, expirySeconds, plaintextPurge });
         } catch (error) {
             log.error({ err: error }, 'Get messages error');
             res.status(500).json({ success: false, message: 'Ошибка загрузки сообщений' });
