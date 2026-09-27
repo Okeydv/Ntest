@@ -253,7 +253,17 @@ module.exports = function registerAuthRoutes(app, ctx) {
         await dbRun('DELETE FROM chats WHERE user_id = $1', [userId]);
         await dbRun('DELETE FROM room_participants WHERE user_id = $1', [userId]);
         await dbRun('DELETE FROM reactions WHERE user_id = $1', [userId]);
+        // Его ждущие запросы на вход уйдут вместе с ним (ON DELETE CASCADE),
+        // но администраторы должны увидеть это сразу.
+        const requested = await dbAll(
+            "SELECT DISTINCT room_id FROM join_requests WHERE user_id = $1 AND status = 'pending'", [userId]);
         await dbRun('DELETE FROM users WHERE id = $1', [userId]);
+        // Был последним администратором — им станет самый давний участник.
+        for (const { room_id: roomId } of rooms) {
+            await ctx.promoteIfNeeded(roomId);
+            ctx.notifyMembersChanged(roomId);
+        }
+        for (const { room_id: roomId } of requested) await ctx.notifyAdmins(roomId);
     }
 
     // Анонимный аккаунт живёт, пока жива его сессия (4 часа). Кнопкой «Выйти»

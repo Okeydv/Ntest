@@ -54,7 +54,7 @@ async function openRoom(page, name) {
 async function newRoom(owner, name, ...guests) {
     const code = await owner.evaluate(async name => {
         const c = await api('/api/chats', { method: 'POST', body: JSON.stringify({ name }) });
-        return (await api(`/api/chats/invite/${c.chat.id}`)).code;
+        return (await api(`/api/chats/${c.chat.id}/link`, { method: 'POST', body: JSON.stringify({ requireApproval: false }) })).code;
     }, name);
     for (const g of guests) await g.evaluate(c => api('/api/chats/join', { method: 'POST', body: JSON.stringify({ code: c }) }), code);
 }

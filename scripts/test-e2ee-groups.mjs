@@ -94,7 +94,7 @@ await register(alice, 'alice');
 watchPosts(alice);
 const created = await alice.page.evaluate(async () => {
     const c = await api('/api/chats', { method: 'POST', body: JSON.stringify({ name: 'Группа' }) });
-    return { roomId: c.chat.room_id, code: (await api(`/api/chats/invite/${c.chat.id}`)).code };
+    return { roomId: c.chat.room_id, code: (await api(`/api/chats/${c.chat.id}/link`, { method: 'POST', body: JSON.stringify({ requireApproval: false }) })).code };
 });
 const ROOM = created.roomId;
 
@@ -189,7 +189,7 @@ check('а то, что было до его появления, — нет',
 
 const pair = await alice.page.evaluate(async () => {
     const c = await api('/api/chats', { method: 'POST', body: JSON.stringify({ name: 'Вдвоём' }) });
-    return { roomId: c.chat.room_id, code: (await api(`/api/chats/invite/${c.chat.id}`)).code };
+    return { roomId: c.chat.room_id, code: (await api(`/api/chats/${c.chat.id}/link`, { method: 'POST', body: JSON.stringify({ requireApproval: false }) })).code };
 });
 await dave.page.evaluate(c => api('/api/chats/join', { method: 'POST', body: JSON.stringify({ code: c }) }), pair.code);
 await openRoom(alice.page, pair.roomId);

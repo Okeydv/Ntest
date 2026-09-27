@@ -112,7 +112,7 @@ async function login(name, password = 'password123') {
 async function roomChat(owner, name, ...guests) {
     for (const member of [owner, ...guests]) await member.device();
     const created = await owner.req('POST', '/api/chats', { name });
-    const code = (await owner.req('GET', `/api/chats/invite/${created.json.chat.id}`)).json.code;
+    const code = (await owner.req('POST', `/api/chats/${created.json.chat.id}/link`, { requireApproval: false })).json.code;
     const chats = { [owner.userId]: created.json.chat.id };
     for (const g of guests) {
         await g.req('POST', '/api/chats/join', { code });
@@ -304,17 +304,17 @@ check('брошенный анонимный аккаунт удалён убо�
 const liveLeft = await db.query('SELECT id FROM users WHERE id = $1', [liveReg.json.user.id]);
 check('а тот, чья сессия жива, — на месте', liveLeft.rows.length === 1);
 
-/* ------------------------- вход по коду приглашения ------------------------- */
+/* ------------------------- вход по ссылке-приглашению ------------------------- */
 
 const host = await register('host');
 const guest = await register('guest');
 const room = await host.req('POST', '/api/chats', { name: 'По приглашению' });
 const hostChat = room.json.chat.id;
-const firstCode = (await host.req('GET', `/api/chats/invite/${hostChat}`)).json.code;
+const firstCode = (await host.req('POST', `/api/chats/${hostChat}/link`, { requireApproval: false })).json.code;
 await guest.req('POST', '/api/chats/join', { code: firstCode });
 const systemLines = async () => (await host.req('GET', `/api/messages/${hostChat}`)).json.messages
     .filter(m => m.message_type === 'system').map(m => m.text);
-check('вошедший по коду виден всем: системное сообщение', (await systemLines()).some(t => t.startsWith('guest вошёл')),
+check('вошедший по ссылке виден всем: системное сообщение', (await systemLines()).some(t => t.startsWith('guest вошёл')),
     JSON.stringify(await systemLines()));
 const joinLine = (await guest.req('GET', `/api/messages/${(await guest.req('GET', '/api/chats')).json.chats
     .find(c => c.room_id === room.json.chat.room_id).id}`)).json.messages.find(m => m.message_type === 'system');
@@ -326,31 +326,33 @@ check('вошедший не может стереть, переписать и�
     (await systemLines()).some(t => t.startsWith('guest вошёл')) && !(await systemLines()).includes('ничего не было'),
     JSON.stringify(await systemLines()));
 
-const reset = await host.req('POST', `/api/chats/${hostChat}/invite`, { action: 'reset' });
-check('код можно сменить', reset.json?.success === true && reset.json.code && reset.json.code !== firstCode);
+const reset = await host.req('POST', `/api/chats/${hostChat}/link`, { requireApproval: false });
+check('ссылку можно сменить', reset.json?.success === true && reset.json.code && reset.json.code !== firstCode);
+check('в ссылке 12 знаков без похожих (0/O, 1/I/L)', /^[A-HJKMNP-Z2-9]{12}$/.test(reset.json.code), reset.json.code);
 const late = await register('late');
 const byOld = await late.req('POST', '/api/chats/join', { code: firstCode });
-check('по старому коду больше не войти', byOld.json?.success === false, byOld.json?.message);
-const byNew = await late.req('POST', '/api/chats/join', { code: reset.json.code });
-check('по новому — можно', byNew.json?.success === true);
-check('смена кода видна в переписке', (await systemLines()).some(t => t.includes('сменил(а) код')));
+check('по старой ссылке больше не войти', byOld.json?.success === false && byOld.json.code === 'LINK_INVALID', byOld.json?.message);
+const byNew = await late.req('POST', '/api/chats/join', { code: `https://nyxo.example/join#${reset.json.code.toLowerCase()}` });
+check('по новой — можно, в том числе полной ссылкой в нижнем регистре', byNew.json?.success === true, JSON.stringify(byNew.json));
+check('смена ссылки видна в переписке', (await systemLines()).some(t => t.includes('сменил(а) ссылку-приглашение')));
 
-const disabled = await host.req('POST', `/api/chats/${hostChat}/invite`, { action: 'disable' });
-check('приглашение можно отключить', disabled.json?.success === true && disabled.json.code === null);
-const shown = await host.req('GET', `/api/chats/invite/${hostChat}`);
-check('отключённое показывается как отсутствие кода', shown.json?.success === true && shown.json.code === null);
+const disabled = await host.req('DELETE', `/api/chats/${hostChat}/link`);
+check('ссылку можно отключить', disabled.json?.success === true && disabled.json.link === null);
+const shown = await host.req('GET', `/api/chats/${hostChat}/link`);
+check('отключённая показывается как отсутствие ссылки', shown.json?.success === true && shown.json.link === null);
+check('отключение видно в переписке', (await systemLines()).some(t => t.includes('отключил(а) ссылку-приглашение')));
 const lateChats = (await late.req('GET', '/api/chats')).json.chats;
 await late.req('DELETE', `/api/chats/${lateChats.find(c => c.room_id === room.json.chat.room_id).id}`);
 check('выход из чата тоже виден', (await systemLines()).some(t => t.startsWith('late вышел')));
 
-// Перебор кода: после десяти неудачных попыток — стоп.
+// Перебор ссылки: после десяти неудачных попыток — стоп.
 const guesser = await register('guesser');
 let lastGuess;
-for (let i = 0; i < 11; i++) lastGuess = await guesser.req('POST', '/api/chats/join', { code: `ZZZZZ${i}` });
-check('перебор кода упирается в лимит', lastGuess.status === 429, `${lastGuess.status} ${lastGuess.json?.message}`);
+for (let i = 0; i < 11; i++) lastGuess = await guesser.req('POST', '/api/chats/join', { code: `ZZZZZZZZZZZ${i}` });
+check('перебор ссылки упирается в лимит', lastGuess.status === 429, `${lastGuess.status} ${lastGuess.json?.message}`);
 const honest = await register('honest');
 for (let i = 0; i < 3; i++) {
-    const r = await host.req('POST', `/api/chats/${hostChat}/invite`, { action: 'reset' });
+    const r = await host.req('POST', `/api/chats/${hostChat}/link`, { requireApproval: false });
     const joined = await honest.req('POST', '/api/chats/join', { code: r.json.code });
     if (i === 2) check('удачные входы в лимит не считаются', joined.json?.success === true);
 }
@@ -361,7 +363,7 @@ const anonGuest = client();
 await anonGuest.req('POST', '/api/register/anonymous');
 const anonRoom = await host.req('POST', '/api/chats', { name: 'С анонимом' });
 const anonRoomChat = anonRoom.json.chat.id;
-const anonCode = (await host.req('GET', `/api/chats/invite/${anonRoomChat}`)).json.code;
+const anonCode = (await host.req('POST', `/api/chats/${anonRoomChat}/link`, { requireApproval: false })).json.code;
 await anonGuest.req('POST', '/api/chats/join', { code: anonCode });
 const anonName = (await anonGuest.req('GET', '/api/auth')).json.user.username;
 await anonGuest.req('POST', '/api/logout');

@@ -78,19 +78,19 @@ check('двойной клик по «Зарегистрироваться» —
 const loggedIn = await alice.page.evaluate(() => Boolean(currentUser));
 check('и регистрация прошла без ошибки', loggedIn);
 
-/* ------------------------- код приглашения ------------------------- */
+/* ------------------------- ссылка-приглашение ------------------------- */
 
 const code = await alice.page.evaluate(async () => {
     const c = await api('/api/chats', { method: 'POST', body: JSON.stringify({ name: 'Время' }) });
-    return (await api(`/api/chats/invite/${c.chat.id}`)).code;
+    return (await api(`/api/chats/${c.chat.id}/link`, { method: 'POST', body: JSON.stringify({ requireApproval: false }) })).code;
 });
 const bob = await openApp('bob', 'Asia/Tokyo');
 await register(bob, 'bob');
 const messy = ` ${code.slice(0, 3).toLowerCase()}-${code.slice(3).toLowerCase()} `;
 const joined = await bob.page.evaluate(c => api('/api/chats/join', { method: 'POST', body: JSON.stringify({ code: c }) }), messy);
-check('код приглашения принимается в нижнем регистре, с пробелами и дефисом', joined.success === true, `«${messy}»`);
+check('код ссылки принимается в нижнем регистре, с пробелами и дефисом', joined.success === true, `«${messy}»`);
 const placeholder = await bob.page.getAttribute('#join-chat-code', 'placeholder');
-check('пример в поле — 6 символов, как настоящий код', placeholder.length === 6 && code.length === 6, placeholder);
+check('пример в поле — ссылка /join# с кодом из 12 знаков, как настоящая', /\/join#[A-Z0-9]{12}$/.test(placeholder) && code.length === 12, placeholder);
 
 /* ------------------------- время в поясе читающего ------------------------- */
 

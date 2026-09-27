@@ -44,7 +44,7 @@ const register = (app, u) => app.page.evaluate(async u => {
 }, u);
 const createRoom = (app, name) => app.page.evaluate(async name => {
     const c = await api('/api/chats', { method: 'POST', body: JSON.stringify({ name }) });
-    return { roomId: c.chat.room_id, code: (await api(`/api/chats/invite/${c.chat.id}`)).code };
+    return { roomId: c.chat.room_id, code: (await api(`/api/chats/${c.chat.id}/link`, { method: 'POST', body: JSON.stringify({ requireApproval: false }) })).code };
 }, name);
 const join = (app, code) => app.page.evaluate(c => api('/api/chats/join', { method: 'POST', body: JSON.stringify({ code: c }) }), code);
 const openRoom = async (page, roomId) => {

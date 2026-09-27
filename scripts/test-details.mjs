@@ -62,7 +62,7 @@ const carol = await openApp('carol');
 await register(carol, 'carol');
 const code = await alice.evaluate(async () => {
     const c = await api('/api/chats', { method: 'POST', body: JSON.stringify({ name: 'Втроём' }) });
-    return (await api(`/api/chats/invite/${c.chat.id}`)).code;
+    return (await api(`/api/chats/${c.chat.id}/link`, { method: 'POST', body: JSON.stringify({ requireApproval: false }) })).code;
 });
 for (const p of [bob, carol]) await p.evaluate(c => api('/api/chats/join', { method: 'POST', body: JSON.stringify({ code: c }) }), code);
 for (const p of [alice, bob, carol]) await openRoom(p);

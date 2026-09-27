@@ -103,7 +103,7 @@ const alice = await openApp('alice');
 await register(alice, 'alice', 'alice@example.com');
 const code = await alice.page.evaluate(async () => {
     const c = await api('/api/chats', { method: 'POST', body: JSON.stringify({ name: 'Сверка' }) });
-    return (await api(`/api/chats/invite/${c.chat.id}`)).code;
+    return (await api(`/api/chats/${c.chat.id}/link`, { method: 'POST', body: JSON.stringify({ requireApproval: false }) })).code;
 });
 const bob = await openApp('bob');
 const bobInfo = await register(bob, 'bob', 'bob@example.com');

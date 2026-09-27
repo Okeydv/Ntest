@@ -72,7 +72,7 @@ check('пул одноразовых prekeys опубликован', await alic
 
 const chat = await alice.page.evaluate(async () => {
     const created = await api('/api/chats', { method: 'POST', body: JSON.stringify({ name: 'Тайная комната' }) });
-    const invite = await api(`/api/chats/invite/${created.chat.id}`);
+    const invite = await api(`/api/chats/${created.chat.id}/link`, { method: 'POST', body: JSON.stringify({ requireApproval: false }) });
     return { chatId: created.chat.id, code: invite.code };
 });
 
@@ -91,9 +91,8 @@ check('устройство B зарегистрировано и вошло в 
 // ботом: у него нет других устройств, шифровать там не для кого, и клиент
 // штатно уходит на открытый путь.
 //
-// Выбираем по наличию room_id, а не по названию: у присоединившегося
-// запись чата называется по пригласившему («Чат с alice»), а не так, как
-// её назвал автор.
+// Выбираем по наличию room_id, а не по названию: так не зависит от того,
+// как группу назвал её автор.
 const ROOM_CHAT = '.chat-item[data-room-id]:not([data-room-id=""])';
 const openFromList = async (app) => {
     await app.page.reload({ waitUntil: 'networkidle' });

@@ -114,6 +114,7 @@ await page.click('#new-chat-btn');
 await page.click('#new-chat-modal .modal-body', { position: { x: 5, y: 5 } });
 check('клик внутри окна не закрывает', await isOpen(page, 'new-chat-modal'));
 
+await page.click('.choice-card[data-path="group"]');
 await page.fill('#new-chat-name', '');
 await page.click('#create-chat-btn');
 const fieldError = await page.textContent('#new-chat-modal [data-msg-for="new-chat-name"]');
@@ -150,7 +151,7 @@ check('обычный тост прячется сам', !(await page.evaluate((
 
 const code = await page.evaluate(async () => {
     const c = await api('/api/chats', { method: 'POST', body: JSON.stringify({ name: 'Меню' }) });
-    return (await api(`/api/chats/invite/${c.chat.id}`)).code;
+    return (await api(`/api/chats/${c.chat.id}/link`, { method: 'POST', body: JSON.stringify({ requireApproval: false }) })).code;
 });
 const bob = await openApp('bob');
 await register(bob, 'bob');
@@ -209,25 +210,34 @@ check('клик мимо закрывает меню', !(await menuOpen()));
 
 /* ------------------------- приглашение ------------------------- */
 
-check('вход по коду виден в переписке строкой, не пузырём', await page.evaluate(() =>
-    [...document.querySelectorAll('#chat-messages .message-system')].some(el => el.textContent === 'bob в чате · по коду приглашения')));
+check('вход по ссылке виден в переписке строкой, не пузырём', await page.evaluate(() =>
+    [...document.querySelectorAll('#chat-messages .message-system')].some(el => el.textContent === 'bob в группе · по ссылке')));
 await page.click('#get-chat-code-btn');
 await page.waitForFunction(() => document.getElementById('invite-modal').open);
 const shownCode = await page.textContent('#invite-code-display');
+check('ссылка-приглашение с QR-кодом и условиями', await page.evaluate(() =>
+    !document.getElementById('invite-qr').hidden && document.getElementById('invite-qr').width > 100
+    && document.getElementById('invite-terms').textContent === 'Бессрочная · вход без одобрения'),
+    await page.textContent('#invite-terms'));
+await page.selectOption('#invite-expiry', '86400');
+await page.fill('#invite-limit', '5');
+await page.check('#invite-approval');
 await page.click('#reset-invite-btn');
 await page.waitForTimeout(700);
 const newCode = await page.textContent('#invite-code-display');
-check('«Сменить код» показывает новый код', /^[A-Z0-9]{6}$/.test(newCode) && newCode !== shownCode, `${shownCode} → ${newCode}`);
+check('«Сменить ссылку» показывает новую', /\/join#[A-Z0-9]{12}$/.test(newCode) && newCode !== shownCode, `${shownCode} → ${newCode}`);
+check('с новыми условиями: срок, лимит, одобрение', /^Действует до .+ · в группе до 5 участников · вход после одобрения$/
+    .test(await page.textContent('#invite-terms')), await page.textContent('#invite-terms'));
 await page.click('#disable-invite-btn');
 await page.waitForTimeout(700);
-check('«Отключить приглашение» прячет код и объясняет', await page.evaluate(() =>
-    document.getElementById('invite-code-box').hidden && document.getElementById('invite-text').textContent.includes('отключено')));
+check('«Отключить» прячет ссылку и объясняет', await page.evaluate(() =>
+    document.getElementById('invite-code-box').hidden && document.getElementById('invite-text').textContent.startsWith('Ссылки нет')));
 await page.keyboard.press('Escape');
 await page.waitForTimeout(300);
 check('и то и другое видно в переписке', await page.evaluate(() => {
     const lines = [...document.querySelectorAll('#chat-messages .message-system')].map(el => el.textContent);
     // О себе — «Вы …»: себе строка в третьем лице читалась бы странно.
-    return lines.includes('Вы сменили код приглашения') && lines.includes('Вы отключили приглашение');
+    return lines.includes('Вы сменили ссылку-приглашение') && lines.includes('Вы отключили ссылку-приглашение');
 }));
 
 /* ------------------------- цитата ответа ------------------------- */
@@ -303,7 +313,7 @@ check('закрыли страницу во время отмены — удал
 
 const other = await bob.page.evaluate(async () => {
     const c = await api('/api/chats', { method: 'POST', body: JSON.stringify({ name: 'Второй' }) });
-    return { roomId: c.chat.room_id, code: (await api(`/api/chats/invite/${c.chat.id}`)).code };
+    return { roomId: c.chat.room_id, code: (await api(`/api/chats/${c.chat.id}/link`, { method: 'POST', body: JSON.stringify({ requireApproval: false }) })).code };
 });
 await page.goto(BASE, { waitUntil: 'networkidle' });
 await page.evaluate(c => api('/api/chats/join', { method: 'POST', body: JSON.stringify({ code: c }) }), other.code);

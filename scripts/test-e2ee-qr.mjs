@@ -47,7 +47,7 @@ const register = (page, u) => page.evaluate(async u => {
 const pairUp = async (a, b, name) => {
     const code = await a.evaluate(async name => {
         const c = await api('/api/chats', { method: 'POST', body: JSON.stringify({ name }) });
-        return (await api(`/api/chats/invite/${c.chat.id}`)).code;
+        return (await api(`/api/chats/${c.chat.id}/link`, { method: 'POST', body: JSON.stringify({ requireApproval: false }) })).code;
     }, name);
     await b.evaluate(c => api('/api/chats/join', { method: 'POST', body: JSON.stringify({ code: c }) }), code);
 };
@@ -83,7 +83,7 @@ await pairUp(carol.page, dave.page, 'Кэрол и Дейв');
 const headers = (await fetch(BASE + '/')).headers.get('permissions-policy');
 check('камера разрешена только своей странице', /camera=\(self\)/.test(headers), headers);
 
-await openSafety(dave.page, 'Чат с carol');   // у вошедшего по коду чат назван по собеседнику
+await openSafety(dave.page, 'Кэрол и Дейв');   // у группы одно название на всех
 const daveNumber = await shownNumber(dave.page);
 const davePng = await qrPng(dave.page);
 fs.writeFileSync(path.join(tmp, 'dave.png'), davePng);
@@ -140,7 +140,7 @@ await pairUp(erinPage, dave.page, 'Эрин и Дейв');
 await erinPage.waitForTimeout(500);
 await erinContext.close();
 
-await openSafety(dave.page, 'Чат с erin');
+await openSafety(dave.page, 'Эрин и Дейв');
 const forErin = await qrPng(dave.page);
 fs.writeFileSync(path.join(tmp, 'for-erin.png'), forErin);
 const video = path.join(tmp, 'camera.y4m');

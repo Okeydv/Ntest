@@ -120,7 +120,7 @@ const beforeChat = await req(b, 'GET', `/api/keys/bundle/${userA}`);
 check('без общего чата bundle не отдаётся', beforeChat.status === 404, 'status ' + beforeChat.status);
 // Ключи — только собеседникам: заводим общий чат.
 const shared = await req(a1, 'POST', '/api/chats', { name: 'Общий' });
-const code = (await req(a1, 'GET', `/api/chats/invite/${shared.json.chat.id}`)).json.code;
+const code = (await req(a1, 'POST', `/api/chats/${shared.json.chat.id}/link`, { requireApproval: false })).json.code;
 await req(b, 'POST', '/api/chats/join', { code });
 const bundle = await req(b, 'GET', `/api/keys/bundle/${userA}`);
 const got = (bundle.json?.bundles ?? []).map(x => x.device_id).sort((x,y)=>x-y);

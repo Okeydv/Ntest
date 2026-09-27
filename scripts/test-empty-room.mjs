@@ -51,6 +51,7 @@ await register(alice, 'alice');
 
 // Создаём группу так же, как человек: через окно «Новый чат».
 await alice.click('#new-chat-btn');
+await alice.click('.choice-card[data-path="group"]');
 await alice.fill('#new-chat-name', 'Пусто');
 await alice.click('#create-chat-btn');
 await alice.waitForTimeout(1500);
@@ -58,11 +59,16 @@ const chat = await alice.evaluate(() => ({ id: currentChatId, room: currentRoomI
 let state = await view(alice);
 check('новая группа — экран «Пригласите участников» вместо ленты', state.empty && !state.strip && !state.feed, JSON.stringify(state));
 check('поле ввода и скрепка выключены', !state.input && !state.attach, JSON.stringify(state));
-check('на экране — кнопка кода приглашения', await alice.isVisible('#room-empty-invite'));
+check('на экране — кнопка ссылки-приглашения', await alice.isVisible('#room-empty-invite'));
 await alice.click('#room-empty-invite');
 await alice.waitForFunction(() => document.getElementById('invite-modal').open);
+check('ссылки поначалу нет — окно предлагает её создать', await alice.evaluate(() =>
+    document.getElementById('invite-code-box').hidden && document.getElementById('reset-invite-btn').textContent === 'Создать ссылку'));
+await alice.uncheck('#invite-approval');
+await alice.click('#reset-invite-btn');
+await alice.waitForFunction(() => !document.getElementById('invite-code-box').hidden);
 const code = (await alice.textContent('#invite-code-display')).trim();
-check('кнопка открывает код приглашения', /\S{4,}/.test(code), code);
+check('кнопка создаёт ссылку /join#…', /\/join#[A-Z0-9]{12}$/.test(code), code);
 await alice.keyboard.press('Escape');
 
 /* ------------------------- сервер ------------------------- */

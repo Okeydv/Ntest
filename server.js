@@ -323,6 +323,12 @@ app.get('/link.my', (req, res) => {
     serveIndexWithNonce(req, res);
 });
 
+// Ссылка-приглашение: /join#<код>. Код — после #, на сервер он не уходит
+// и в журналы не попадает; страницу открывает обычный клиент.
+app.get('/join', (req, res) => {
+    serveIndexWithNonce(req, res);
+});
+
 function serveIndexWithNonce(req, res) {
     const nonce = res.locals.cspNonce || '';
     const indexPath = path.join(ROOT, 'public', 'index.html');

@@ -116,6 +116,35 @@ const elements = {
     resetInviteBtn: document.getElementById('reset-invite-btn'),
     disableInviteBtn: document.getElementById('disable-invite-btn'),
     copyInviteBtn: document.getElementById('copy-invite-btn'),
+    inviteTerms: document.getElementById('invite-terms'),
+    inviteQr: document.getElementById('invite-qr'),
+    inviteExpiry: document.getElementById('invite-expiry'),
+    inviteLimit: document.getElementById('invite-limit'),
+    inviteApproval: document.getElementById('invite-approval'),
+    newChatBack: document.getElementById('new-chat-back'),
+    newChatTitle: document.getElementById('new-chat-modal-title'),
+    newChatName: document.getElementById('new-chat-name'),
+    joinChatCode: document.getElementById('join-chat-code'),
+    joinPreview: document.getElementById('join-preview'),
+    joinPreviewAvatar: document.getElementById('join-preview-avatar'),
+    joinPreviewName: document.getElementById('join-preview-name'),
+    joinPreviewMeta: document.getElementById('join-preview-meta'),
+    joinSentText: document.getElementById('join-sent-text'),
+    joinSentCancel: document.getElementById('join-sent-cancel'),
+    joinSentClose: document.getElementById('join-sent-close'),
+    myRequests: document.getElementById('my-requests'),
+    joinRequestsBar: document.getElementById('join-requests-bar'),
+    joinRequestsBarText: document.getElementById('join-requests-bar-text'),
+    chatMenuMembersBtn: document.getElementById('chat-menu-members-btn'),
+    deleteChatLabel: document.getElementById('delete-chat-label'),
+    membersModal: document.getElementById('members-modal'),
+    membersTitle: document.getElementById('members-title'),
+    membersList: document.getElementById('members-list'),
+    membersInviteBtn: document.getElementById('members-invite-btn'),
+    requestsSection: document.getElementById('requests-section'),
+    requestsList: document.getElementById('requests-list'),
+    groupNameInput: document.getElementById('group-name-input'),
+    groupNameSave: document.getElementById('group-name-save'),
     messageMenu: document.getElementById('message-menu'),
     replyMessageBtn: document.getElementById('reply-message-btn'),
     editMessageBtn: document.getElementById('edit-message-btn'),
@@ -1035,6 +1064,8 @@ function showApp() {
     startExpirySweep();
     elements.authScreen.classList.add('hidden');
     elements.app.classList.remove('hidden');
+    loadMyRequests();
+    setTimeout(offerJoinFromUrl);
 }
 
 let toastTimer = null;
@@ -1347,12 +1378,27 @@ function setupEventListeners() {
         }
     });
 
-    elements.newChatBtn.addEventListener('click', () => openModal(elements.newChatModal));
+    elements.newChatBtn.addEventListener('click', () => openNewChat());
     if (elements.emptyNewChatBtn) {
-        elements.emptyNewChatBtn.addEventListener('click', () => openModal(elements.newChatModal));
+        elements.emptyNewChatBtn.addEventListener('click', () => openNewChat());
     }
-    elements.createChatBtn.addEventListener('click', createChat);
-    elements.joinChatBtn.addEventListener('click', joinChat);
+    for (const card of elements.newChatModal.querySelectorAll('.choice-card')) {
+        card.addEventListener('click', () => showNewChatPane(card.dataset.path));
+    }
+    elements.newChatBack.addEventListener('click', () => showNewChatPane('choice'));
+    elements.createChatBtn.addEventListener('click', () => withBusy(elements.createChatBtn, createChat));
+    elements.newChatName.addEventListener('keydown', event => {
+        if (event.key === 'Enter' && !event.isComposing) withBusy(elements.createChatBtn, createChat);
+    });
+    elements.joinChatBtn.addEventListener('click', () => withBusy(elements.joinChatBtn, joinChat));
+    elements.joinChatCode.addEventListener('input', resetJoinPreview);
+    elements.joinChatCode.addEventListener('keydown', event => {
+        if (event.key === 'Enter' && !event.isComposing) withBusy(elements.joinChatBtn, joinChat);
+    });
+    elements.joinSentCancel.addEventListener('click', () => withBusy(elements.joinSentCancel, async () => {
+        if (await cancelJoinRequest(sentRequestId)) closeModal(elements.newChatModal);
+    }));
+    elements.joinSentClose.addEventListener('click', () => closeModal(elements.newChatModal));
 
     elements.chatMenuBtn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -1389,30 +1435,32 @@ function setupEventListeners() {
 
     elements.deleteChatBtn.addEventListener('click', deleteChat);
 
-    elements.roomEmptyInvite.addEventListener('click', () => elements.getChatCodeBtn.click());
-    elements.getChatCodeBtn.addEventListener('click', async () => {
-        if (!currentChatId) return;
-        const data = await api(`/api/chats/invite/${currentChatId}`);
-        if (data.success) {
-            showInviteCode(data.code);
-            openModal(elements.inviteModal);
-        } else {
-            showToast(data.message, 'error');
+    elements.roomEmptyInvite.addEventListener('click', () => openInviteModal());
+    elements.getChatCodeBtn.addEventListener('click', () => openInviteModal());
+    elements.resetInviteBtn.addEventListener('click', () => withBusy(elements.resetInviteBtn, saveInviteLink));
+    elements.disableInviteBtn.addEventListener('click', () => withBusy(elements.disableInviteBtn, disableInviteLink));
+    elements.copyInviteBtn.addEventListener('click', async () => {
+        try {
+            await navigator.clipboard.writeText(elements.inviteCodeDisplay.textContent);
+            showToast('Ссылка скопирована', 'success');
+        } catch {
+            window.getSelection().selectAllChildren(elements.inviteCodeDisplay);
+            showToast('Скопируйте выделенную ссылку', 'info');
         }
     });
 
-    const updateInvite = action => withBusy(action === 'reset' ? elements.resetInviteBtn : elements.disableInviteBtn, async () => {
-        const data = await api(`/api/chats/${currentChatId}/invite`, { method: 'POST', body: JSON.stringify({ action }) });
-        if (!data.success) return showToast(data.message, 'error');
-        showInviteCode(data.code);
-        showToast(data.code ? 'Код сменён, старый больше не действует' : 'Приглашение отключено', 'success');
+    elements.chatMenuMembersBtn.addEventListener('click', () => {
+        closeModal(elements.chatMenuModal);
+        openMembersModal();
     });
-    elements.resetInviteBtn.addEventListener('click', () => updateInvite('reset'));
-    elements.disableInviteBtn.addEventListener('click', () => updateInvite('disable'));
-
-    elements.copyInviteBtn.addEventListener('click', () => {
-        navigator.clipboard.writeText(elements.inviteCodeDisplay.textContent);
-        showToast('Код скопирован!', 'success');
+    elements.joinRequestsBar.addEventListener('click', () => openMembersModal());
+    elements.membersInviteBtn.addEventListener('click', () => {
+        closeModal(elements.membersModal);
+        openInviteModal();
+    });
+    elements.groupNameSave.addEventListener('click', () => withBusy(elements.groupNameSave, renameGroup));
+    elements.groupNameInput.addEventListener('keydown', event => {
+        if (event.key === 'Enter' && !event.isComposing) withBusy(elements.groupNameSave, renameGroup);
     });
 
     elements.profileBtn.addEventListener('click', async () => {
@@ -1578,7 +1626,7 @@ function setupEventListeners() {
 
     elements.chatMenuInviteBtn.addEventListener('click', () => {
         closeModal(elements.chatMenuModal);
-        elements.getChatCodeBtn.click();
+        openInviteModal();
     });
 
     elements.editMessageBtn.addEventListener('click', () => {
@@ -1703,6 +1751,15 @@ function setupEventListeners() {
         if (!e2ee || !e2ee.isReady() || device.id === e2eeDeviceId) return;
         notifyNewDevices([device]);
         e2ee.knownOwnDevices().then(known => e2ee.rememberOwnDevices([...(known || []), device.id]));
+    });
+
+    socket.on('joinRequestDecided', onJoinRequestDecided);
+    socket.on('joinRequestsChanged', onJoinRequestsChanged);
+    socket.on('membersChanged', onMembersChanged);
+    socket.on('removedFromChat', onRemovedFromChat);
+    socket.on('chatRenamed', ({ room_id: roomId, name }) => {
+        for (const chat of chatsMeta.values()) if (Number(chat.room_id) === Number(roomId)) chat.name = name;
+        applyRoomState();
     });
 
     socket.on('chatExpiryChanged', ({ room_id, expirySeconds }) => {
@@ -1918,7 +1975,6 @@ async function openChat(chatId, roomId, name, avatar, online, isBot) {
     currentChatId = chatId;
     currentRoomId = roomId;
     currentChatIsBot = Boolean(isBot);
-    elements.chatMenuInviteBtn.hidden = currentChatIsBot;
     // Расшифрованные вложения прошлого чата больше не нужны в памяти.
     if (e2ee) e2ee.releaseAttachments();
     refreshEncryptionBadge(chatId, isBot);
@@ -2027,6 +2083,23 @@ function applyRoomState() {
     if (!currentChatId) return;
     const meta = currentChatMeta();
     elements.chatMessages.classList.toggle('is-group', Boolean(meta && meta.peer_count > 1));
+    // Что можно в группе — по роли: ссылкой и запросами ведает администратор.
+    const group = Boolean(meta && meta.kind === 'group');
+    const admin = group && meta.my_role === 'admin';
+    elements.getChatCodeBtn.hidden = !admin;
+    elements.chatMenuInviteBtn.hidden = !admin;
+    elements.roomEmptyInvite.hidden = !admin;
+    elements.chatMenuMembersBtn.hidden = !group;
+    elements.deleteChatLabel.textContent = group ? 'Выйти из группы' : 'Удалить чат';
+    const pending = admin ? Number(meta.pending_requests) || 0 : 0;
+    elements.joinRequestsBar.hidden = pending === 0;
+    elements.joinRequestsBarText.textContent = pending
+        ? `Ждут одобрения: ${pending} ${['человек', 'человека', 'человек'][pluralForm(pending)]}` : '';
+    // Группу переименовали — шапка следом.
+    if (meta && meta.name && elements.chatName.textContent !== meta.name) {
+        elements.chatName.textContent = meta.name;
+        elements.chatAvatar.textContent = meta.name.charAt(0).toUpperCase();
+    }
     const empty = currentRoomIsEmpty();
     const history = Boolean(elements.chatMessages.querySelector('.message'));
     elements.roomEmpty.hidden = !empty;
@@ -2693,7 +2766,7 @@ function atChatBottom() {
 async function sendReadMark(kind, chatId, upTo) {
     const data = await api(`/api/chats/${chatId}/${kind}`, { method: 'POST', body: JSON.stringify({ upTo }) }).catch(() => null);
     if (data && data.success && kind === 'read') {
-        const badge = elements.chatsList.querySelector(`.chat-item[data-id="${chatId}"] .chat-badge`);
+        const badge = elements.chatsList.querySelector(`.chat-item[data-id="${chatId}"] .chat-badge:not(.is-requests)`);
         if (badge && data.unread === 0) badge.remove();
         else if (badge) badge.textContent = String(data.unread);
         updateTitleCounter();
@@ -2735,7 +2808,7 @@ function applyReceipts({ room_id, read, delivered }) {
 // Непрочитанное по всем чатам — в заголовке вкладки.
 const BASE_TITLE = document.title;
 function updateTitleCounter() {
-    const total = [...elements.chatsList.querySelectorAll('.chat-badge')]
+    const total = [...elements.chatsList.querySelectorAll('.chat-badge:not(.is-requests)')]
         .reduce((sum, badge) => sum + (Number(badge.textContent) || 0), 0);
     document.title = total ? `(${total}) ${BASE_TITLE}` : BASE_TITLE;
 }
@@ -3191,17 +3264,6 @@ function isOwnMessage(message) {
         && message.sent !== 0 && message.sent !== false;
 }
 
-/** Код приглашения в окне; null — приглашение отключено. */
-function showInviteCode(code) {
-    elements.inviteCodeBox.hidden = !code;
-    elements.inviteCodeDisplay.textContent = code || '';
-    elements.inviteText.textContent = code
-        ? 'Поделитесь этим кодом с друзьями:'
-        : 'Приглашение отключено: по старому коду войти нельзя.';
-    elements.resetInviteBtn.textContent = code ? 'Сменить код' : 'Включить с новым кодом';
-    elements.disableInviteBtn.hidden = !code;
-}
-
 /*
  * Системная строка пишется сервером в третьем лице («alice включил(а)…»).
  * О себе — «Вы включили…».
@@ -3210,6 +3272,28 @@ function showInviteCode(code) {
 // включил(а)…»). Человеку — без «(а)»: о других — событие и имя через
 // точку, о себе — «Вы включили…».
 const SYSTEM_LINES = [
+    // Группы: вход по ссылке, запросы, роли, название. Второе имя (кто
+    // впустил, кого назначили) сравнивается с собой — «впустили вы».
+    [/^(.+) вошёл\(ла\) в группу по ссылке, впустил\(а\) (.+)$/,
+        (name, self, admin, me) => (self ? `Вы в группе · по ссылке · одобрено: ${admin}`
+            : admin === me ? `${name} в группе · по ссылке, впустили вы` : `${name} в группе · по ссылке · одобрено: ${admin}`)],
+    [/^(.+) вошёл\(ла\) в группу по ссылке$/, (name, self) => (self ? 'Вы в группе · по ссылке' : `${name} в группе · по ссылке`)],
+    [/^(.+) просится в группу по ссылке$/, (name, self) => (self ? 'Вы попросились в группу' : `${name} просится в группу`)],
+    [/^(.+) создал\(а\) ссылку-приглашение$/, (name, self) => (self ? 'Вы создали ссылку-приглашение' : `Ссылка-приглашение создана · ${name}`)],
+    [/^(.+) сменил\(а\) ссылку-приглашение$/, (name, self) => (self ? 'Вы сменили ссылку-приглашение' : `Ссылка-приглашение изменена · ${name}`)],
+    [/^(.+) отключил\(а\) ссылку-приглашение$/, (name, self) => (self ? 'Вы отключили ссылку-приглашение' : `Ссылка-приглашение отключена · ${name}`)],
+    [/^(.+) назначил\(а\) администратором: (.+)$/,
+        (name, self, target, me) => (self ? `Вы назначили администратором: ${target}`
+            : target === me ? `Вы теперь администратор · назначение: ${name}` : `${target} — администратор · назначение: ${name}`)],
+    [/^(.+) снял\(а\) права администратора: (.+)$/,
+        (name, self, target, me) => (self && target === me ? 'Вы больше не администратор'
+            : self ? `Вы сняли права администратора: ${target}`
+                : target === me ? `Вы больше не администратор · ${name}` : `${target} больше не администратор · ${name}`)],
+    [/^(.+) удалил\(а\) из группы: (.+)$/,
+        (name, self, target) => (self ? `Вы удалили из группы: ${target}` : `${target} больше не в группе · удаление: ${name}`)],
+    [/^(.+) теперь администратор$/, (name, self) => (self ? 'Вы теперь администратор' : `${name} теперь администратор`)],
+    [/^(.+) переименовал\(а\) группу: (.+)$/,
+        (name, self, title) => (self ? `Вы переименовали группу: «${title}»` : `Группа переименована: «${title}» · ${name}`)],
     [/^(.+) вошёл\(ла\) в чат по коду приглашения$/,
         (name, self) => (self ? 'Вы вошли в чат по коду приглашения' : `${name} в чате · по коду приглашения`)],
     [/^(.+) вышел\(ла\) из чата$/, (name, self) => (self ? 'Вы вышли из чата' : `${name} больше не в чате`)],
@@ -3227,7 +3311,7 @@ function systemLineText(text) {
     const me = currentUser && currentUser.username;
     for (const [pattern, render] of SYSTEM_LINES) {
         const match = pattern.exec(text);
-        if (match) return render(match[1], match[1] === me, match[2]);
+        if (match) return render(match[1], match[1] === me, match[2], me);
     }
     return text;
 }
@@ -4574,11 +4658,43 @@ function notifyNewMessage(message) {
     }
 }
 
+/* --- Новый чат: три пути ----------------------------------------------------
+   Сначала выбор — личный чат, группа или вход по приглашению, — потом шаг
+   выбранного пути. «Назад» возвращает к выбору. */
+
+const NEW_CHAT_TITLES = {
+    choice: 'Новый чат', direct: 'Личный чат', group: 'Новая группа', join: 'Вход по приглашению', sent: 'Вход по приглашению',
+};
+
+function showNewChatPane(pane) {
+    for (const el of elements.newChatModal.querySelectorAll('[data-pane]')) el.hidden = el.dataset.pane !== pane;
+    elements.newChatBack.hidden = pane === 'choice' || pane === 'sent';
+    elements.newChatTitle.textContent = NEW_CHAT_TITLES[pane];
+    clearFieldErrors(elements.newChatModal);
+    const focus = pane === 'group' ? elements.newChatName
+        : pane === 'join' ? elements.joinChatCode
+            : pane === 'sent' ? elements.joinSentClose
+                : elements.newChatModal.querySelector('.choice-card:not([hidden])');
+    if (focus) focus.focus();
+}
+
+function openNewChat(pane = 'choice') {
+    resetJoinPreview();
+    openModal(elements.newChatModal);
+    showNewChatPane(pane);
+}
+
+// Открыть чат по id — после loadChats(), когда всё о нём уже известно.
+function openChatById(chatId) {
+    const chat = chatsMeta.get(Number(chatId));
+    if (chat) openChat(chat.id, chat.room_id, chat.name, chat.avatar, chat.online, chat.is_bot);
+}
+
 async function createChat() {
     clearFieldErrors(elements.newChatModal);
-    const input = document.getElementById('new-chat-name');
+    const input = elements.newChatName;
     const name = input.value.trim();
-    if (!name) return setFieldError('new-chat-name', 'Введите название чата');
+    if (!name) return setFieldError('new-chat-name', 'Введите название группы');
 
     const data = await api('/api/chats', {
         method: 'POST',
@@ -4587,38 +4703,420 @@ async function createChat() {
     if (data.success) {
         input.value = '';
         closeModal(elements.newChatModal);
-        showToast('Чат создан', 'success');
+        showToast('Группа создана. Теперь позовите участников по ссылке', 'success');
         await loadChats();
-        openChat(data.chat.id, data.chat.room_id, data.chat.name, data.chat.avatar, 0, 0);
+        openChatById(data.chat.id);
     } else {
         setFieldError('new-chat-name', data.message);
     }
 }
 
+/* --- Вход по ссылке --------------------------------------------------------
+   Сначала — куда ведёт ссылка (название, сколько участников, нужно ли
+   одобрение), и только вторым нажатием — вход или запрос. Ссылку
+   /join#код, открытую в браузере, приложение подставляет само. */
+
+// Код, для которого показан предпросмотр; другой текст в поле — новый предпросмотр.
+let joinPreviewFor = null;
+
+function resetJoinPreview() {
+    joinPreviewFor = null;
+    elements.joinPreview.hidden = true;
+    elements.joinChatBtn.textContent = 'Продолжить';
+}
+
+function showJoinPreview(preview) {
+    const members = `${preview.members} ${['участник', 'участника', 'участников'][pluralForm(preview.members)]}`;
+    elements.joinPreviewAvatar.textContent = preview.name.charAt(0).toUpperCase();
+    elements.joinPreviewName.textContent = preview.name;
+    elements.joinPreviewMeta.textContent = preview.member ? `${members} · вы уже в группе`
+        : `${members} · ${preview.require_approval ? 'вход после одобрения администратора' : 'вход сразу'}`;
+    elements.joinPreview.hidden = false;
+    elements.joinChatBtn.textContent = preview.member ? 'Открыть' : preview.require_approval ? 'Попросить войти' : 'Войти';
+}
+
 async function joinChat() {
     clearFieldErrors(elements.newChatModal);
-    const input = document.getElementById('join-chat-code');
+    const input = elements.joinChatCode;
     const code = input.value.trim();
-    if (!code) return setFieldError('join-chat-code', 'Введите код приглашения');
+    if (!code) return setFieldError('join-chat-code', 'Вставьте ссылку-приглашение');
 
-    const data = await api('/api/chats/join', {
-        method: 'POST',
-        body: JSON.stringify({ code }),
-    });
-    if (data.success) {
-        input.value = '';
-        closeModal(elements.newChatModal);
-        showToast('Вы присоединились к чату', 'success');
-        await loadChats();
-        openChat(data.chat.id, data.chat.room_id, data.chat.name, data.chat.avatar, 0, 0);
-    } else {
-        setFieldError('join-chat-code', data.message);
+    if (joinPreviewFor !== code) {
+        const data = await api('/api/chats/join', { method: 'POST', body: JSON.stringify({ code, preview: true }) });
+        if (!data.success) return setFieldError('join-chat-code', data.message);
+        joinPreviewFor = code;
+        showJoinPreview(data.preview);
+        return;
     }
+    const data = await api('/api/chats/join', { method: 'POST', body: JSON.stringify({ code }) });
+    if (!data.success) {
+        resetJoinPreview();
+        return setFieldError('join-chat-code', data.message);
+    }
+    input.value = '';
+    resetJoinPreview();
+    if (data.pending) {
+        showJoinSent(data.request);
+        loadMyRequests();
+        return;
+    }
+    closeModal(elements.newChatModal);
+    await loadChats();
+    const chat = chatsMeta.get(Number(data.chat.id));
+    showToast(chat ? `Вы в группе «${chat.name}»` : 'Вы в группе', 'success');
+    openChatById(data.chat.id);
+}
+
+// Ссылка-приглашение, с которой открыли приложение (/join#код). Код
+// забирается сразу и из адресной строки убирается: в истории браузера
+// ему делать нечего.
+const joinCodeFromUrl = location.pathname === '/join' && location.hash.length > 1
+    ? decodeURIComponent(location.hash.slice(1)) : '';
+if (location.pathname === '/join') history.replaceState(history.state, '', '/');
+let joinCodeFromUrlUsed = false;
+
+function offerJoinFromUrl() {
+    if (!joinCodeFromUrl || joinCodeFromUrlUsed) return;
+    joinCodeFromUrlUsed = true;
+    openNewChat('join');
+    elements.joinChatCode.value = joinCodeFromUrl;
+    withBusy(elements.joinChatBtn, joinChat);
+}
+
+/* --- Запрос отправлен ------------------------------------------------------
+   Свои ждущие запросы видны над списком чатов, пока их не решат: там же
+   их можно отменить. Решение приходит событием joinRequestDecided. */
+
+let sentRequestId = null;
+let myRequests = [];
+
+function showJoinSent(request) {
+    sentRequestId = request.id;
+    elements.joinSentText.textContent = `Вы войдёте в «${request.room_name}», когда администратор группы одобрит запрос. `
+        + 'Окно можно закрыть: запрос виден над списком чатов, там же его можно отменить.';
+    showNewChatPane('sent');
+}
+
+async function loadMyRequests() {
+    const data = await api('/api/join-requests');
+    if (!data.success) return;
+    myRequests = data.requests;
+    renderMyRequests();
+}
+
+function renderMyRequests() {
+    const box = elements.myRequests;
+    box.hidden = myRequests.length === 0;
+    const title = document.createElement('h4');
+    title.className = 'my-requests-title';
+    title.textContent = 'Запросы на вход';
+    box.replaceChildren(title, ...myRequests.map(request => {
+        const row = document.createElement('div');
+        row.className = 'my-request';
+        const text = document.createElement('span');
+        text.className = 'my-request-text';
+        const name = document.createElement('strong');
+        name.textContent = request.room_name;
+        const note = document.createElement('span');
+        note.textContent = 'ждёт одобрения';
+        text.append(name, note);
+        const cancel = document.createElement('button');
+        cancel.type = 'button';
+        cancel.className = 'btn btn-ghost btn-sm';
+        cancel.textContent = 'Отменить';
+        cancel.setAttribute('aria-label', `Отменить запрос в «${request.room_name}»`);
+        cancel.addEventListener('click', () => withBusy(cancel, () => cancelJoinRequest(request.id)));
+        row.append(createIcon('i-timer'), text, cancel);
+        return row;
+    }));
+}
+
+async function cancelJoinRequest(id) {
+    const data = await api(`/api/join-requests/${id}`, { method: 'DELETE' });
+    if (!data.success) return showToast(data.message, 'error');
+    myRequests = myRequests.filter(r => r.id !== id);
+    renderMyRequests();
+    showToast('Запрос отменён', 'success');
+    return true;
+}
+
+async function onJoinRequestDecided({ request_id: requestId, status, room_name: roomName, chat }) {
+    myRequests = myRequests.filter(r => r.id !== requestId);
+    renderMyRequests();
+    const waiting = elements.newChatModal.open && sentRequestId === requestId
+        && !elements.newChatModal.querySelector('[data-pane="sent"]').hidden;
+    if (waiting) closeModal(elements.newChatModal);
+    if (status !== 'approved') {
+        showToast(`Запрос в «${roomName}» отклонён`, 'info');
+        return;
+    }
+    await loadChats();
+    if (waiting && chat) openChatById(chat.id);
+    showToast(`Вас впустили в «${roomName}»`, 'success', chat && !waiting ? {
+        duration: 8000, action: { label: 'Открыть', onClick: () => openChatById(chat.id) },
+    } : {});
+}
+
+/* --- Ссылка-приглашение ----------------------------------------------------
+   Только у администраторов: создать, сменить (старая сразу перестаёт
+   действовать), отключить, показать QR. Условия — срок, лимит участников и
+   одобрение — задаются при создании и смене. */
+
+let inviteChatId = null;
+const inviteUrl = code => `${location.origin}/join#${code}`;
+
+function linkTerms(link) {
+    const parts = [
+        link.expires_at ? `действует до ${fullFormat.format(new Date(link.expires_at))}` : 'бессрочная',
+        link.member_limit ? `в группе до ${link.member_limit} ${['участника', 'участников', 'участников'][pluralForm(link.member_limit)]}` : null,
+        link.require_approval ? 'вход после одобрения' : 'вход без одобрения',
+    ].filter(Boolean).join(' · ');
+    return parts.charAt(0).toUpperCase() + parts.slice(1);
+}
+
+async function showInviteLink(link) {
+    elements.inviteCodeBox.hidden = !link;
+    elements.inviteCodeDisplay.textContent = link ? inviteUrl(link.code) : '';
+    elements.inviteText.textContent = link
+        ? 'Отправьте ссылку тем, кого хотите позвать, или покажите QR-код.'
+        : 'Ссылки нет. Создайте её, чтобы позвать участников: по ссылке входят в группу или просят об этом.';
+    elements.resetInviteBtn.textContent = link ? 'Сменить ссылку' : 'Создать ссылку';
+    elements.disableInviteBtn.hidden = !link;
+    if (!link) return;
+    elements.inviteTerms.textContent = linkTerms(link);
+    // Новая ссылка по умолчанию — на тех же условиях.
+    const left = link.expires_at ? (new Date(link.expires_at) - Date.now()) / 1000 : 0;
+    elements.inviteExpiry.value = !link.expires_at ? '0' : left > 86400 * 1.5 ? '604800' : left > 3600 * 1.5 ? '86400' : '3600';
+    elements.inviteLimit.value = link.member_limit || '';
+    elements.inviteApproval.checked = link.require_approval;
+    try {
+        await drawQr(elements.inviteQr, [[inviteUrl(link.code), 'Byte']]);
+        elements.inviteQr.hidden = false;
+    } catch {
+        elements.inviteQr.hidden = true;
+    }
+}
+
+async function openInviteModal(chatId = currentChatId) {
+    if (!chatId) return;
+    const data = await api(`/api/chats/${chatId}/link`);
+    if (!data.success) return showToast(data.message, 'error');
+    inviteChatId = chatId;
+    await showInviteLink(data.link);
+    openModal(elements.inviteModal);
+}
+
+async function saveInviteLink() {
+    const limitText = elements.inviteLimit.value.trim();
+    const limit = limitText ? Number(limitText) : null;
+    if (limit !== null && (!Number.isInteger(limit) || limit < 2 || limit > 1000)) {
+        elements.inviteLimit.focus();
+        return showToast('Лимит участников — от 2 до 1000, или оставьте поле пустым', 'error');
+    }
+    const replacing = !elements.inviteCodeBox.hidden;
+    const data = await api(`/api/chats/${inviteChatId}/link`, { method: 'POST', body: JSON.stringify({
+        expiresIn: Number(elements.inviteExpiry.value), memberLimit: limit, requireApproval: elements.inviteApproval.checked,
+    }) });
+    if (!data.success) return showToast(data.message, 'error');
+    await showInviteLink(data.link);
+    showToast(replacing ? 'Ссылка сменена, старая больше не действует' : 'Ссылка создана', 'success');
+}
+
+async function disableInviteLink() {
+    const data = await api(`/api/chats/${inviteChatId}/link`, { method: 'DELETE' });
+    if (!data.success) return showToast(data.message, 'error');
+    await showInviteLink(null);
+    showToast('Ссылка отключена: по ней больше не войти', 'success');
+}
+
+/* --- Группа: название, запросы, участники ----------------------------------
+   Название меняет любой участник. Администратор впускает и отклоняет,
+   назначает и снимает администраторов, удаляет участников. У каждого —
+   отметка «ключи сверены», если собеседник сверен на этом устройстве. */
+
+let membersChatId = null;
+
+async function openMembersModal(chatId = currentChatId) {
+    if (!chatId) return;
+    membersChatId = chatId;
+    const loading = document.createElement('li');
+    loading.className = 'skeleton members-skeleton';
+    elements.membersList.replaceChildren(loading);
+    elements.requestsSection.hidden = true;
+    openModal(elements.membersModal);
+    await renderMembers();
+}
+
+async function renderMembers() {
+    const chatId = membersChatId;
+    const data = await api(`/api/chats/${chatId}/members`);
+    if (membersChatId !== chatId || !elements.membersModal.open) return;
+    if (!data.success) {
+        closeModal(elements.membersModal);
+        return showToast(data.message, 'error');
+    }
+    const admin = data.my_role === 'admin';
+    if (document.activeElement !== elements.groupNameInput) elements.groupNameInput.value = data.name;
+    elements.membersTitle.textContent = `Участники · ${data.members.length}`;
+    elements.membersInviteBtn.hidden = !admin;
+
+    let states = new Map();
+    if (e2ee && e2ee.isReady()) {
+        const info = await chatDevices(chatId);
+        if (info) states = await e2ee.verificationStatus(info.devices.filter(d => d.user_id !== currentUser.id));
+    }
+    const admins = data.members.filter(m => m.role === 'admin').length;
+    elements.membersList.replaceChildren(...data.members.map(m => memberRow(chatId, m, { admin, admins, state: states.get(m.user_id) })));
+
+    const requests = admin ? await api(`/api/chats/${chatId}/requests`) : null;
+    if (membersChatId !== chatId) return;
+    const pending = (requests && requests.success && requests.requests) || [];
+    elements.requestsSection.hidden = pending.length === 0;
+    elements.requestsList.replaceChildren(...pending.map(r => requestRow(chatId, r)));
+}
+
+function personRow(name, metaText) {
+    const li = document.createElement('li');
+    li.className = 'member-row';
+    const avatar = document.createElement('div');
+    avatar.className = 'chat-avatar-small';
+    avatar.setAttribute('aria-hidden', 'true');
+    avatar.textContent = name.charAt(0).toUpperCase();
+    const text = document.createElement('div');
+    text.className = 'member-text';
+    const strong = document.createElement('strong');
+    strong.textContent = name;
+    const meta = document.createElement('span');
+    meta.className = 'member-meta';
+    meta.textContent = metaText;
+    text.append(strong, meta);
+    li.append(avatar, text);
+    return li;
+}
+
+function memberRow(chatId, member, { admin, admins, state }) {
+    const me = member.user_id === currentUser.id;
+    const verified = state === 'verified';
+    const li = personRow(me ? `${member.username} (вы)` : member.username,
+        [member.role === 'admin' ? 'администратор' : 'участник', verified ? 'ключи сверены' : null].filter(Boolean).join(' · '));
+    li.dataset.userId = member.user_id;
+    if (verified) {
+        const mark = createIcon('i-shield-check');
+        mark.classList.add('member-verified');
+        li.appendChild(mark);
+    }
+
+    const actions = [];
+    if (!me) actions.push(['Сверить ключи', () => { closeModal(elements.membersModal); openSafetyModal(chatId); }]);
+    if (admin && member.role === 'member') actions.push(['Сделать администратором', () => setMemberRole(chatId, member, 'admin')]);
+    // Себя снять можно, только если останется другой администратор.
+    if (admin && member.role === 'admin' && (!me || admins > 1)) {
+        actions.push([me ? 'Отказаться от прав администратора' : 'Снять права администратора', () => setMemberRole(chatId, member, 'member')]);
+    }
+    if (admin && !me) actions.push(['Удалить из группы', () => removeMember(chatId, member), 'danger']);
+    if (!actions.length) return li;
+
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'icon-btn icon-btn-sm icon-btn-quiet member-menu-btn';
+    toggle.setAttribute('aria-label', `Действия: ${member.username}`);
+    toggle.setAttribute('aria-expanded', 'false');
+    toggle.appendChild(createIcon('i-more'));
+    const menu = document.createElement('div');
+    menu.className = 'member-actions';
+    menu.hidden = true;
+    for (const [label, run, kind] of actions) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = `btn btn-sm ${kind === 'danger' ? 'btn-danger' : 'btn-secondary'}`;
+        button.textContent = label;
+        button.addEventListener('click', () => withBusy(button, run));
+        menu.appendChild(button);
+    }
+    toggle.addEventListener('click', () => {
+        menu.hidden = !menu.hidden;
+        toggle.setAttribute('aria-expanded', String(!menu.hidden));
+        if (!menu.hidden) menu.querySelector('button').focus();
+    });
+    li.append(toggle, menu);
+    return li;
+}
+
+function requestRow(chatId, request) {
+    const li = personRow(request.username, `просится с ${listTimeLabel(new Date(request.created_at))}`);
+    const buttons = document.createElement('div');
+    buttons.className = 'request-actions';
+    for (const [label, action, kind] of [['Впустить', 'approve', 'btn-primary'], ['Отклонить', 'decline', 'btn-ghost']]) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = `btn btn-sm ${kind}`;
+        button.textContent = label;
+        button.setAttribute('aria-label', `${label}: ${request.username}`);
+        button.addEventListener('click', () => withBusy(button, async () => {
+            const data = await api(`/api/chats/${chatId}/requests/${request.id}`, { method: 'POST', body: JSON.stringify({ action }) });
+            if (!data.success) showToast(data.message, 'error');
+            else showToast(action === 'approve' ? `${request.username} в группе` : `Запрос ${request.username} отклонён`, 'success');
+            await renderMembers();
+        }));
+        buttons.appendChild(button);
+    }
+    li.appendChild(buttons);
+    return li;
+}
+
+async function setMemberRole(chatId, member, role) {
+    const data = await api(`/api/chats/${chatId}/members/${member.user_id}/role`, { method: 'POST', body: JSON.stringify({ role }) });
+    if (!data.success) showToast(data.message, 'error');
+    await renderMembers();
+}
+
+async function removeMember(chatId, member) {
+    if (!confirm(`Удалить ${member.username} из группы? Новые сообщения группы до него доходить перестанут.`)) return;
+    const data = await api(`/api/chats/${chatId}/members/${member.user_id}`, { method: 'DELETE' });
+    if (!data.success) showToast(data.message, 'error');
+    else showToast(`${member.username} больше не в группе`, 'success');
+    await renderMembers();
+}
+
+async function renameGroup() {
+    clearFieldErrors(elements.membersModal);
+    const name = elements.groupNameInput.value.trim();
+    if (!name) return setFieldError('group-name-input', 'Введите название группы');
+    const data = await api(`/api/chats/${membersChatId}/name`, { method: 'POST', body: JSON.stringify({ name }) });
+    if (!data.success) return setFieldError('group-name-input', data.message);
+    elements.groupNameInput.value = data.name;
+    showToast('Название изменено', 'success');
+}
+
+// Удалили из группы: её больше нет в списке, открытая — закрывается.
+async function onRemovedFromChat({ chat_id: chatId, room_id: roomId, name }) {
+    if (e2ee && chatId) await e2ee.forgetConversation({ id: chatId, room_id: roomId });
+    if (currentRoomId && Number(currentRoomId) === Number(roomId)) {
+        for (const modal of [elements.membersModal, elements.inviteModal, elements.chatMenuModal]) closeModal(modal);
+        closeCurrentChat();
+    }
+    showToast(`Вас удалили из группы «${name}»`, 'info');
+    loadChats();
+}
+
+function onMembersChanged({ room_id: roomId }) {
+    const chat = chatsMeta.get(Number(membersChatId));
+    if (elements.membersModal.open && chat && Number(chat.room_id) === Number(roomId)) renderMembers();
+}
+
+async function onJoinRequestsChanged({ room_id: roomId, pending }) {
+    for (const chat of chatsMeta.values()) {
+        if (Number(chat.room_id) === Number(roomId)) chat.pending_requests = pending;
+    }
+    onMembersChanged({ room_id: roomId });
+    await loadChats();
+    applyRoomState();
 }
 
 async function deleteChat() {
     if (!currentChatId) return;
-    if (!confirm('Удалить чат?')) return;
+    const group = Boolean(currentChatMeta() && currentChatMeta().kind === 'group');
+    if (!confirm(group ? 'Выйти из группы? Вернуться можно будет только по новой ссылке.' : 'Удалить чат?')) return;
     const leaving = { id: currentChatId, room_id: currentRoomId };
     const data = await api(`/api/chats/${currentChatId}`, { method: 'DELETE' });
     if (data.success) {
@@ -4628,20 +5126,28 @@ async function deleteChat() {
             await withPendingLock(async () =>
                 e2ee.pending.save((await e2ee.pending.list()).filter(p => p.chatId !== leaving.id)));
         }
-        showToast('Чат удалён', 'success');
+        showToast(group ? 'Вы вышли из группы' : 'Чат удалён', 'success');
         closeModal(elements.chatMenuModal);
-        chatViews.delete(currentChatId);
-        setMessageInput('');
-        currentChatId = null;
-        currentRoomId = null;
-        elements.chatHeader.classList.add('hidden');
-        elements.messageInputContainer.classList.add('hidden');
-        elements.emptyState.classList.remove('hidden');
-        clearFeed();
+        closeCurrentChat();
         loadChats();
     } else {
         showToast(data.message, 'error');
     }
+}
+
+// Открытого чата больше нет (удалён, вышли, удалили из группы).
+function closeCurrentChat() {
+    chatViews.delete(currentChatId);
+    setMessageInput('');
+    currentChatId = null;
+    currentRoomId = null;
+    elements.chatHeader.classList.add('hidden');
+    elements.messageInputContainer.classList.add('hidden');
+    elements.joinRequestsBar.hidden = true;
+    elements.roomEmpty.hidden = true;
+    elements.chatMessages.hidden = false;
+    elements.emptyState.classList.remove('hidden');
+    clearFeed();
 }
 
 async function performSearch() {
@@ -4733,6 +5239,15 @@ function chatItemElement(chat, previewText) {
         const badge = document.createElement('div');
         badge.className = 'chat-badge';
         badge.textContent = String(chat.unread);
+        div.appendChild(badge);
+    }
+    // Администратору: кто-то просится в группу.
+    if (chat.pending_requests > 0) {
+        const badge = document.createElement('div');
+        badge.className = 'chat-badge is-requests';
+        badge.title = `Ждут одобрения: ${chat.pending_requests}`;
+        badge.setAttribute('aria-label', badge.title);
+        badge.append(createIcon('i-user-plus'), String(chat.pending_requests));
         div.appendChild(badge);
     }
     return div;

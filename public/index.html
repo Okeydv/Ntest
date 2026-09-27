@@ -75,6 +75,9 @@
         <symbol id="i-user-plus" viewBox="0 0 24 24">
             <circle cx="10" cy="8" r="3.6"/><path d="M3.5 20.5v-1a4.2 4.2 0 0 1 4.2-4.2h4.6a4.2 4.2 0 0 1 4.2 4.2v1M18.5 7.5v6M15.5 10.5h6"/>
         </symbol>
+        <symbol id="i-users" viewBox="0 0 24 24">
+            <circle cx="9" cy="8" r="3.4"/><path d="M2.5 20v-.8A4 4 0 0 1 6.5 15.2h5a4 4 0 0 1 4 4v.8"/><path d="M15.5 4.9a3.4 3.4 0 0 1 0 6.2M18 15.3a4 4 0 0 1 3.5 3.9v.8"/>
+        </symbol>
         <symbol id="i-logout" viewBox="0 0 24 24">
             <path d="M9.5 20.5H6a2 2 0 0 1-2-2v-13a2 2 0 0 1 2-2h3.5"/><path d="M16 16.5l4.5-4.5L16 7.5"/><path d="M20.5 12H9.5"/>
         </symbol>
@@ -210,6 +213,9 @@
                 </div>
             </div>
 
+            <!-- Свои запросы на вход в группы: ждут одобрения администратора. -->
+            <section id="my-requests" class="my-requests" aria-label="Запросы на вход" hidden></section>
+
             <div id="chats-list" class="chats-list"></div>
 
             <div class="sidebar-footer">
@@ -256,7 +262,7 @@
                     </div>
                 </div>
                 <div class="chat-actions">
-                    <button id="get-chat-code-btn" class="icon-btn" title="Код приглашения" aria-label="Код приглашения" type="button">
+                    <button id="get-chat-code-btn" class="icon-btn" title="Ссылка-приглашение" aria-label="Ссылка-приглашение" type="button" hidden>
                         <svg class="icon" aria-hidden="true"><use href="#i-link"/></svg>
                     </button>
                     <button id="chat-menu-btn" class="icon-btn" title="Меню чата" aria-label="Меню чата" type="button">
@@ -267,6 +273,12 @@
 
             <!-- Старые сообщения без шифрования в этом чате будут стёрты с сервера. -->
             <div id="plaintext-notice" class="plaintext-notice" role="status" hidden></div>
+            <!-- Администратору группы: кто ждёт одобрения. -->
+            <button id="join-requests-bar" class="join-requests-bar" type="button" hidden>
+                <svg class="icon" aria-hidden="true"><use href="#i-user-plus"/></svg>
+                <span id="join-requests-bar-text"></span>
+                <span class="join-requests-bar-action">Посмотреть</span>
+            </button>
             <div id="chat-messages" class="chat-messages"></div>
             <!-- Группа, где пока только вы: писать некому, и сервер такое не примет —
                  шифровать не для кого, текст лёг бы на него открытым. -->
@@ -280,7 +292,7 @@
                 </div>
                 <button id="room-empty-invite" class="btn btn-primary" type="button">
                     <svg class="icon" aria-hidden="true"><use href="#i-link"/></svg>
-                    Код приглашения
+                    Ссылка-приглашение
                 </button>
             </div>
             <!-- Файл, который тащат в окно: куда его можно бросить. -->
@@ -366,30 +378,82 @@
         </div>
     </div>
 
+    <!-- Три пути: личный чат, группа, вход по приглашению. Сначала выбор,
+         потом шаг выбранного пути; «Назад» возвращает к выбору. -->
     <dialog id="new-chat-modal" class="modal" aria-labelledby="new-chat-modal-title">
         <div class="modal-content">
             <div class="modal-header">
+                <button id="new-chat-back" class="icon-btn icon-btn-sm icon-btn-quiet" aria-label="Назад" type="button" hidden>
+                    <svg class="icon" aria-hidden="true"><use href="#i-back"/></svg>
+                </button>
                 <h3 id="new-chat-modal-title">Новый чат</h3>
                 <button class="icon-btn icon-btn-sm icon-btn-quiet close-modal" aria-label="Закрыть" type="button">
                     <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
                 </button>
             </div>
             <div class="modal-body">
-                <div class="field">
-                    <label class="field-label" for="new-chat-name">Название чата</label>
-                    <input type="text" id="new-chat-name" placeholder="Например, «Проект Nyxo»" maxlength="64">
-                    <p class="field-msg" data-msg-for="new-chat-name"></p>
+                <div id="new-chat-choice" class="new-chat-choice" data-pane="choice">
+                    <button class="choice-card" data-path="direct" type="button" hidden>
+                        <span class="choice-icon" aria-hidden="true"><svg class="icon"><use href="#i-user"/></svg></span>
+                        <span class="choice-text">
+                            <strong>Личный чат</strong>
+                            <span>С одним человеком — по его коду или QR при встрече</span>
+                        </span>
+                    </button>
+                    <button class="choice-card" data-path="group" type="button">
+                        <span class="choice-icon" aria-hidden="true"><svg class="icon"><use href="#i-users"/></svg></span>
+                        <span class="choice-text">
+                            <strong>Группа</strong>
+                            <span>Общее название, участники входят по ссылке</span>
+                        </span>
+                    </button>
+                    <button class="choice-card" data-path="join" type="button">
+                        <span class="choice-icon" aria-hidden="true"><svg class="icon"><use href="#i-link"/></svg></span>
+                        <span class="choice-text">
+                            <strong>У меня есть приглашение</strong>
+                            <span>Ссылка вида …/join#K7Q2MX9A4TZB</span>
+                        </span>
+                    </button>
                 </div>
-                <button id="create-chat-btn" class="btn btn-primary btn-block" type="button">Создать чат</button>
 
-                <div class="divider"><span class="divider-label">или</span></div>
-
-                <div class="field">
-                    <label class="field-label" for="join-chat-code">Код приглашения</label>
-                    <input type="text" id="join-chat-code" class="input-code" placeholder="K7Q2MX" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="12" enterkeyhint="go">
-                    <p class="field-msg" data-msg-for="join-chat-code"></p>
+                <div data-pane="group" hidden>
+                    <div class="field">
+                        <label class="field-label" for="new-chat-name">Название группы</label>
+                        <input type="text" id="new-chat-name" placeholder="Например, «Проект Nyxo»" maxlength="64" enterkeyhint="done">
+                        <p class="field-msg" data-msg-for="new-chat-name"></p>
+                        <p class="field-hint">Название видят все участники, и сменить его может любой из них. Вы станете администратором: создадите ссылку и будете решать, кого впустить.</p>
+                    </div>
+                    <button id="create-chat-btn" class="btn btn-primary btn-block" type="button">Создать группу</button>
                 </div>
-                <button id="join-chat-btn" class="btn btn-secondary btn-block" type="button">Присоединиться</button>
+
+                <div data-pane="join" hidden>
+                    <div class="field">
+                        <label class="field-label" for="join-chat-code">Ссылка-приглашение</label>
+                        <input type="text" id="join-chat-code" class="input-code" placeholder="…/join#K7Q2MX9A4TZB" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="200" enterkeyhint="go">
+                        <p class="field-msg" data-msg-for="join-chat-code"></p>
+                    </div>
+                    <!-- Куда ведёт ссылка — до входа: название, сколько участников, нужно ли одобрение. -->
+                    <div id="join-preview" class="join-preview" hidden>
+                        <div id="join-preview-avatar" class="chat-avatar" aria-hidden="true"></div>
+                        <div class="join-preview-text">
+                            <strong id="join-preview-name"></strong>
+                            <span id="join-preview-meta"></span>
+                        </div>
+                    </div>
+                    <button id="join-chat-btn" class="btn btn-primary btn-block" type="button">Продолжить</button>
+                </div>
+
+                <!-- Запрос ушёл администраторам. Ждать можно и закрыв окно: запрос
+                     виден над списком чатов, там же его можно отменить. -->
+                <div data-pane="sent" class="join-sent" hidden>
+                    <span class="join-sent-icon" aria-hidden="true"><svg class="icon"><use href="#i-timer"/></svg></span>
+                    <h4>Запрос отправлен</h4>
+                    <p id="join-sent-text"></p>
+                    <div class="logout-actions">
+                        <button id="join-sent-cancel" class="btn btn-secondary btn-block" type="button">Отменить запрос</button>
+                        <button id="join-sent-close" class="btn btn-primary btn-block" type="button">Понятно</button>
+                    </div>
+                </div>
             </div>
         </div>
     </dialog>
@@ -412,13 +476,17 @@
                     <label class="radio-row"><input type="radio" name="chat-expiry" value="604800"> Через 1 неделю</label>
                     <p class="field-hint">Срок считается от отправки, прочитано сообщение или нет. Касается новых сообщений всех участников. Исчезнувшее стирается и с сервера, и с устройств, но собеседник мог успеть его сохранить.</p>
                 </fieldset>
-                <button id="chat-menu-invite-btn" class="btn btn-secondary btn-block" type="button">
+                <button id="chat-menu-members-btn" class="btn btn-secondary btn-block" type="button" hidden>
+                    <svg class="icon" aria-hidden="true"><use href="#i-users"/></svg>
+                    Участники и название
+                </button>
+                <button id="chat-menu-invite-btn" class="btn btn-secondary btn-block" type="button" hidden>
                     <svg class="icon" aria-hidden="true"><use href="#i-link"/></svg>
-                    Код приглашения
+                    Ссылка-приглашение
                 </button>
                 <button id="delete-chat-btn" class="btn btn-danger btn-block" type="button">
                     <svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg>
-                    Удалить чат
+                    <span id="delete-chat-label">Удалить чат</span>
                 </button>
             </div>
         </div>
@@ -548,28 +616,90 @@
         </div>
     </dialog>
 
+    <!-- Ссылка-приглашение группы: создать, сменить, отключить, QR. Только
+         для администраторов. Кто вошёл по ссылке и кто её сменил, видно в
+         переписке. -->
     <dialog id="invite-modal" class="modal" aria-labelledby="invite-modal-title">
-        <div class="modal-content modal-content-sm">
+        <div class="modal-content">
             <div class="modal-header">
-                <h3 id="invite-modal-title">Код приглашения</h3>
+                <h3 id="invite-modal-title">Ссылка-приглашение</h3>
                 <button class="icon-btn icon-btn-sm icon-btn-quiet close-modal" aria-label="Закрыть" type="button">
                     <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
                 </button>
             </div>
             <div class="modal-body">
-                <p id="invite-text" class="invite-text">Поделитесь этим кодом с друзьями:</p>
-                <div id="invite-code-box" class="invite-code-container">
-                    <code id="invite-code-display"></code>
-                    <button id="copy-invite-btn" class="icon-btn icon-btn-sm" title="Скопировать" aria-label="Скопировать код" type="button">
-                        <svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg>
-                    </button>
+                <p id="invite-text" class="invite-text"></p>
+                <div id="invite-code-box" class="invite-link-box" hidden>
+                    <div class="invite-code-container">
+                        <code id="invite-code-display"></code>
+                        <button id="copy-invite-btn" class="icon-btn icon-btn-sm" title="Скопировать" aria-label="Скопировать ссылку" type="button">
+                            <svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg>
+                        </button>
+                    </div>
+                    <p id="invite-terms" class="field-hint"></p>
+                    <canvas id="invite-qr" class="invite-qr" role="img" aria-label="QR-код ссылки"></canvas>
                 </div>
-                <!-- Утёкший код иначе действовал бы вечно. Кто вошёл по коду и кто
-                     его сменил, видно в переписке. -->
+                <!-- Условия новой ссылки. Применяются при создании и смене. -->
+                <fieldset id="invite-settings" class="field invite-settings">
+                    <legend class="field-label">Условия ссылки</legend>
+                    <label class="invite-setting" for="invite-expiry">
+                        <span>Срок действия</span>
+                        <select id="invite-expiry">
+                            <option value="3600">1 час</option>
+                            <option value="86400">1 день</option>
+                            <option value="604800">7 дней</option>
+                            <option value="0" selected>Бессрочно</option>
+                        </select>
+                    </label>
+                    <label class="invite-setting" for="invite-limit">
+                        <span>Сколько всего участников</span>
+                        <input type="number" id="invite-limit" min="2" max="1000" inputmode="numeric" placeholder="Без лимита">
+                    </label>
+                    <label class="toggle-row">
+                        <input type="checkbox" id="invite-approval" checked>
+                        <span>Впускать после одобрения</span>
+                    </label>
+                    <p class="field-hint">С одобрением по ссылке приходит запрос, и в группу человек попадает, только когда кто-то из администраторов его впустит.</p>
+                </fieldset>
                 <div class="invite-actions">
-                    <button id="reset-invite-btn" class="btn btn-secondary" type="button">Сменить код</button>
-                    <button id="disable-invite-btn" class="btn btn-ghost" type="button">Отключить приглашение</button>
+                    <button id="reset-invite-btn" class="btn btn-primary" type="button">Создать ссылку</button>
+                    <button id="disable-invite-btn" class="btn btn-ghost" type="button" hidden>Отключить</button>
                 </div>
+            </div>
+        </div>
+    </dialog>
+
+    <!-- Группа: название (менять может любой участник), запросы на вход и
+         участники с ролями. Администратор назначает, снимает и удаляет. -->
+    <dialog id="members-modal" class="modal" aria-labelledby="members-modal-title">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="members-modal-title">Группа</h3>
+                <button class="icon-btn icon-btn-sm icon-btn-quiet close-modal" aria-label="Закрыть" type="button">
+                    <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div class="field">
+                    <label class="field-label" for="group-name-input">Название группы</label>
+                    <div class="inline-field">
+                        <input type="text" id="group-name-input" maxlength="64" enterkeyhint="done">
+                        <button id="group-name-save" class="btn btn-secondary" type="button">Сохранить</button>
+                    </div>
+                    <p class="field-msg" data-msg-for="group-name-input"></p>
+                </div>
+                <section id="requests-section" class="members-section" aria-labelledby="requests-title" hidden>
+                    <h4 id="requests-title" class="field-label">Ждут одобрения</h4>
+                    <ul id="requests-list" class="members-list"></ul>
+                </section>
+                <section class="members-section" aria-labelledby="members-title">
+                    <h4 id="members-title" class="field-label">Участники</h4>
+                    <ul id="members-list" class="members-list"></ul>
+                </section>
+                <button id="members-invite-btn" class="btn btn-secondary btn-block" type="button" hidden>
+                    <svg class="icon" aria-hidden="true"><use href="#i-link"/></svg>
+                    Ссылка-приглашение
+                </button>
             </div>
         </div>
     </dialog>

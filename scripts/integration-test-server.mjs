@@ -87,7 +87,7 @@ check('чужого журнала не видно', ((await bob.req('GET', '/ap
 /* ------------------------- двойной вход по коду ------------------------- */
 
 const created = await bob.req('POST', '/api/chats', { name: 'Двое' });
-const code = (await bob.req('GET', `/api/chats/invite/${created.json.chat.id}`)).json.code;
+const code = (await bob.req('POST', `/api/chats/${created.json.chat.id}/link`, { requireApproval: false })).json.code;
 const carol = await register('carol');
 const [j1, j2] = await Promise.all([carol.req('POST', '/api/chats/join', { code }), carol.req('POST', '/api/chats/join', { code })]);
 const counts = (await db.query(
