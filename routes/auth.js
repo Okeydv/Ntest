@@ -381,16 +381,18 @@ module.exports = function registerAuthRoutes(app, ctx) {
             if (!user) return res.json({ success: false });
             res.json({ success: true, user: { id: user.id, uniqueCode: user.unique_code, username: user.username, avatar: user.avatar || '', email: user.email, createdAt: user.created_at, sendReadReceipts: user.send_read_receipts, hidePresence: user.hide_presence, sendTyping: user.send_typing } });
         } catch (error) {
-            res.json({ success: false });
+            // Профиль показывает «Не удалось загрузить» — причина должна
+            // остаться в журнале.
+            log.error({ err: error }, 'Get user error');
+            res.status(500).json({ success: false, message: 'Не удалось загрузить профиль' });
         }
     });
 
-    // Аватар: цвет или эмодзи на градиенте — только из набора
-    // (lib/avatars.js).
+    // Аватар — цвет '#RRGGBB' (lib/avatars.js).
     app.post('/api/user/avatar', async (req, res) => {
         if (!req.session.userId) return res.status(401).json({ success: false, message: 'Не авторизован' });
         const avatar = normalizeAvatar(req.body && req.body.avatar);
-        if (!avatar) return res.status(400).json({ success: false, message: 'Такого аватара нет в наборе' });
+        if (!avatar) return res.status(400).json({ success: false, message: 'Аватар — цвет в виде #RRGGBB' });
         try {
             await dbRun('UPDATE users SET avatar = $1 WHERE id = $2', [avatar, req.session.userId]);
             req.session.avatar = avatar;

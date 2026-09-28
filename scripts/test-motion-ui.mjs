@@ -11,7 +11,11 @@
 //   - профиль открывается сразу, разделы — по мере ответов, не
 //     загрузившийся — «Не удалось загрузить · Повторить»;
 //   - нажатие сжимает кнопку, наведение — только для мыши, маленькие
-//     кнопки на тач-экране — с зоной 44×44.
+//     кнопки на тач-экране — с зоной 44×44;
+//   - ошибка в шапке профиля — отдельной строкой, а не колонкой сбоку;
+//   - смена темы — перетеканием, без круга; аватар — только цвет;
+//   - телефон: экран входа прокручивается пальцем, долгое нажатие не
+//     выделяет текст интерфейса.
 //
 // Требует поднятых Postgres, key-server и server.js на 3006 и ЧИСТОЙ базы.
 // Запуск: TEST_DATABASE_URL=... node scripts/test-motion-ui.mjs
@@ -208,6 +212,23 @@ check('разделы заполнились по своим ответам, у�
 await alice.unroute('**/api/blocks');
 await alice.unroute('**/api/user/code');
 await alice.keyboard.press('Escape');
+await alice.waitForTimeout(300);
+
+// Шапка профиля (аватар и имя в ряд): ошибка — строкой под ними.
+await alice.route('**/api/user', route => route.fulfill({ status: 500, contentType: 'application/json', body: '{"success":false}' }));
+await alice.click('#profile-btn');
+await alice.waitForSelector('.profile-info > .section-error');
+const headError = await alice.evaluate(() => {
+    const info = document.querySelector('.profile-info').getBoundingClientRect();
+    const row = document.querySelector('.profile-info > .section-error').getBoundingClientRect();
+    const avatar = document.getElementById('profile-avatar').getBoundingClientRect();
+    return { full: Math.round(row.width) === Math.round(info.width), below: row.top >= avatar.bottom - 1, oneLine: row.height < 40 };
+});
+check('ошибка в шапке профиля — отдельной строкой под аватаром, в одну строку', headError.full && headError.below && headError.oneLine,
+    JSON.stringify(headError));
+await alice.unroute('**/api/user');
+await alice.keyboard.press('Escape');
+await alice.waitForTimeout(300);
 
 /* ------------------------- нажатие и касание ------------------------- */
 
@@ -315,21 +336,29 @@ check('«ок 🔥» — обычный пузырь', await alice.evaluate(() =
 
 /* ------------------------- аватар ------------------------- */
 
-const badAvatar = await alice.evaluate(() => api('/api/user/avatar', { method: 'POST', body: JSON.stringify({ avatar: 'e:99:0' }) }));
-check('аватар не из набора — отказ', badAvatar.success === false);
-await alice.click('#profile-btn');
-await alice.waitForFunction(() => document.querySelectorAll('#avatar-emoji-picker .avatar-emoji').length > 0);
-await alice.locator('#avatar-emoji-picker .avatar-emoji').first().click();
-await alice.waitForTimeout(600);
-await alice.locator('#avatar-gradient-picker .color-option').nth(2).click();
-await alice.waitForTimeout(600);
-const avatar = await alice.evaluate(() => ({
-    text: document.getElementById('profile-avatar').textContent,
-    bg: getComputedStyle(document.getElementById('profile-avatar')).backgroundImage,
-    stored: currentUser.avatar,
+const avatars = await alice.evaluate(async () => ({
+    emoji: (await api('/api/user/avatar', { method: 'POST', body: JSON.stringify({ avatar: 'e:0:2' }) })).success,
+    color: (await api('/api/user/avatar', { method: 'POST', body: JSON.stringify({ avatar: '#2dd4a7' }) })).avatar,
+    picker: document.getElementById('avatar-emoji-picker') !== null,
+    set: (await fetch('/avatars.json')).status,
 }));
-check('эмодзи на градиенте вместо буквы', avatar.text === '🦊' && avatar.bg.includes('gradient') && avatar.stored === 'e:0:2', JSON.stringify(avatar));
-await alice.keyboard.press('Escape');
+check('аватар — только цвет: эмодзи сервер не принимает, выбора эмодзи нет', avatars.emoji === false && avatars.color === '#2DD4A7'
+    && !avatars.picker && avatars.set === 404, JSON.stringify(avatars));
+
+/* ------------------------- тема ------------------------- */
+
+const themeBefore = await alice.evaluate(() => document.documentElement.dataset.theme);
+await alice.locator('[data-theme-toggle]:visible').first().click();
+await alice.waitForTimeout(60);
+const fade = await alice.evaluate(() => document.getAnimations().filter(a => a.effect && a.effect.pseudoElement
+    && a.effect.pseudoElement.startsWith('::view-transition')).map(a => ({
+    el: a.effect.pseudoElement, duration: a.effect.getTiming().duration,
+    clip: a.effect.getKeyframes().some(k => 'clipPath' in k),
+    opacity: a.effect.getKeyframes().some(k => 'opacity' in k),
+})));
+await alice.waitForFunction(t => document.documentElement.dataset.theme !== t, themeBefore);
+check('смена темы — перетеканием за 400 мс, без круга', fade.length >= 2 && fade.every(f => !f.clip)
+    && fade.some(f => f.opacity) && fade.some(f => f.duration === 400), JSON.stringify(fade));
 
 /* ------------------------- телефон: экраны и свайп назад ------------------------- */
 
@@ -363,6 +392,38 @@ const back = await phone.evaluate(async () => {
 });
 check('свайп вправо — чат идёт за пальцем, дальше 35% — назад к списку', back.swiping && Number(back.mid[2]) > 0.35 && !back.open,
     JSON.stringify(back));
+
+const select = await phone.evaluate(() => ({
+    app: getComputedStyle(document.getElementById('app')).userSelect,
+    logo: getComputedStyle(document.querySelector('.sidebar .brand-word, .sidebar-header') || document.getElementById('app')).userSelect,
+    input: getComputedStyle(document.getElementById('message-input')).userSelect,
+}));
+check('телефон: долгое нажатие не выделяет интерфейс (логотип), поле ввода — выделяется',
+    select.app === 'none' && select.logo === 'none' && select.input === 'text', JSON.stringify(select));
+
+// Экран входа ниже формы регистрации: прокручивается пальцем.
+const low = await browser.newContext({ viewport: { width: 390, height: 520 }, hasTouch: true, isMobile: true });
+const auth = await low.newPage();
+auth.on('pageerror', e => errors.push(`auth: ${e.message}`));
+await auth.goto(BASE, { waitUntil: 'networkidle' });
+await auth.click('.auth-tab[data-tab="register"]');
+await auth.waitForTimeout(300);
+const cdp = await low.newCDPSession(auth);
+await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 195, y: 420 }] });
+for (let i = 1; i <= 12; i++) {
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: 195, y: 420 - 25 * i }] });
+    await auth.waitForTimeout(16);
+}
+await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+await auth.waitForTimeout(500);
+const authScroll = await auth.evaluate(() => ({
+    scrolled: document.querySelector('.auth-screen').scrollTop,
+    bottom: Math.round(document.querySelector('.auth-container').getBoundingClientRect().bottom),
+    vh: innerHeight,
+}));
+check('телефон: форма регистрации выше экрана — экран входа прокручивается пальцем', authScroll.scrolled > 100
+    && authScroll.bottom <= authScroll.vh, JSON.stringify(authScroll));
+await low.close();
 
 check('ошибок на страницах нет', errors.length === 0, errors.join('; '));
 await finish(browser, fails);

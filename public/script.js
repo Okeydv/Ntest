@@ -430,7 +430,6 @@ function fillProfileUser(user) {
     document.querySelectorAll('.color-option').forEach(o => {
         o.classList.toggle('active', o.dataset.color.toLowerCase() === avatar.toLowerCase());
     });
-    renderAvatarPicker(avatar);
     const anonymous = user.email === null || Boolean(user.isAnonymous);
     elements.profileAnonBadge.classList.toggle('hidden', !anonymous);
     elements.changePasswordBtn.classList.toggle('hidden', anonymous);
@@ -447,39 +446,7 @@ async function saveAvatar(avatar) {
     document.querySelectorAll('.color-option[data-color]').forEach(o => {
         o.classList.toggle('active', o.dataset.color.toLowerCase() === data.avatar.toLowerCase());
     });
-    renderAvatarPicker(data.avatar);
     showToast('Аватар обновлён', 'success');
-}
-
-// Эмодзи и градиенты: выбор эмодзи сохраняет его на текущем градиенте.
-function renderAvatarPicker(avatar) {
-    if (!AVATARS) return;
-    const m = /^e:(\d+):(\d+)$/.exec(avatar || '');
-    const emoji = m ? Number(m[1]) : -1;
-    const gradient = m ? Number(m[2]) : 0;
-    const emojiBox = document.getElementById('avatar-emoji-picker');
-    emojiBox.replaceChildren(...AVATARS.emoji.map((e, i) => {
-        const b = document.createElement('button');
-        b.type = 'button';
-        b.className = 'avatar-emoji' + (i === emoji ? ' active' : '');
-        b.textContent = e;
-        b.setAttribute('aria-label', `Эмодзи ${e}`);
-        b.setAttribute('aria-pressed', String(i === emoji));
-        b.addEventListener('click', () => saveAvatar(`e:${i}:${gradient}`));
-        return b;
-    }));
-    const gradientBox = document.getElementById('avatar-gradient-picker');
-    gradientBox.replaceChildren(...AVATARS.gradients.map(([a, b], i) => {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'color-option' + (m && i === gradient ? ' active' : '');
-        btn.style.background = `linear-gradient(140deg, ${a}, ${b})`;
-        btn.setAttribute('aria-label', `Фон ${i + 1}`);
-        btn.disabled = !m;
-        btn.title = m ? '' : 'Сначала выберите эмодзи';
-        btn.addEventListener('click', () => saveAvatar(`e:${emoji}:${i}`));
-        return btn;
-    }));
 }
 
 async function loadProfileUser() {
@@ -540,7 +507,9 @@ async function loadProfileSection(host, load) {
     retry.className = 'link-inline';
     retry.textContent = 'Повторить';
     retry.addEventListener('click', () => loadProfileSection(host, load));
-    row.append(createIcon('i-alert'), 'Не удалось загрузить · ', retry);
+    const text = document.createElement('span');
+    text.textContent = 'Не удалось загрузить · ';
+    row.append(createIcon('i-alert'), text, retry);
     host.appendChild(row);
 }
 
@@ -1148,27 +1117,18 @@ const THEME_KEY = 'nyxo-theme';
 const DEFAULT_AVATAR = '#6D5EFC';
 
 /* --- Аватары ----------------------------------------------------------------
-   Цвет с буквой ('#RRGGBB') или эмодзи на градиенте ('e:эмодзи:градиент',
-   номера из public/avatars.json — тот же набор проверяет сервер). */
-
-let AVATARS = null;
-fetch('/avatars.json').then(r => r.json()).then(set => { AVATARS = set; }).catch(() => {});
+   Цвет с первой буквой имени ('#RRGGBB'). Непонятное значение — цвет по
+   умолчанию. */
 
 function avatarLook(avatar) {
-    const m = /^e:(\d+):(\d+)$/.exec(avatar || '');
-    if (m && AVATARS && AVATARS.emoji[m[1]] && AVATARS.gradients[m[2]]) {
-        const [a, b] = AVATARS.gradients[m[2]];
-        return { emoji: AVATARS.emoji[m[1]], background: `linear-gradient(140deg, ${a}, ${b})`, color: a };
-    }
     const color = /^#[0-9a-f]{3,8}$/i.test(avatar || '') ? avatar : DEFAULT_AVATAR;
-    return { emoji: null, background: color, color };
+    return { background: color, color };
 }
 
 function paintAvatar(el, avatar, name) {
     const look = avatarLook(avatar);
     el.style.background = look.background;
-    el.textContent = look.emoji || (name || '?').charAt(0).toUpperCase();
-    el.classList.toggle('is-emoji-avatar', Boolean(look.emoji));
+    el.textContent = (name || '?').charAt(0).toUpperCase();
     return look;
 }
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -1219,31 +1179,33 @@ function updateThemeColor() {
 }
 
 /*
- * Смена темы — новой темой, расходящейся кругом от кнопки (View
- * Transitions). Редкое действие — можно красиво. Без поддержки API или при
- * «уменьшить движение» — мгновенно; зависнуть переход не может дольше 1,5 с.
+ * Смена темы — мягким перетеканием: старая тема тает, новая проявляется
+ * (View Transitions, 400 мс). Круг от кнопки на телефоне заливал экран
+ * почти мгновенно и выглядел скачком. Без View Transitions на время смены
+ * включаются переходы цвета у всех элементов. «Уменьшить движение» — то же
+ * затухание, короче. Зависнуть переход не может дольше 1,5 с.
  */
-function switchTheme(button) {
+function switchTheme() {
     const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-    if (!document.startViewTransition || prefersReducedMotion()) return applyTheme(next);
-    const r = button.getBoundingClientRect();
-    const x = r.left + r.width / 2;
-    const y = r.top + r.height / 2;
-    const radius = Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y));
-    const transition = document.startViewTransition(() => applyTheme(next));
-    const stuck = setTimeout(() => transition.skipTransition(), 1500);
-    transition.ready.then(() => document.documentElement.animate(
-        { clipPath: [`circle(0 at ${x}px ${y}px)`, `circle(${radius}px at ${x}px ${y}px)`] },
-        { duration: 450, easing: 'cubic-bezier(0.23, 1, 0.32, 1)', pseudoElement: '::view-transition-new(root)' },
-    )).catch(() => {});
-    transition.finished.finally(() => clearTimeout(stuck));
+    const root = document.documentElement;
+    const duration = prefersReducedMotion() ? 150 : 400;
+    root.style.setProperty('--theme-fade', `${duration}ms`);
+    if (document.startViewTransition) {
+        const transition = document.startViewTransition(() => applyTheme(next));
+        const stuck = setTimeout(() => transition.skipTransition(), 1500);
+        transition.finished.finally(() => clearTimeout(stuck));
+        return;
+    }
+    root.classList.add('is-theme-fading');
+    applyTheme(next);
+    setTimeout(() => root.classList.remove('is-theme-fading'), duration + 50);
 }
 
 function setupTheme() {
     applyTheme(document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark');
     applyChatBackground();
     document.querySelectorAll('[data-theme-toggle]').forEach(btn => {
-        btn.addEventListener('click', () => switchTheme(btn));
+        btn.addEventListener('click', () => switchTheme());
     });
 }
 
