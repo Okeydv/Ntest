@@ -208,6 +208,13 @@ app.use(cookieParser());
 // Tor connection logger
 app.use(torConnectionLogger);
 
+// «Поделиться» из другого приложения (share_target в манифесте): POST
+// перехватывает service worker (public/sw.js) и отдаёт странице. Сюда
+// запрос доходит, только если service worker ещё не установлен, — тогда
+// ничего не сохраняем и просто открываем приложение. Раньше проверки
+// CSRF: запрос шлёт сама система, токена у него нет, а делать тут нечего.
+app.post('/share', (req, res) => res.redirect(303, '/?share=unavailable'));
+
 app.use((req, res, next) => {
     if (req.path.startsWith('/socket.io')) return next();
 
@@ -420,6 +427,7 @@ Object.assign(ctx, require('./routes/contacts')(app, ctx));
 Object.assign(ctx, require('./routes/messages')(app, ctx));
 Object.assign(ctx, require('./routes/files')(app, ctx));
 require('./routes/link')(app, ctx);
+require('./routes/push')(app, ctx);
 
 // Сокет анонимного аккаунта: срок проверяется и при подключении (вернулся
 // после срока — аккаунт удаляется, сокет отключается), а подключение и

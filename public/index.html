@@ -666,6 +666,22 @@
 
     <!-- Настройки: отметки, «в сети», уведомления, «печатает», звуки, фон
          чата — и выход. -->
+    <!-- «Поделиться» из другого приложения: выбрать чат. -->
+    <dialog id="share-modal" class="modal" aria-labelledby="share-modal-title">
+        <div class="modal-content modal-content-sm">
+            <div class="modal-header">
+                <h3 id="share-modal-title">Куда отправить?</h3>
+                <button class="icon-btn icon-btn-sm icon-btn-quiet close-modal" aria-label="Закрыть" type="button">
+                    <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <p id="share-summary" class="field-hint"></p>
+                <ul id="share-chats" class="share-chats"></ul>
+            </div>
+        </div>
+    </dialog>
+
     <dialog id="settings-modal" class="modal" aria-labelledby="settings-modal-title">
         <div class="modal-content">
             <div class="modal-header">
@@ -694,8 +710,16 @@
                         <input type="checkbox" id="notify-toggle">
                         <span>Уведомления о новых сообщениях</span>
                     </label>
-                    <p class="field-hint">Только «Новое сообщение» — без текста и имени: уведомление видно и на заблокированном экране. Настройка действует в этом браузере.</p>
+                    <p class="field-hint">Настройка действует в этом браузере. Когда Nyxo закрыт, приходит только «Новое сообщение»: сервер не знает ни текста, ни имени.</p>
+                    <p id="push-status" class="field-hint" hidden></p>
                 </div>
+                <fieldset id="notify-content" class="field expiry-options">
+                    <legend class="field-label">В уведомлении</legend>
+                    <label class="radio-row"><input type="radio" name="notify-content" value="none"> Ничего — «Новое сообщение»</label>
+                    <label class="radio-row"><input type="radio" name="notify-content" value="name"> Только имя</label>
+                    <label class="radio-row"><input type="radio" name="notify-content" value="full"> Имя и текст</label>
+                    <p class="field-hint">Уведомление видно и на заблокированном экране.</p>
+                </fieldset>
                 <div class="field">
                     <label class="toggle-row">
                         <input type="checkbox" id="typing-toggle">

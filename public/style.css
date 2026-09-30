@@ -3758,3 +3758,32 @@ dialog.modal .toast { top: calc(1rem + env(safe-area-inset-top, 0px)); bottom: a
     .verified-burst { animation-name: fadeIn; }
     .verified-burst path { animation: none; stroke-dashoffset: 0; }
 }
+
+/* «Поделиться» из другого приложения: список чатов. */
+.share-chats {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    margin: 0.75rem 0 0;
+    padding: 0;
+    list-style: none;
+}
+.share-chat {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    width: 100%;
+    min-height: 44px;
+    padding: 0.5rem 0.625rem;
+    border: 0;
+    border-radius: var(--r-md);
+    background: none;
+    color: var(--text);
+    font: inherit;
+    text-align: start;
+    cursor: pointer;
+}
+.share-chat:active { background: var(--accent-soft); }
+@media (hover: hover) and (pointer: fine) {
+    .share-chat:hover { background: var(--accent-soft); }
+}

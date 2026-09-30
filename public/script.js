@@ -89,6 +89,7 @@ const elements = {
     sendBtn: document.getElementById('send-btn'),
     fileInput: document.getElementById('file-input'),
     newChatBtn: document.getElementById('new-chat-btn'),
+    shareModal: document.getElementById('share-modal'),
     chatHeader: document.getElementById('chat-header'),
     sidebar: document.querySelector('.sidebar'),
     mainContent: document.querySelector('.main-content'),
@@ -641,6 +642,7 @@ async function appendMessageDecrypted(message, { fresh = false, container = null
         message.deviceTrust = await e2ee.senderDeviceTrust(message.user_id, message.sender_device_id);
         if (content && !container) {
             const preview = e2ee.payloadPreview(content);
+            message.preview = preview;
             await e2ee.rememberPreview(message, preview);
             updateChatPreviewInList(message, preview);
         }
@@ -1827,10 +1829,26 @@ function setSoundsOn(on) {
     if (on) playSound('receive');
 }
 
+/*
+ * Когда звенеть о входящем: на компьютере — только если окно не в фокусе
+ * (в фокусе сообщение и так видно); на телефоне — если этот чат не открыт
+ * или приложение свёрнуто. И не чаще раза в секунду.
+ */
+let lastRingAt = 0;
+function shouldRing(message) {
+    const hidden = document.visibilityState !== 'visible';
+    const ring = mobileLayout.matches ? hidden || !isForOpenChat(message) : hidden || !document.hasFocus();
+    if (!ring || Date.now() - lastRingAt < 1000) return false;
+    lastRingAt = Date.now();
+    return true;
+}
+
 function playSound(kind) {
     if (!soundsOn()) return;
     try {
         audioContext = audioContext || new AudioContext();
+        // Браузер усыпляет звук без жеста и в фоне — будим.
+        if (audioContext.state !== 'running') audioContext.resume().catch(() => {});
         const t = audioContext.currentTime;
         const tones = kind === 'send' ? [[740, 0, 0.07]] : [[560, 0, 0.06], [840, 0.06, 0.08]];
         for (const [frequency, start, length] of tones) {
@@ -2032,6 +2050,11 @@ function setupEventListeners() {
     // сверять ключи. Анонимный аккаунт при выходе удаляется целиком, так что
     // спрашивать не о чем.
     const finishLogout = async ({ keepDevice }) => {
+        // Push этому браузеру больше не нужен, а открытые уведомления —
+        // чужому, кто сядет следом.
+        await unsubscribePush();
+        await closeChatNotifications(null);
+        if ('clearAppBadge' in navigator) navigator.clearAppBadge().catch(() => {});
         if (e2ee && e2ee.isReady()) {
             await (keepDevice ? e2ee.detach() : e2ee.wipeDevice());
             e2eeDeviceId = null;
@@ -2472,6 +2495,7 @@ function setupEventListeners() {
     setupSidebarResize();
     setupChatListKeyboard();
     setupNotifications();
+    setupServiceWorker();
     setupConnectionStatus();
     setupDeviceLinking();
     setupMobileScreens();
@@ -2638,6 +2662,7 @@ async function loadChats() {
     if (!data.chats.length) {
         elements.chatsList.innerHTML = '';
         renderChatsPlaceholder('Чатов пока нет — начните новый', { art: true });
+        handleLaunchOnce();
         return;
     }
 
@@ -2690,6 +2715,9 @@ async function loadChats() {
     refreshPresenceDots();
     refreshChatListTabStop();
     renderTyping();
+    // Первый список после входа — теперь можно открыть чат из адреса
+    // (уведомление, «Поделиться», ярлык).
+    handleLaunchOnce();
 }
 
 /*
@@ -3775,6 +3803,7 @@ async function sendReadMark(kind, chatId, upTo) {
         const badge = elements.chatsList.querySelector(`.chat-item[data-id="${chatId}"] .chat-badge:not(.is-requests)`);
         if (badge && data.unread === 0) badge.remove();
         else if (badge) badge.textContent = String(data.unread);
+        if (data.unread === 0) closeChatNotifications(chatId);
         updateTitleCounter();
     }
 }
@@ -3789,7 +3818,9 @@ function scheduleReadMark() {
         if (readMarks.chatId !== chatId) Object.assign(readMarks, { chatId, read: 0, delivered: 0 });
         const upTo = newestShownMessageId();
         if (!upTo) return;
-        const visible = document.visibilityState === 'visible' && atChatBottom();
+        // Прочитано — только то, что видели: вкладка на экране и окно в
+        // фокусе (окно на втором мониторе за другим не считается).
+        const visible = document.visibilityState === 'visible' && document.hasFocus() && atChatBottom();
         if (visible && upTo > readMarks.read) {
             readMarks.read = readMarks.delivered = upTo;
             sendReadMark('read', chatId, upTo);
@@ -3813,10 +3844,50 @@ function applyReceipts({ room_id, read, delivered }) {
 
 // Непрочитанное по всем чатам — в заголовке вкладки.
 const BASE_TITLE = document.title;
+/*
+ * Непрочитанное — в заголовке вкладки, на значке приложения (Chrome и Edge
+ * на компьютере, iPhone с iOS 16.4+ из приложения на экране «Домой» с
+ * разрешёнными уведомлениями; Android не умеет) и точкой на значке вкладки.
+ * Всё прочитано — закрываются и уведомления, в том числе от push.
+ */
+let shownUnreadTotal = null;
 function updateTitleCounter() {
     const total = [...elements.chatsList.querySelectorAll('.chat-badge:not(.is-requests):not(.is-muted)')]
         .reduce((sum, badge) => sum + (Number(badge.textContent) || 0), 0);
     document.title = total ? `(${total}) ${BASE_TITLE}` : BASE_TITLE;
+    if (total === shownUnreadTotal) return;
+    const hadUnread = Boolean(shownUnreadTotal);
+    shownUnreadTotal = total;
+    if ('setAppBadge' in navigator) {
+        (total ? navigator.setAppBadge(total) : navigator.clearAppBadge()).catch(() => {});
+    }
+    setFaviconDot(total > 0);
+    if (!total && hadUnread) closeChatNotifications(null);
+}
+
+// Значок вкладки: исходный SVG, а пока есть непрочитанное — он же с точкой.
+let faviconOriginal = null;
+function setFaviconDot(on) {
+    const link = document.querySelector('link[rel="icon"][type="image/svg+xml"]') || document.querySelector('link[rel="icon"]');
+    if (!link) return;
+    if (faviconOriginal === null) faviconOriginal = link.getAttribute('href');
+    if (!on) {
+        link.setAttribute('href', faviconOriginal);
+        return;
+    }
+    const img = new Image();
+    img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = canvas.height = 64;
+        const g = canvas.getContext('2d');
+        g.drawImage(img, 0, 0, 64, 64);
+        g.beginPath();
+        g.arc(50, 14, 12, 0, Math.PI * 2);
+        g.fillStyle = '#ff3b30';
+        g.fill();
+        if (shownUnreadTotal) link.setAttribute('href', canvas.toDataURL('image/png'));
+    };
+    img.src = faviconOriginal;
 }
 
 function setupReadMarks() {
@@ -4881,12 +4952,10 @@ function isForOpenChat({ chat_id, room_id }) {
 }
 
 async function handleNewMessage(message) {
-    notifyNewMessage(message);
     if (message.room_id && message.user_id) stopTyping(message.room_id, message.user_id);
     if (!isOwnMessage(message) && message.message_type !== 'system' && Number(message.sent) !== 0) {
-        const chat = [...chatsMeta.values()].find(c => (message.room_id ? Number(c.room_id) === Number(message.room_id)
-            : c.id === Number(message.chat_id)));
-        if (!chat || !chat.muted) playSound('receive');
+        const chat = chatOfMessage(message);
+        if ((!chat || !chat.muted) && shouldRing(message)) playSound('receive');
     }
     if (isForOpenChat(message)) {
         // Читают историю — не выдёргиваем вниз, а показываем «↓» со
@@ -4907,15 +4976,19 @@ async function handleNewMessage(message) {
         } else {
             refreshOpenChatItem(message);
         }
+        notifyNewMessage(message, message.preview || (message.encrypted ? '' : message.text || ''));
     } else {
         // Чужой чат: расшифровываем ради превью в списке, рисовать
         // нечего.
+        let preview = message.encrypted ? '' : message.text || '';
         if (message.encrypted && e2ee) {
             const raw = await resolveMessageText(message);
             if (raw !== null) {
-                await e2ee.rememberPreview(message, e2ee.payloadPreview(e2ee.decodePayload(raw)));
+                preview = e2ee.payloadPreview(e2ee.decodePayload(raw));
+                await e2ee.rememberPreview(message, preview);
             }
         }
+        notifyNewMessage(message, preview);
         scheduleChatsReload();
     }
 }
@@ -5817,12 +5890,20 @@ function setupSidebarResize() {
 }
 
 /* --- Уведомления --------------------------------------------------------
-   Без текста и без имени: уведомление видно на заблокированном экране и
-   через плечо. Только «Новое сообщение»; одинаковый tag — новое заменяет
-   прежнее, и из нескольких вкладок остаётся одно. Включаются в профиле,
-   в этом браузере. */
+   Через service worker (registration.showNotification): Chrome на Android
+   и Safari на iPhone по-другому не показывают. У каждого чата свой tag
+   (chat:<id>) — новое сообщение другого чата не затирает прежнее, а
+   renotify звенит и при замене. Прочитали чат — его уведомления
+   закрываются. Что показывать — выбирает человек: ничего («Новое
+   сообщение»), имя или имя и текст; по умолчанию — ничего: уведомление
+   видно на заблокированном экране.
+
+   Когда Nyxo закрыт — Web Push (lib/push.js): пустой, без текста и чата,
+   service worker показывает «Новое сообщение». Включается тем же
+   переключателем; на iPhone — только из приложения на экране «Домой». */
 
 const NOTIFY_KEY = 'nyxo-notify';
+const NOTIFY_CONTENT_KEY = 'nyxo-notify-content';
 
 function notificationsOn() {
     try {
@@ -5832,10 +5913,29 @@ function notificationsOn() {
     }
 }
 
+function notifyContent() {
+    try {
+        const value = localStorage.getItem(NOTIFY_CONTENT_KEY);
+        return ['name', 'full'].includes(value) ? value : 'none';
+    } catch {
+        return 'none';
+    }
+}
+
+// iPhone и iPad (iPadOS выдаёт себя за Mac, но у Mac нет касаний).
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+
 function setupNotifications() {
     const toggle = elements.notifyToggle;
-    if (!('Notification' in window)) toggle.disabled = true;
+    if (!('Notification' in window)) {
+        toggle.disabled = true;
+        // На iPhone в Safari уведомлений нет вовсе — только у приложения на
+        // экране «Домой».
+        if (isIOS && !isStandalone()) showPushStatus('На iPhone уведомления работают только в приложении: «Поделиться» → «На экран „Домой“», потом откройте Nyxo оттуда.');
+    }
     toggle.addEventListener('change', async () => {
+        // Разрешение — только по нажатию: Safari иначе не спросит.
         if (toggle.checked && await Notification.requestPermission() !== 'granted') {
             toggle.checked = false;
             return showToast('Браузер не разрешил уведомления — это меняется в настройках сайта', 'error');
@@ -5846,29 +5946,262 @@ function setupNotifications() {
             toggle.checked = false;
             return showToast('Браузер не даёт сохранить настройку', 'error');
         }
+        if (toggle.checked) await subscribePush();
+        else await unsubscribePush();
         showToast(toggle.checked ? 'Уведомления включены' : 'Уведомления выключены', 'success');
     });
+    for (const radio of document.querySelectorAll('input[name="notify-content"]')) {
+        radio.checked = radio.value === notifyContent();
+        radio.addEventListener('change', () => {
+            try { localStorage.setItem(NOTIFY_CONTENT_KEY, radio.value); } catch { /* хранилище недоступно */ }
+        });
+    }
 }
 
-function notifyNewMessage(message) {
-    if (!notificationsOn() || isOwnMessage(message) || message.message_type === 'system') return;
-    const chat = [...chatsMeta.values()].find(c => (message.room_id ? Number(c.room_id) === Number(message.room_id)
-        : c.id === Number(message.chat_id)));
-    if (chat && chat.muted) return;
-    const open = isForOpenChat(message);
-    if (open && document.visibilityState === 'visible') return;
+function showPushStatus(text) {
+    const line = document.getElementById('push-status');
+    line.textContent = text || '';
+    line.hidden = !text;
+}
+
+/* Web Push: подписка браузера → адрес его службы уведомлений на сервер. */
+async function subscribePush() {
+    const registration = await serviceWorkerReady();
+    if (!registration || !('PushManager' in window)) {
+        showPushStatus(isIOS && !isStandalone()
+            ? 'Когда Nyxo закрыт, уведомлений не будет: на iPhone это работает только в приложении на экране «Домой».'
+            : 'Когда Nyxo закрыт, уведомлений не будет: этот браузер не умеет push.');
+        return false;
+    }
     try {
-        const notification = new Notification('Nyxo', { body: 'Новое сообщение', tag: 'nyxo-new-message' });
+        const key = await api('/api/push/key');
+        if (!key.success) throw new Error(key.message);
+        const applicationServerKey = Uint8Array.from(atob(key.publicKey.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+        let subscription = await registration.pushManager.getSubscription();
+        // Подписка на другой ключ сервера (ключ сменили) — не годится.
+        if (subscription && subscription.options.applicationServerKey
+            && btoa(String.fromCharCode(...new Uint8Array(subscription.options.applicationServerKey))) !== btoa(String.fromCharCode(...applicationServerKey))) {
+            await subscription.unsubscribe();
+            subscription = null;
+        }
+        subscription = subscription || await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey });
+        const saved = await api('/api/push/subscription', { method: 'POST', body: JSON.stringify({ endpoint: subscription.endpoint }) });
+        if (!saved.success) throw new Error(saved.message);
+        showPushStatus('');
+        return true;
+    } catch (error) {
+        console.warn('Push не включился:', error);
+        showPushStatus('Когда Nyxo закрыт, уведомлений не будет: push не включился.');
+        return false;
+    }
+}
+
+async function unsubscribePush() {
+    try {
+        const registration = await serviceWorkerReady();
+        const subscription = registration && await registration.pushManager?.getSubscription();
+        if (!subscription) return;
+        await api('/api/push/subscription', { method: 'DELETE', body: JSON.stringify({ endpoint: subscription.endpoint }) }).catch(() => {});
+        await subscription.unsubscribe();
+    } catch {
+        // Не вышло — сервер забудет подписку, когда служба ответит 410.
+    }
+}
+
+function chatOfMessage(message) {
+    return [...chatsMeta.values()].find(c => (message.room_id ? Number(c.room_id) === Number(message.room_id)
+        : c.id === Number(message.chat_id)));
+}
+
+/**
+ * Уведомление о новом сообщении. preview — расшифрованный текст (если
+ * есть). На компьютере — когда окно не в фокусе; открытый чат на экране —
+ * без уведомления.
+ */
+async function notifyNewMessage(message, preview = '') {
+    if (!notificationsOn() || isOwnMessage(message) || message.message_type === 'system') return;
+    const chat = chatOfMessage(message);
+    if (!chat || chat.muted) return;
+    if (isForOpenChat(message) && document.visibilityState === 'visible' && document.hasFocus()) return;
+    const content = notifyContent();
+    const author = message.sender_username || '';
+    let title = 'Nyxo';
+    let body = 'Новое сообщение';
+    if (content !== 'none') {
+        title = chat.name || author || 'Nyxo';
+        if (content === 'full' && preview) body = chat.kind === 'group' && author ? `${author}: ${preview}` : preview;
+    }
+    const options = { body, tag: `chat:${chat.id}`, renotify: true, icon: '/icons/icon-192.png', badge: '/icons/icon-192.png', data: { chatId: chat.id } };
+    const registration = await serviceWorkerReady();
+    if (registration) {
+        try {
+            await registration.showNotification(title, options);
+            return;
+        } catch {
+            // Не дали — пробуем по-старому, из страницы.
+        }
+    }
+    try {
+        const notification = new Notification(title, options);
         notification.addEventListener('click', () => {
             window.focus();
-            const item = message.room_id
-                ? elements.chatsList.querySelector(`.chat-item[data-room-id="${Number(message.room_id)}"]`)
-                : elements.chatsList.querySelector(`.chat-item[data-id="${Number(message.chat_id)}"]`);
-            if (item && !open) item.click();
+            openChatById(chat.id);
             notification.close();
         });
     } catch {
-        // Chrome на Android показывает уведомления только через service worker.
+        // Без service worker тут уведомления не умеют — ничего не поделать.
+    }
+}
+
+/** Чат прочитан — его уведомления больше не нужны; прочитано всё — и push. */
+async function closeChatNotifications(chatId) {
+    const registration = await serviceWorkerReady();
+    if (!registration || !registration.getNotifications) return;
+    const list = await registration.getNotifications(chatId ? { tag: `chat:${chatId}` } : {}).catch(() => []);
+    for (const n of list) n.close();
+}
+
+function openChatById(chatId) {
+    const item = elements.chatsList.querySelector(`.chat-item[data-id="${Number(chatId)}"]`);
+    if (item && Number(currentChatId) !== Number(chatId)) item.click();
+}
+
+/* --- Service worker -----------------------------------------------------------
+   public/sw.js — уведомления, push и «Поделиться»; ничего не кэширует.
+   Новая версия ждёт: тост «Обновить», и только по нажатию она включается
+   и страница перезагружается. Без HTTPS (например, .onion по HTTP в
+   обычном браузере) service worker'а нет — уведомления тогда по-старому. */
+
+let swRegistrationPromise = null;
+function serviceWorkerReady() {
+    return swRegistrationPromise || Promise.resolve(null);
+}
+
+function setupServiceWorker() {
+    if (!('serviceWorker' in navigator) || !window.isSecureContext) return;
+    let acceptedUpdate = false;
+    const offerUpdate = worker => showToast('Вышла новая версия Nyxo', 'info', {
+        duration: 60_000,
+        action: { label: 'Обновить', onClick: () => {
+            acceptedUpdate = true;
+            worker.postMessage({ type: 'skip-waiting' });
+        } },
+    });
+    swRegistrationPromise = navigator.serviceWorker.register('/sw.js').then(registration => {
+        if (registration.waiting && navigator.serviceWorker.controller) offerUpdate(registration.waiting);
+        registration.addEventListener('updatefound', () => {
+            const worker = registration.installing;
+            worker?.addEventListener('statechange', () => {
+                // Первая установка (контроллера ещё не было) — не обновление.
+                if (worker.state === 'installed' && navigator.serviceWorker.controller) offerUpdate(worker);
+            });
+        });
+        // Вкладку держат открытой днями — проверяем, не вышло ли новое.
+        setInterval(() => registration.update().catch(() => {}), 60 * 60 * 1000);
+        return registration;
+    }).catch(error => {
+        console.warn('Service worker не установился:', error);
+        return null;
+    });
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (acceptedUpdate) location.reload();
+    });
+    navigator.serviceWorker.addEventListener('message', event => {
+        if (event.data && event.data.type === 'open-chat') openChatById(event.data.chatId);
+    });
+}
+
+/* --- Запуск по адресу ---------------------------------------------------------
+   ?chat=<id> — из уведомления, когда окна не было; ?share=1 — «Поделиться»
+   из другого приложения; ?action=new-chat — ярлык приложения. В
+   установленном приложении с launch_handler «focus-existing» адрес приходит
+   в уже открытое окно через launchQueue. */
+
+async function handleLaunchUrl(href) {
+    const url = new URL(href, location.origin);
+    const params = url.searchParams;
+    if (params.has('chat')) openChatById(params.get('chat'));
+    if (params.get('action') === 'new-chat') elements.newChatBtn?.click();
+    if (params.get('share') === '1') await receiveShare();
+    else if (params.get('share') === 'unavailable') showToast('Не получилось принять — поделитесь ещё раз', 'error');
+    if ([...params.keys()].some(k => ['chat', 'action', 'share'].includes(k))) {
+        history.replaceState(history.state, '', location.pathname + location.hash);
+    }
+}
+
+/* «Поделиться»: service worker положил присланное в кэш на один раз
+   (public/sw.js). Забираем, стираем и спрашиваем, в какой чат. Текст и
+   ссылка встают в поле ввода, файлы — в обычное окно отправки. */
+async function receiveShare() {
+    let shared = null;
+    try {
+        const cache = await caches.open('nyxo-share');
+        const meta = await cache.match('/__share/meta');
+        if (meta) {
+            shared = await meta.json();
+            shared.files = await Promise.all(shared.files.map(async (f, i) => {
+                const blob = await (await cache.match(`/__share/file/${i}`)).blob();
+                return new File([blob], f.name || `файл-${i + 1}`, { type: f.type || blob.type });
+            }));
+        }
+        await caches.delete('nyxo-share');
+    } catch (error) {
+        console.warn('«Поделиться» не прочиталось:', error);
+    }
+    if (!shared) return;
+    const text = [shared.title, shared.text, shared.url].filter(Boolean)
+        .filter((part, i, all) => !all.slice(0, i).some(prev => prev.includes(part))).join('\n');
+    const chats = [...chatsMeta.values()].filter(c => !c.is_bot && !c.archived);
+    if (!chats.length) return showToast('Сначала начните чат — тогда будет куда отправить', 'info');
+    const files = shared.files.length;
+    document.getElementById('share-summary').textContent = [
+        text ? `Текст: «${text.length > 80 ? text.slice(0, 80) + '…' : text}»` : '',
+        files ? `${files} ${['файл', 'файла', 'файлов'][pluralForm(files)]}` : '',
+    ].filter(Boolean).join(' · ');
+    const list = document.getElementById('share-chats');
+    list.replaceChildren(...chats.map(chat => {
+        const li = document.createElement('li');
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'share-chat';
+        const avatar = document.createElement('span');
+        avatar.className = 'chat-avatar-small';
+        avatar.setAttribute('aria-hidden', 'true');
+        paintAvatar(avatar, chat.kind === 'direct' ? chat.peer_avatar : chat.avatar, chat.name);
+        const name = document.createElement('span');
+        name.textContent = chat.name;
+        button.append(avatar, name);
+        button.addEventListener('click', async () => {
+            closeModal(elements.shareModal);
+            openChatById(chat.id);
+            // Чат открывается асинхронно — ждём, пока он станет текущим.
+            for (let i = 0; i < 50 && Number(currentChatId) !== Number(chat.id); i++) await new Promise(r => setTimeout(r, 50));
+            if (text) {
+                setMessageInput(text);
+                elements.messageInput.focus();
+            }
+            if (shared.files.length) confirmFiles(shared.files);
+        });
+        li.appendChild(button);
+        return li;
+    }));
+    openModal(elements.shareModal);
+}
+
+let launchHandled = false;
+let pushSyncedFor = null;
+function handleLaunchOnce() {
+    // Push включён — напоминаем серверу адрес подписки: он мог смениться, а
+    // в этом браузере мог войти другой аккаунт.
+    if (currentUser && pushSyncedFor !== currentUser.id && notificationsOn()) {
+        pushSyncedFor = currentUser.id;
+        subscribePush();
+    }
+    if (launchHandled) return;
+    launchHandled = true;
+    handleLaunchUrl(location.href);
+    if ('launchQueue' in window) {
+        window.launchQueue.setConsumer(params => { if (params.targetURL) handleLaunchUrl(params.targetURL); });
     }
 }
 

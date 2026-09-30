@@ -12,6 +12,7 @@ const { E2EE_REQUIRED, ROOM_EMPTY, BLOCKED, canWriteTo, directBlock } = require(
 const { plaintextNotice } = require('../lib/plaintext-purge');
 const EMOJI_SET = require('../public/emoji/set.json');
 const { BLOB_ID_RE, MAX_BLOBS_PER_MESSAGE, purgeMessageContent } = require('../lib/storage');
+const { notifyRoom } = require('../lib/push');
 
 
 module.exports = function registerMessageRoutes(app, ctx) {
@@ -395,6 +396,8 @@ module.exports = function registerMessageRoutes(app, ctx) {
                     });
                 }
             }
+            // Кто не в сети — пустой push (lib/push.js). Не ждём.
+            if (roomId) notifyRoom(roomId, req.session.userId);
 
             res.json({
                 success: true,

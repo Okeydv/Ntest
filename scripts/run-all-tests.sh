@@ -28,8 +28,8 @@ mkdir -p "$LOGS"
 
 OFFLINE="test-e2ee-crypto test-metadata test-file-sandbox test-media-cleaning test-pdf-cleaning test-e2ee-crypto-browser"
 ONLINE="integration-test-access integration-test-migrations integration-test-security integration-test-server integration-test-devices
-integration-test-anon integration-test-groups integration-test-contacts integration-test-envelopes integration-test-uploads integration-test-plaintext-purge integration-test-keyserver-down test-e2ee-files test-e2ee-safety test-e2ee-groups
-test-e2ee-sessions test-e2ee-local-data test-e2ee-qr test-device-link test-read-state test-two-tabs test-feed test-composer test-empty-room test-no-plaintext test-details test-groups-ui test-direct-ui test-anon-ui test-pins-ui test-motion-ui test-e2ee-ui test-ui-basics test-ui-dialogs"
+integration-test-anon integration-test-groups integration-test-contacts integration-test-push integration-test-envelopes integration-test-uploads integration-test-plaintext-purge integration-test-keyserver-down test-e2ee-files test-e2ee-safety test-e2ee-groups
+test-e2ee-sessions test-e2ee-local-data test-e2ee-qr test-device-link test-read-state test-two-tabs test-feed test-composer test-empty-room test-no-plaintext test-details test-groups-ui test-direct-ui test-anon-ui test-pins-ui test-notify-ui test-motion-ui test-e2ee-ui test-ui-basics test-ui-dialogs"
 if [ $# -gt 0 ]; then
     SELECTED=" $* "
 else
@@ -82,6 +82,7 @@ start_servers() {
         INTERNAL_KEY_SERVER_SECRET=$SECRET KEY_SERVER_URL=http://127.0.0.1:7422 \
         NODE_ENV=development PORT=3006 HOST=127.0.0.1 \
         ALLOWED_ORIGINS=http://nyxotestaddress.onion ANON_SWEEP_INTERVAL_MS=2000 PLAINTEXT_PURGE_INTERVAL_MS=2000 \
+        PUSH_EXTRA_HOSTS=127.0.0.1:4599 PUSH_MIN_INTERVAL_MS=5000 \
         node server.js > "$LOGS/server.log" 2>&1 &
     PIDS+=($!)
     wait_for http://127.0.0.1:3006/ || { echo "сервер не поднялся, см. $LOGS/server.log" >&2; return 1; }
