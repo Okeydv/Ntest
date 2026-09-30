@@ -12,7 +12,7 @@
 //     собеседника меняется сразу;
 //   - Esc отменяет ответ и правку;
 //   - черновик и место в ленте остаются за чатом;
-//   - пока грузится история — скелетон;
+//   - пока грузится история — скелетон или лента из памяти;
 //   - «уменьшить движение» оставляет затухание, но убирает сдвиг.
 //
 // Требует поднятых Postgres, key-server и server.js на 3006 и ЧИСТОЙ базы.
@@ -329,8 +329,10 @@ check('смена ✓ на ✓✓ — с затуханием', await alice.eval
 await alice.route('**/api/messages/*?limit=*', async route => { await sleep(700); await route.continue(); });
 await alice.locator(BOT).first().click();
 await alice.waitForTimeout(300);
-check('пока грузится история — скелетон',
-    await alice.evaluate(() => document.querySelectorAll('#chat-messages .message-skeleton').length > 0));
+// Чат уже открывали — его лента из памяти видна сразу (п. 204); иначе —
+// скелетон. Пустоты нет ни так, ни так.
+check('пока грузится история — скелетон или лента из памяти',
+    await alice.evaluate(() => document.querySelectorAll('#chat-messages .message-skeleton, #chat-messages .message').length > 0));
 await alice.waitForTimeout(1200);
 check('после загрузки скелетона нет',
     await alice.evaluate(() => document.querySelectorAll('#chat-messages .message-skeleton').length === 0

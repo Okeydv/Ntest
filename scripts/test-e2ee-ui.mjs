@@ -191,7 +191,7 @@ const expiryToast = await alice.page.evaluate(() => {
 });
 check('тост: «Исчезающие сообщения: 1 день · Отменить», со значком, цвета противоположного теме',
     expiryToast.text === 'Исчезающие сообщения: 1 день' && expiryToast.action === 'Отменить' && expiryToast.icon
-    && expiryToast.bg === (expiryToast.theme === 'light' ? 'rgb(27, 27, 39)' : 'rgb(242, 243, 247)'), JSON.stringify(expiryToast));
+    && expiryToast.bg === (expiryToast.theme === 'light' ? 'rgb(10, 10, 10)' : 'rgb(250, 250, 250)'), JSON.stringify(expiryToast));
 check('собеседнику — «Срок исчезающих сообщений · 1 день · alice» (без «(а)»)',
     (await systemLines(bob.page)).includes('Срок исчезающих сообщений · 1 день · alice'), JSON.stringify(await systemLines(bob.page)));
 await alice.page.click('#toast .toast-action');

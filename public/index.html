@@ -7,10 +7,10 @@
     <link rel="manifest" href="/manifest.webmanifest">
     <link rel="apple-touch-icon" href="/icons/icon-192.png">
     <meta name="color-scheme" content="dark light">
-    <meta name="theme-color" content="#08080e" media="(prefers-color-scheme: dark)">
-    <meta name="theme-color" content="#f4f4f7" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)">
+    <meta name="theme-color" content="#f5f5f5" media="(prefers-color-scheme: light)">
     <title>Nyxo — Мессенджер</title>
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%238b7bff'/%3E%3Cstop offset='1' stop-color='%23a86cf5'/%3E%3C/linearGradient%3E%3Cmask id='m'%3E%3Crect width='32' height='32' fill='%23fff'/%3E%3Ccircle cx='25.5' cy='7' r='9.5' fill='%23000'/%3E%3C/mask%3E%3C/defs%3E%3Ccircle cx='15' cy='17' r='11' fill='url(%23g)' mask='url(%23m)'/%3E%3Ccircle cx='25.5' cy='7' r='3.25' fill='url(%23g)'/%3E%3C/svg%3E">
+    <link rel="icon" type="image/svg+xml" href="/icons/favicon.svg">
     <link rel="stylesheet" href="style.css">
     <script src="theme.js"></script>
 </head>
@@ -43,6 +43,9 @@
             <circle cx="25.5" cy="7" r="3.25" fill="currentColor" stroke="none"/>
         </symbol>
 
+        <symbol id="i-bot" viewBox="0 0 24 24">
+            <rect x="4.5" y="8" width="15" height="11" rx="3"/><path d="M12 4.5V8M9 13h.01M15 13h.01M9.5 16h5"/>
+        </symbol>
         <symbol id="i-sun" viewBox="0 0 24 24">
             <circle cx="12" cy="12" r="4.25"/>
             <path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4"/>
@@ -285,10 +288,29 @@
                     <button id="get-chat-code-btn" class="icon-btn" title="Ссылка-приглашение" aria-label="Ссылка-приглашение" type="button" hidden>
                         <svg class="icon" aria-hidden="true"><use href="#i-link"/></svg>
                     </button>
+                    <button id="chat-search-btn" class="icon-btn" title="Поиск в чате (Ctrl+F)" aria-label="Поиск в чате" type="button">
+                        <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+                    </button>
                     <button id="chat-menu-btn" class="icon-btn" title="Меню чата" aria-label="Меню чата" type="button">
                         <svg class="icon" aria-hidden="true"><use href="#i-more"/></svg>
                     </button>
                 </div>
+            </div>
+
+            <!-- Поиск по сообщениям чата — по расшифрованному на этом устройстве. -->
+            <div id="chat-search" class="chat-search" role="search" hidden>
+                <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+                <input id="chat-search-input" type="search" placeholder="Поиск в чате" autocomplete="off" aria-label="Поиск в чате" dir="auto">
+                <span id="chat-search-count" class="chat-search-count" aria-live="polite"></span>
+                <button id="chat-search-up" class="icon-btn icon-btn-sm icon-btn-quiet" type="button" aria-label="Раньше" title="Раньше (↑)">
+                    <svg class="icon icon-up" aria-hidden="true"><use href="#i-back"/></svg>
+                </button>
+                <button id="chat-search-down" class="icon-btn icon-btn-sm icon-btn-quiet" type="button" aria-label="Позже" title="Позже (↓)">
+                    <svg class="icon icon-down" aria-hidden="true"><use href="#i-back"/></svg>
+                </button>
+                <button id="chat-search-close" class="icon-btn icon-btn-sm icon-btn-quiet" type="button" aria-label="Закрыть поиск">
+                    <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
+                </button>
             </div>
 
             <!-- Старые сообщения без шифрования в этом чате будут стёрты с сервера. -->
@@ -300,7 +322,7 @@
                 <span class="join-requests-bar-action">Посмотреть</span>
             </button>
             </div>
-            <div id="chat-messages" class="chat-messages"></div>
+            <div id="chat-messages" class="chat-messages" role="log" aria-label="Сообщения"></div>
             <!-- Группа, где пока только вы: писать некому, и сервер такое не примет —
                  шифровать не для кого, текст лёг бы на него открытым. -->
             <div id="room-empty" class="room-empty" hidden>
@@ -333,6 +355,16 @@
             <div id="connection-status" class="connection-status" role="status" hidden>
                 <span class="connection-spinner" aria-hidden="true"></span>
                 <span id="connection-status-text">Соединение…</span>
+            </div>
+
+            <!-- Выбор нескольких сообщений: вместо поля ввода. -->
+            <div id="selection-bar" class="selection-bar" hidden>
+                <button id="selection-cancel" class="icon-btn icon-btn-sm icon-btn-quiet" type="button" aria-label="Отменить выбор">
+                    <svg class="icon" aria-hidden="true"><use href="#i-close"/></svg>
+                </button>
+                <span id="selection-count" class="selection-count" aria-live="polite"></span>
+                <button id="selection-copy" class="btn btn-secondary" type="button">Копировать</button>
+                <button id="selection-delete" class="btn btn-danger" type="button">Удалить</button>
             </div>
 
             <div id="message-input-container" class="message-input-container hidden">
@@ -374,7 +406,8 @@
                 </div>
                 <div class="input-wrapper">
                     <!-- Enter отправляет, Shift+Enter — перенос строки. -->
-                    <textarea id="message-input" rows="1" placeholder="Введите сообщение" maxlength="4000" autocomplete="off" enterkeyhint="send" aria-label="Сообщение"></textarea>
+                    <textarea id="message-input" rows="1" placeholder="Введите сообщение" autocomplete="off" enterkeyhint="send" aria-label="Сообщение" dir="auto"></textarea>
+                    <span id="message-counter" class="message-counter" aria-live="polite" hidden></span>
                     <!-- Одна кнопка на три случая: пустое поле — скрепка, есть текст —
                          «Отправить», правка — «Сохранить». Значки все в разметке,
                          видимый выбирает data-mode. -->
@@ -569,6 +602,18 @@
                         <span>В архив</span>
                     </button>
                 </div>
+                <!-- «Без звука» на время: появляется по нажатию «Без звука». -->
+                <div id="mute-for" class="mute-for" role="group" aria-label="Без звука на" hidden>
+                    <button type="button" class="btn btn-secondary" data-mute-for="3600">1 час</button>
+                    <button type="button" class="btn btn-secondary" data-mute-for="28800">8 часов</button>
+                    <button type="button" class="btn btn-secondary" data-mute-for="86400">1 день</button>
+                    <button type="button" class="btn btn-secondary" data-mute-for="259200">3 дня</button>
+                    <button type="button" class="btn btn-secondary" data-mute-for="">Навсегда</button>
+                </div>
+                <button id="mark-unread-btn" class="btn btn-secondary btn-block" type="button">
+                    <svg class="icon" aria-hidden="true"><use href="#i-info"/></svg>
+                    Отметить непрочитанным
+                </button>
                 <button id="chat-menu-members-btn" class="btn btn-secondary btn-block" type="button" hidden>
                     <svg class="icon" aria-hidden="true"><use href="#i-users"/></svg>
                     Участники и название
@@ -609,7 +654,7 @@
                         </span>
                     </div>
                 </div>
-                <div class="field">
+                <div class="field" hidden>
                     <span class="field-label">Цвет аватара</span>
                     <div class="color-picker">
                         <button class="color-option" data-color="#6D5EFC" aria-label="Индиго" type="button"></button>
@@ -652,6 +697,13 @@
                     <button id="link-device-btn" class="btn btn-secondary btn-block" type="button">Подключить устройство по QR-коду</button>
                 </section>
                 <!-- Незнакомый вход или неверные пароли — повод сменить пароль и отозвать устройство. -->
+                <!-- Ключи в IndexedDB браузер может стереть (Safari — после недели без
+                     Nyxo). Постоянное хранилище просят по нажатию. -->
+                <section id="storage-section" class="devices-section" aria-labelledby="storage-title" hidden>
+                    <h4 id="storage-title" class="field-label">Ключи на этом устройстве</h4>
+                    <p id="storage-state" class="field-hint"></p>
+                    <button id="storage-persist-btn" class="btn btn-secondary btn-block" type="button" hidden>Защитить от очистки</button>
+                </section>
                 <section id="security-section" class="devices-section" aria-labelledby="security-title" hidden>
                     <h4 id="security-title" class="field-label">Журнал безопасности</h4>
                     <ul id="security-list" class="security-list"></ul>
@@ -734,6 +786,25 @@
                     </label>
                     <p class="field-hint">Короткие и тихие. Настройка действует в этом браузере.</p>
                 </div>
+                <div class="field">
+                    <label class="toggle-row">
+                        <input type="checkbox" id="haptics-toggle">
+                        <span>Вибрация</span>
+                    </label>
+                    <p class="field-hint">Отклик при свайпах и долгом нажатии. Настройка действует в этом браузере.</p>
+                </div>
+                <div class="field">
+                    <label class="toggle-row">
+                        <input type="checkbox" id="privacy-cover-toggle">
+                        <span>Прятать переписку, когда Nyxo свёрнут</span>
+                    </label>
+                    <p class="field-hint">Вместо ленты — знак Nyxo: переписку не видно в переключателе приложений. Настройка действует в этом браузере.</p>
+                </div>
+                <fieldset class="field expiry-options">
+                    <legend class="field-label">Отправка сообщения</legend>
+                    <label class="radio-row"><input type="radio" name="send-key" value="enter"> Enter (перенос строки — Shift+Enter)</label>
+                    <label class="radio-row"><input type="radio" name="send-key" value="ctrl"> Ctrl+Enter (Enter — перенос строки)</label>
+                </fieldset>
                 <fieldset class="field expiry-options">
                     <legend class="field-label">Фон чата</legend>
                     <label class="radio-row"><input type="radio" name="chat-bg" value="gradient"> Градиент с узором</label>
@@ -760,6 +831,13 @@
             </div>
             <div class="modal-body">
                 <ul id="send-files-list" class="send-files-list"></ul>
+                <!-- Для фото: сжатие перед отправкой. -->
+                <fieldset id="send-files-quality" class="field expiry-options" hidden>
+                    <legend class="field-label">Фото</legend>
+                    <label class="radio-row"><input type="radio" name="photo-quality" value="normal" checked> Сжать (до 1280 px)</label>
+                    <label class="radio-row"><input type="radio" name="photo-quality" value="high"> Высокое качество (до 2560 px)</label>
+                    <label class="radio-row"><input type="radio" name="photo-quality" value="original"> Без сжатия</label>
+                </fieldset>
                 <p class="field-hint send-files-note">Перед отправкой из файлов удаляются автор, дата и место съёмки; в чатах с собеседниками файл шифруется.</p>
                 <div class="logout-actions">
                     <button id="send-files-cancel" class="btn btn-secondary btn-block" type="button">Отмена</button>
@@ -1040,6 +1118,10 @@
         <!-- Реакции — сверху, действия — под ними. Кнопки строит script.js из
              public/emoji/set.json. -->
         <div id="reaction-row" class="reaction-row" role="group" aria-label="Реакция"></div>
+        <button id="copy-message-btn" class="menu-item" role="menuitem" type="button">
+            <svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg>
+            Копировать
+        </button>
         <button id="reply-message-btn" class="menu-item" role="menuitem" type="button">
             <svg class="icon" aria-hidden="true"><use href="#i-reply"/></svg>
             Ответить
@@ -1053,6 +1135,10 @@
         <button id="edit-message-btn" class="menu-item" role="menuitem" type="button">
             <svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg>
             Редактировать
+        </button>
+        <button id="select-message-btn" class="menu-item" role="menuitem" type="button">
+            <svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>
+            Выбрать
         </button>
         <button id="delete-message-btn" class="menu-item danger" role="menuitem" type="button">
             <svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg>
@@ -1079,6 +1165,10 @@
             <svg class="icon" aria-hidden="true"><use href="#i-bell-off"/></svg>
             <span>Без звука</span>
         </button>
+        <button data-action="unread" class="menu-item" role="menuitem" type="button">
+            <svg class="icon" aria-hidden="true"><use href="#i-info"/></svg>
+            <span>Отметить непрочитанным</span>
+        </button>
         <button data-action="archive" class="menu-item" role="menuitem" type="button">
             <svg class="icon" aria-hidden="true"><use href="#i-archive"/></svg>
             <span>В архив</span>
@@ -1092,6 +1182,11 @@
 
     <!-- Узкий список: «Название · время» у чата под мышью или в фокусе. -->
     <div id="compact-tip" class="compact-tip" role="tooltip" hidden></div>
+
+    <!-- Экран приватности: пока Nyxo свёрнут, вместо переписки — знак. -->
+    <div id="privacy-cover" class="privacy-cover" aria-hidden="true" hidden>
+        <svg class="icon" aria-hidden="true"><use href="#i-brand-mono"/></svg>
+    </div>
 
     <!-- Тост — popover="manual": так он в верхнем слое и виден поверх открытого окна. -->
     <div id="toast" class="toast" role="status" aria-live="polite" popover="manual"></div>

@@ -484,44 +484,69 @@ module.exports = function registerMessageRoutes(app, ctx) {
     app.get('/api/messages/:chatId', async (req, res) => {
         if (!req.session.userId) return res.json({ success: false, message: 'Не авторизован' });
         const chatId = req.params.chatId;
-        // История страницами, от новых к старым: before — id самого старого из
-        // уже показанных. Без before — последние limit сообщений.
+        // История страницами. Без параметров — последние limit сообщений;
+        // before — те, что старше (id самого старого из показанных); after —
+        // те, что новее (самого нового из показанных); around — срез вокруг
+        // сообщения: половина до него (с ним), половина после. around нужен,
+        // чтобы открыть чат на первом непрочитанном и перейти по цитате, не
+        // листая всю историю. hasMore — есть ли что-то раньше, hasNewer —
+        // позже.
         const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || HISTORY_PAGE, 1), HISTORY_PAGE_MAX);
-        const before = req.query.before === undefined ? null : Number(req.query.before);
-        if (before !== null && !(Number.isInteger(before) && before > 0)) {
-            return res.status(400).json({ success: false, message: 'Некорректный before' });
+        const idParam = name => (req.query[name] === undefined ? null : Number(req.query[name]));
+        const before = idParam('before');
+        const after = idParam('after');
+        const around = idParam('around');
+        for (const [name, value] of [['before', before], ['after', after], ['around', around]]) {
+            if (value !== null && !(Number.isInteger(value) && value > 0)) {
+                return res.status(400).json({ success: false, message: `Некорректный ${name}` });
+            }
+        }
+        if ([before, after, around].filter(v => v !== null).length > 1) {
+            return res.status(400).json({ success: false, message: 'Только одно из before, after, around' });
         }
         try {
             const chat = await dbGet('SELECT * FROM chats WHERE id = $1 AND user_id = $2', [chatId, req.session.userId]);
             if (!chat) return res.json({ success: false, message: 'Чат не найден' });
 
             const selectParam = chat.room_id || chatId;
-            const selectQuery = chat.room_id
-                ? `SELECT m.*, u.username as sender_username, u.avatar as sender_avatar, ex.expires_at,
-                          rt.id as reply_to_id, rt.text as reply_to_text, rt.deleted as reply_to_deleted, ru.username as reply_to_sender_username, ru.avatar as reply_to_sender_avatar
-                   FROM messages m
-                   LEFT JOIN users u ON m.user_id = u.id
-                   LEFT JOIN message_expiry ex ON ex.message_id = m.id
-                   LEFT JOIN messages rt ON m.reply_to_id = rt.id AND rt.room_id = m.room_id
-                   LEFT JOIN users ru ON rt.user_id = ru.id
-                   WHERE m.room_id = $1 AND m.deleted = 0 AND ($2::int IS NULL OR m.id < $2)
-                   ORDER BY m.id DESC
-                   LIMIT $3`
-                : `SELECT m.*, u.username as sender_username, u.avatar as sender_avatar, ex.expires_at,
-                          rt.id as reply_to_id, rt.text as reply_to_text, rt.deleted as reply_to_deleted, ru.username as reply_to_sender_username, ru.avatar as reply_to_sender_avatar
-                   FROM messages m
-                   LEFT JOIN users u ON m.user_id = u.id
-                   LEFT JOIN message_expiry ex ON ex.message_id = m.id
-                   LEFT JOIN messages rt ON m.reply_to_id = rt.id AND rt.chat_id = m.chat_id AND rt.room_id IS NULL
-                   LEFT JOIN users ru ON rt.user_id = ru.id
-                   WHERE m.chat_id = $1 AND m.deleted = 0 AND ($2::int IS NULL OR m.id < $2)
-                   ORDER BY m.id DESC
-                   LIMIT $3`;
+            const scope = chat.room_id
+                ? { where: 'm.room_id = $1', reply: 'rt.room_id = m.room_id' }
+                : { where: 'm.chat_id = $1', reply: 'rt.chat_id = m.chat_id AND rt.room_id IS NULL' };
+            const page = (condition, order, count, bound) => dbAll(
+                `SELECT m.*, u.username as sender_username, u.avatar as sender_avatar, ex.expires_at,
+                        rt.id as reply_to_id, rt.text as reply_to_text, rt.deleted as reply_to_deleted, ru.username as reply_to_sender_username, ru.avatar as reply_to_sender_avatar
+                 FROM messages m
+                 LEFT JOIN users u ON m.user_id = u.id
+                 LEFT JOIN message_expiry ex ON ex.message_id = m.id
+                 LEFT JOIN messages rt ON m.reply_to_id = rt.id AND ${scope.reply}
+                 LEFT JOIN users ru ON rt.user_id = ru.id
+                 WHERE ${scope.where} AND m.deleted = 0 AND (${condition})
+                 ORDER BY m.id ${order}
+                 LIMIT $3`,
+                [selectParam, bound, count]);
 
-            // На одно больше: так видно, есть ли что-то ещё раньше.
-            let messages = await dbAll(selectQuery, [selectParam, before, limit + 1]);
-            const hasMore = messages.length > limit;
-            messages = messages.slice(0, limit).reverse();
+            // На одно больше: так видно, есть ли что-то ещё за краем.
+            let messages;
+            let hasMore = false;
+            let hasNewer = false;
+            if (after !== null) {
+                const newer = await page('m.id > $2', 'ASC', limit + 1, after);
+                hasNewer = newer.length > limit;
+                messages = newer.slice(0, limit);
+                // Раз просят новее — что-то раньше у клиента уже есть.
+                hasMore = true;
+            } else if (around !== null) {
+                const olderCount = Math.ceil(limit / 2);
+                const older = await page('m.id <= $2', 'DESC', olderCount + 1, around);
+                const newer = await page('m.id > $2', 'ASC', limit - olderCount + 1, around);
+                hasMore = older.length > olderCount;
+                hasNewer = newer.length > limit - olderCount;
+                messages = [...older.slice(0, olderCount).reverse(), ...newer.slice(0, limit - olderCount)];
+            } else {
+                const older = await page('$2::int IS NULL OR m.id < $2', 'DESC', limit + 1, before);
+                hasMore = older.length > limit;
+                messages = older.slice(0, limit).reverse();
+            }
 
             // Прочитанным чат отмечает клиент (POST /api/chats/:id/read), когда
             // конец переписки у него на экране, — открыть историю ещё не
@@ -532,14 +557,15 @@ module.exports = function registerMessageRoutes(app, ctx) {
                 : chat.is_bot ? { read: 2147483647, delivered: 2147483647 } : null;
 
             // Срок исчезающих сообщений чата — вместе с первой страницей.
-            const expirySeconds = before === null
+            const firstPage = before === null && after === null;
+            const expirySeconds = firstPage
                 ? (await ctx.disappearingMessagesManager.getChatSettings(chat.id))?.default_message_expiry || null
                 : undefined;
             // Старый открытый текст в комнате ждёт чистки — плашка в чате.
-            const plaintextPurge = before === null ? await plaintextNotice(chat.room_id) : undefined;
+            const plaintextPurge = firstPage ? await plaintextNotice(chat.room_id) : undefined;
 
             if (messages.length === 0) {
-                return res.json({ success: true, messages: [], hasMore: false, chat, expirySeconds, plaintextPurge });
+                return res.json({ success: true, messages: [], hasMore: false, hasNewer: false, chat, expirySeconds, plaintextPurge });
             }
 
             const messageIds = messages.map(m => m.id);
@@ -617,7 +643,7 @@ module.exports = function registerMessageRoutes(app, ctx) {
                 reply_to: m.reply_to_id ? { id: m.reply_to_id, text: m.reply_to_text, deleted: Number(m.reply_to_deleted) === 1, sender_username: m.reply_to_sender_username, sender_avatar: m.reply_to_sender_avatar } : null
             }));
 
-            res.json({ success: true, messages, hasMore, chat, keyEnvelopes, expirySeconds, plaintextPurge });
+            res.json({ success: true, messages, hasMore, hasNewer, chat, keyEnvelopes, expirySeconds, plaintextPurge });
         } catch (error) {
             log.error({ err: error }, 'Get messages error');
             res.status(500).json({ success: false, message: 'Ошибка загрузки сообщений' });

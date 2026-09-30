@@ -86,115 +86,117 @@
     --dur-3: 240ms;
 
     /* --- Акцент -------------------------------------------------------------- */
-    --accent: #6d5efc;
-    --accent-strong: #5b49f0;
-    /* Низ своего пузыря: белое время на нём держит контраст 4,5+. */
-    --accent-deep: #4a38dc;
+    --accent: #fafafa;
+    --accent-strong: #ffffff;
+    /* Свой пузырь и его хвостик — светлые в тёмной теме. */
+    --accent-deep: #ededed;
     /* Тост — противоположного теме цвета (см. .toast). */
-    --toast-bg: #f2f3f7;
-    --toast-ink: #12131a;
-    --toast-ink-2: #4a4d5c;
-    --toast-ok: #0a8566;
+    --toast-bg: #fafafa;
+    --toast-ink: #0a0a0a;
+    --toast-ink-2: #525252;
+    --toast-ok: #0a0a0a;
     --toast-danger: #d01f39;
-    --toast-action: #4a38dc;
-    --accent-2: #a86cf5;
-    --accent-ink: #ffffff;
-    --brand-from: #8b7bff;
-    --brand-to: #a86cf5;
+    --toast-action: #0a0a0a;
+    --accent-2: #fafafa;
+    --accent-ink: #0a0a0a;
+    --brand-from: #fafafa;
+    --brand-to: #fafafa;
 
-    --ok: #2dd4a7;
+    --ok: #fafafa;
     --danger: #f0495e;
 
     /* --- Слои ---------------------------------------------------------------
        Пять ступеней по тону, а не одна поверхность на всё: модалка ощутимо
        светлее фона под ней, иначе слои сливаются и глубины не видно. */
-    --bg: #08080e;
-    --layer-1: #0e0e16;   /* область переписки */
-    --layer-2: #14141f;   /* сайдбар, шапки, футеры */
-    --chat-bg-1: rgba(109, 94, 252, 0.16);
-    --chat-bg-2: rgba(168, 108, 245, 0.12);
-    --chat-bg-3: rgba(45, 212, 167, 0.07);
-    --chat-bg-4: rgba(79, 172, 254, 0.09);
-    --chat-pattern-opacity: 0.05;
-    --layer-3: #1b1b28;   /* карточка входа, баббл собеседника */
-    --layer-4: #232333;   /* модалки, контекстное меню — верхний слой */
-    --field: #101019;
-    --field-focus: #161622;
-    --control: #212130;
-    --control-hover: #2a2a3c;
+    --bg: #0a0a0a;
+    --layer-1: #0a0a0a;   /* область переписки */
+    --layer-2: #121212;   /* сайдбар, шапки, футеры */
+    --chat-bg-1: transparent;
+    --chat-bg-2: transparent;
+    --chat-bg-3: transparent;
+    --chat-bg-4: transparent;
+    --chat-pattern-opacity: 0.04;
+    --layer-3: #1b1b1b;   /* карточка входа, баббл собеседника */
+    --layer-4: #262626;   /* модалки, контекстное меню — верхний слой */
+    --field: #1b1b1b;
+    --field-focus: #1f1f1f;
+    --control: #1b1b1b;
+    --control-hover: #262626;
 
-    --text: #f2f3f7;
-    --text-2: #b9bcca;
-    --text-3: #868b9f;  /* 5.0:1 на --layer-3 — худшем (самом светлом) фоне тёмной темы */
+    --text: #fafafa;
+    --text-2: #a1a1a1;
+    --text-3: #8a8a8a;  /* 5.3:1 на --layer-3 */
 
-    --border: rgba(162, 170, 200, 0.12);
-    --border-2: rgba(162, 170, 200, 0.2);
+    --border: #2a2a2a;
+    --border-2: #3a3a3a;
 
-    --accent-soft: rgba(109, 94, 252, 0.16);
-    --accent-line: rgba(109, 94, 252, 0.38);
-    --accent-ring: rgba(109, 94, 252, 0.34);
+    --accent-soft: rgba(255, 255, 255, 0.08);
+    --accent-line: rgba(255, 255, 255, 0.24);
+    --accent-ring: rgba(255, 255, 255, 0.3);
     --danger-soft: rgba(240, 73, 94, 0.14);
     --danger-line: rgba(240, 73, 94, 0.42);
 
     --sh-1: 0 1px 2px rgba(0, 0, 0, 0.44);
     --sh-2: 0 4px 14px rgba(0, 0, 0, 0.44);
     --sh-3: 0 24px 64px rgba(0, 0, 0, 0.62);
-    --sh-accent: 0 6px 18px rgba(109, 94, 252, 0.3);
-    --sh-accent-hover: 0 10px 26px rgba(109, 94, 252, 0.4);
+    --sh-accent: 0 0 #0000;
+    --sh-accent-hover: 0 0 #0000;
     --sh-danger: 0 8px 22px rgba(240, 73, 94, 0.3);
 
-    --scrim: rgba(4, 4, 9, 0.76);
+    --scrim: rgba(0, 0, 0, 0.6);
     --skeleton-base: rgba(162, 170, 200, 0.09);
     --skeleton-sheen: rgba(162, 170, 200, 0.18);
     --inset-on-surface: rgba(162, 170, 200, 0.1);
     --inset-on-surface-hover: rgba(162, 170, 200, 0.17);
-    --ok-ring: rgba(45, 212, 167, 0.2);
-    --inset-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.14);
-    --glow-1: rgba(109, 94, 252, 0.16);
-    --glow-2: rgba(168, 108, 245, 0.12);
+    --ok-ring: rgba(255, 255, 255, 0.16);
+    --inset-highlight: inset 0 0 #0000;
+    --glow-1: transparent;
+    --glow-2: transparent;
 
     --icon-locked: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.6'%3E%3Crect x='3' y='7' width='10' height='7' rx='2'/%3E%3Cpath d='M5.5 7V5a2.5 2.5 0 0 1 5 0v2'/%3E%3C/svg%3E");
 
     --icon-alert: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill-rule='evenodd' d='M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0zM7.1 4.2h1.8l-.25 5h-1.3zM8 10.6a1.1 1.1 0 1 1 0 2.2 1.1 1.1 0 0 1 0-2.2z'/%3E%3C/svg%3E");
+    --avatar: #262626;
+    --dim: 0.6;
+    --selection: rgba(255, 255, 255, 0.25);
 }
-
 [data-theme="light"] {
-    --toast-bg: #1b1b27;
-    --toast-ink: #f2f3f7;
-    --toast-ink-2: #b7b9c7;
-    --toast-ok: #2dd4a7;
+    --toast-bg: #0a0a0a;
+    --toast-ink: #fafafa;
+    --toast-ink-2: #a1a1a1;
+    --toast-ok: #fafafa;
     --toast-danger: #ff7a8a;
-    --toast-action: #b3a8ff;
+    --toast-action: #fafafa;
     color-scheme: light;
 
-    --bg: #eef0f5;
-    --layer-1: #f7f8fb;
+    --bg: #f5f5f5;
+    --layer-1: #f5f5f5;
     --layer-2: #ffffff;
-    --chat-bg-1: rgba(109, 94, 252, 0.13);
-    --chat-bg-2: rgba(250, 112, 154, 0.10);
-    --chat-bg-3: rgba(45, 212, 167, 0.12);
-    --chat-bg-4: rgba(79, 172, 254, 0.12);
-    --chat-pattern-opacity: 0.06;
+    --chat-bg-1: transparent;
+    --chat-bg-2: transparent;
+    --chat-bg-3: transparent;
+    --chat-bg-4: transparent;
+    --chat-pattern-opacity: 0.05;
     --layer-3: #ffffff;
     --layer-4: #ffffff;
-    --field: #f1f2f7;
+    --field: #f2f2f2;
     --field-focus: #ffffff;
-    --control: #f4f5f9;
-    --control-hover: #ebecf3;
+    --control: #f2f2f2;
+    --control-hover: #e8e8e8;
 
-    --text: #12131a;
-    --text-2: #4d5261;
-    --text-3: #6b7183;  /* 4.96:1 на белом */
+    --text: #0a0a0a;
+    --text-2: #525252;
+    --text-3: #6e6e6e;  /* 5.1:1 на белом */
 
-    --border: rgba(18, 19, 26, 0.1);
-    --border-2: rgba(18, 19, 26, 0.17);
+    --border: #e5e5e5;
+    --border-2: #d4d4d4;
 
-    --ok: #0a8566;      /* 4.63:1 на белом */
+    --ok: #0a0a0a;
     --danger: #d01f39;  /* 5.33:1 на белом, и белый текст на кнопке — 5.33:1 */
 
-    --accent-soft: rgba(109, 94, 252, 0.1);
-    --accent-line: rgba(109, 94, 252, 0.32);
-    --accent-ring: rgba(109, 94, 252, 0.3);
+    --accent-soft: rgba(0, 0, 0, 0.05);
+    --accent-line: rgba(0, 0, 0, 0.2);
+    --accent-ring: rgba(0, 0, 0, 0.25);
     --danger-soft: rgba(208, 31, 57, 0.08);
     --danger-line: rgba(208, 31, 57, 0.34);
 
@@ -203,21 +205,30 @@
     --sh-1: 0 1px 2px rgba(16, 18, 30, 0.08);
     --sh-2: 0 6px 18px rgba(16, 18, 30, 0.1);
     --sh-3: 0 28px 64px rgba(16, 18, 30, 0.2);
-    --sh-accent: 0 6px 16px rgba(109, 94, 252, 0.26);
-    --sh-accent-hover: 0 10px 24px rgba(109, 94, 252, 0.34);
+    --sh-accent: 0 0 #0000;
+    --sh-accent-hover: 0 0 #0000;
     --sh-danger: 0 8px 20px rgba(208, 31, 57, 0.24);
 
-    --scrim: rgba(24, 26, 38, 0.42);
+    --scrim: rgba(0, 0, 0, 0.2);
     --skeleton-base: rgba(18, 19, 26, 0.07);
     --skeleton-sheen: rgba(18, 19, 26, 0.13);
     --inset-on-surface: rgba(18, 19, 26, 0.05);
     --inset-on-surface-hover: rgba(18, 19, 26, 0.09);
-    --ok-ring: rgba(10, 133, 102, 0.18);
+    --ok-ring: rgba(0, 0, 0, 0.12);
     --inset-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.28);
-    --glow-1: rgba(109, 94, 252, 0.12);
-    --glow-2: rgba(168, 108, 245, 0.09);
+    --glow-1: transparent;
+    --glow-2: transparent;
+    --accent: #0a0a0a;
+    --accent-strong: #000000;
+    --accent-2: #0a0a0a;
+    --accent-deep: #0a0a0a;
+    --accent-ink: #fafafa;
+    --brand-from: #0a0a0a;
+    --brand-to: #0a0a0a;
+    --avatar: #e8e8e8;
+    --dim: 0.2;
+    --selection: rgba(0, 0, 0, 0.15);
 }
-
 /* ============================================================================
    2. СБРОС И БАЗА
    ========================================================================= */
@@ -249,18 +260,6 @@ body {
     -moz-osx-font-smoothing: grayscale;
 }
 
-/* Подсветка фона: два мягких пятна акцентом. Единственная роль — не дать
-   тёмному фону выглядеть плоской заливкой. */
-body::before {
-    content: '';
-    position: fixed;
-    inset: 0;
-    background:
-        radial-gradient(60rem 40rem at 18% 12%, var(--glow-1) 0%, transparent 60%),
-        radial-gradient(50rem 38rem at 85% 88%, var(--glow-2) 0%, transparent 60%);
-    pointer-events: none;
-    z-index: 0;
-}
 
 .hidden { display: none !important; }
 /* Атрибут hidden должен прятать всегда. Без этого правила его перебивает
@@ -282,7 +281,7 @@ body { overscroll-behavior: none; }
 }
 
 ::selection {
-    background: var(--accent-soft);
+    background: var(--selection);
     color: var(--text);
 }
 
@@ -379,7 +378,6 @@ code, .input-code, .mono {
     width: 4rem;
     height: 4rem;
     margin: 0 auto 1.25rem;
-    filter: drop-shadow(0 6px 18px var(--accent-ring));
 }
 
 .brand-word {
@@ -437,23 +435,17 @@ code, .input-code, .mono {
 .btn-block { width: 100%; }
 .btn .icon { width: 1.125rem; height: 1.125rem; }
 
-/* Основная кнопка: градиент + цветная тень + внутренний блик по верхней
-   кромке. Блик и тень дают ей объём — без них primary отличается от
-   secondary только заливкой и не тянет на главное действие. */
+/* Основная кнопка — сплошная, цвета текста: белая в тёмной теме, чёрная в
+   светлой. Без градиента, свечения и подъёма при наведении. */
 .btn-primary {
-    background: linear-gradient(140deg, var(--accent) 0%, var(--accent-strong) 55%, var(--accent-2) 100%);
+    background: var(--accent);
     color: var(--accent-ink);
-    box-shadow: var(--sh-accent), var(--inset-highlight);
+    box-shadow: none;
 }
 
 @media (hover: hover) and (pointer: fine) {
-    .btn-primary:hover {
-        transform: translateY(-2px);
-        box-shadow: var(--sh-accent-hover), var(--inset-highlight);
-    }
+    .btn-primary:hover { background: var(--accent-strong); }
 }
-
-.btn-primary:active:not(:disabled) { box-shadow: var(--sh-1), var(--inset-highlight); }
 
 .btn-secondary {
     background: var(--control);
@@ -582,18 +574,17 @@ button, [role="button"], .chat-item, .menu-item {
 }
 
 .icon-btn-accent {
-    background: linear-gradient(140deg, var(--accent) 0%, var(--accent-strong) 100%);
+    background: var(--accent);
     border-color: transparent;
     color: var(--accent-ink);
-    box-shadow: var(--sh-accent), var(--inset-highlight);
+    box-shadow: none;
 }
 
 @media (hover: hover) and (pointer: fine) {
     .icon-btn-accent:hover {
-        background: linear-gradient(140deg, var(--accent) 0%, var(--accent-2) 100%);
+        background: var(--accent-strong);
         border-color: transparent;
         color: var(--accent-ink);
-        box-shadow: var(--sh-accent-hover), var(--inset-highlight);
     }
 }
 
@@ -905,10 +896,7 @@ input.is-invalid:focus {
     display: flex;
     gap: 0.25rem;
     margin-bottom: 1.75rem;
-    padding: 0.25rem;
-    border: 1px solid var(--border);
-    border-radius: var(--r-lg);
-    background: var(--field);
+    border-bottom: 1px solid var(--border);
 }
 
 .auth-tab {
@@ -929,10 +917,15 @@ input.is-invalid:focus {
     .auth-tab:hover:not(.active) { color: var(--text); }
 }
 
+/* Выбранная вкладка — подчёркнута цветом текста. */
+.auth-tab {
+    border-radius: 0;
+    margin-bottom: -1px;
+    box-shadow: inset 0 -2px 0 transparent;
+}
 .auth-tab.active {
-    background: linear-gradient(140deg, var(--accent) 0%, var(--accent-strong) 100%);
-    color: var(--accent-ink);
-    box-shadow: var(--sh-1), var(--inset-highlight);
+    color: var(--text);
+    box-shadow: inset 0 -2px 0 var(--text);
 }
 
 .auth-form { display: none; }
@@ -1095,7 +1088,7 @@ input.is-invalid:focus {
     height: 3.25rem;
     flex-shrink: 0;
     border-radius: var(--r-pill);
-    color: #fff;
+    color: var(--text);
     font-size: 1.1875rem;
     font-weight: 600;
     box-shadow: var(--sh-1);
@@ -1134,7 +1127,8 @@ input.is-invalid:focus {
 }
 .chat-time {
     flex: none;
-    font-size: var(--fs-xs);
+    font-family: var(--f-mono);
+    font-size: 12px;
     font-variant-numeric: tabular-nums;
     color: var(--text-3);
 }
@@ -1184,12 +1178,12 @@ input.is-invalid:focus {
     height: 1.375rem;
     padding: 0 0.4375rem;
     border-radius: var(--r-pill);
-    background: linear-gradient(140deg, var(--accent) 0%, var(--accent-strong) 100%);
+    background: var(--accent);
     color: var(--accent-ink);
     font-size: 0.6875rem;
     font-weight: 700;
     font-variant-numeric: tabular-nums;
-    box-shadow: var(--sh-1);
+    box-shadow: none;
 }
 
 .sidebar-footer {
@@ -1349,7 +1343,7 @@ input.is-invalid:focus {
     height: 2.875rem;
     flex-shrink: 0;
     border-radius: var(--r-pill);
-    color: #fff;
+    color: var(--text);
     font-size: 1.0625rem;
     font-weight: 600;
     box-shadow: var(--sh-1);
@@ -1487,8 +1481,8 @@ input.is-invalid:focus {
     background: currentColor;
 }
 
-.status.online { color: var(--ok); }
-.status.online::before { box-shadow: 0 0 0 3px var(--ok-ring); }
+.status.online { color: var(--text-2); }
+.status.online::before { background: var(--text); box-shadow: 0 0 0 3px var(--ok-ring); }
 .status.offline { color: var(--text-3); }
 
 .chat-actions {
@@ -1533,16 +1527,20 @@ input.is-invalid:focus {
     from { opacity: 0; transform: translateY(8px) scale(0.98); }
 }
 
+/* Свой пузырь — сплошной, цвета --accent-deep: светлый в тёмной теме,
+   тёмный в светлой. Вставки (цитата, файл) и черта — от цвета текста. */
 .message.sent {
-    --bubble-inset: rgba(0, 0, 0, 0.18);
-    --bubble-inset-hover: rgba(0, 0, 0, 0.28);
-    --bubble-rule: rgba(255, 255, 255, 0.5);
+    --bubble-inset: rgba(0, 0, 0, 0.08);
+    --bubble-inset-hover: rgba(0, 0, 0, 0.14);
+    --bubble-rule: currentColor;
     align-self: flex-end;
-    /* Темнее, чем у кнопок: на пузыре мелкий текст — время и отметки, — и
-       на светлом начале прежнего градиента он не дотягивал до 4,5:1. */
-    background: linear-gradient(140deg, var(--accent-strong) 0%, var(--accent-deep) 100%);
+    background: var(--accent-deep);
     color: var(--accent-ink);
-    box-shadow: 0 1px 2px rgb(0 0 0 / 0.25);
+    box-shadow: none;
+}
+[data-theme="light"] .message.sent {
+    --bubble-inset: rgba(255, 255, 255, 0.12);
+    --bubble-inset-hover: rgba(255, 255, 255, 0.2);
 }
 
 .message.received {
@@ -1551,8 +1549,11 @@ input.is-invalid:focus {
     --bubble-rule: var(--accent);
     align-self: flex-start;
     background: var(--layer-3);
-    box-shadow: var(--sh-1);
+    /* Тёмной теме тени не нужно: #1b1b1b на #0a0a0a и так видно. */
+    box-shadow: none;
 }
+/* В светлой белый пузырь на светлом фоне без контура теряется. */
+[data-theme="light"] .message.received { box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.06); }
 
 /* Хвостик у последнего пузыря группы — того же цвета, что низ пузыря. */
 .message.group-end::after {
@@ -1576,7 +1577,7 @@ input.is-invalid:focus {
     mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 16'%3E%3Cpath d='M10 0C10 9 7 14 0 16H10z'/%3E%3C/svg%3E") no-repeat;
 }
 
-.message-content { word-break: break-word; }
+.message-content { overflow-wrap: anywhere; }
 
 .message-text {
     font-size: var(--fs-body);
@@ -1599,7 +1600,7 @@ input.is-invalid:focus {
    давало около 3:1, а мелкому тексту нужно 4,5:1. */
 .message.sent .message-meta { opacity: 0.9; }
 
-.message-time { font-weight: 500; }
+.message-time { font-family: var(--f-mono); font-size: 11px; font-weight: 500; }
 
 /* Кнопка «⋯»: у мыши появляется при наведении и фокусе, чтобы не
    зашумлять переписку; на тач-экранах наведения нет — там видна всегда.
@@ -1800,7 +1801,7 @@ input.is-invalid:focus {
 }
 /* Своя реакция — с обводкой. */
 .reaction.mine { border-color: var(--accent); background: var(--accent-soft); }
-.message.sent .reaction.mine { border-color: rgba(255, 255, 255, 0.75); background: rgba(255, 255, 255, 0.18); }
+.message.sent .reaction.mine { border-color: currentColor; background: var(--bubble-inset); }
 
 @media (hover: hover) and (pointer: fine) {
     .reaction:hover { background: var(--bubble-inset-hover); transform: scale(1.08); }
@@ -1950,8 +1951,7 @@ input.is-invalid:focus {
     margin-bottom: 0.125rem;
     font-size: var(--fs-xs);
     font-weight: 600;
-    color: var(--author-color, var(--accent));
-    filter: brightness(1.25);
+    color: var(--text);
 }
 .chat-messages.is-group .message.received.group-end .message-avatar {
     position: absolute;
@@ -1962,8 +1962,8 @@ input.is-invalid:focus {
     width: 1.75rem;
     height: 1.75rem;
     border-radius: 50%;
-    background: var(--author-color, var(--accent));
-    color: #fff;
+    background: var(--avatar);
+    color: var(--text);
     font-size: 0.75rem;
     font-weight: 600;
 }
@@ -2443,10 +2443,10 @@ input.is-invalid:focus {
 .composer-btn { display: grid; place-items: center; }
 .composer-btn[data-mode="send"],
 .composer-btn[data-mode="save"] {
-    background: linear-gradient(140deg, var(--accent) 0%, var(--accent-strong) 100%);
+    background: var(--accent);
     border-color: transparent;
     color: var(--accent-ink);
-    box-shadow: 0 1px 2px rgb(0 0 0 / 0.25), var(--inset-highlight);
+    box-shadow: none;
 }
 .composer-icon {
     grid-area: 1 / 1;
@@ -2501,6 +2501,10 @@ dialog.modal::backdrop {
     backdrop-filter: blur(6px);
     -webkit-backdrop-filter: blur(6px);
 }
+/* На телефоне размытие на весь экран при появлении окна тормозит. */
+@media (max-width: 640px) {
+    dialog.modal::backdrop { backdrop-filter: none; -webkit-backdrop-filter: none; }
+}
 
 /* Модалка стоит на самом светлом слое (--layer-4), а не на том же тоне, что
    фон. Вместе с затемняющим оверлеем под ней разница между слоями видна
@@ -2508,6 +2512,7 @@ dialog.modal::backdrop {
 .modal-content {
     width: min(28.75rem, calc(100vw - 2.5rem));
     max-height: 90vh;
+    max-height: 90dvh;
     overflow-y: auto;
     border: 1px solid var(--border-2);
     border-radius: var(--r-2xl);
@@ -2519,7 +2524,10 @@ dialog.modal::backdrop {
 dialog.modal,
 dialog.modal::backdrop {
     opacity: 0;
-    transition: opacity 150ms var(--ease-out), display 150ms allow-discrete, overlay 150ms allow-discrete;
+    /* allow-discrete — отдельной строкой: браузер, не знающий этого
+       слова, выбросил бы весь transition. */
+    transition: opacity 150ms var(--ease-out), display 150ms, overlay 150ms;
+    transition-behavior: allow-discrete;
 }
 dialog.modal[open],
 dialog.modal[open]::backdrop {
@@ -2584,7 +2592,7 @@ dialog.modal[open] .modal-content {
     height: 4.25rem;
     flex-shrink: 0;
     border-radius: var(--r-pill);
-    color: #fff;
+    color: var(--text);
     font-size: 1.625rem;
     font-weight: 600;
     box-shadow: var(--sh-2);
@@ -2949,7 +2957,7 @@ dialog.modal[open] .modal-content {
     border: 1px solid var(--border);
     border-radius: var(--r-md);
 }
-.join-preview .chat-avatar { background: linear-gradient(140deg, var(--brand-from), var(--brand-to)); }
+.join-preview .chat-avatar { background: var(--avatar); }
 .join-preview-text { display: grid; gap: 0.125rem; min-width: 0; }
 .join-preview-text strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .join-preview-text span { font-size: var(--fs-sm); color: var(--text-3); }
@@ -3168,7 +3176,7 @@ dialog.modal[open] .modal-content {
     width: 2.25rem;
     height: 2.25rem;
     font-size: 0.9375rem;
-    background: linear-gradient(140deg, var(--brand-from), var(--brand-to));
+    background: var(--avatar);
 }
 .member-text { display: grid; flex: 1; min-width: 0; }
 .member-text strong { overflow: hidden; font-size: var(--fs-sm); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
@@ -3263,8 +3271,9 @@ dialog.modal[open] .modal-content {
     transition:
         opacity 150ms var(--ease-out),
         transform 150ms var(--ease-out),
-        display 150ms allow-discrete,
-        overlay 150ms allow-discrete;
+        display 150ms,
+        overlay 150ms;
+    transition-behavior: allow-discrete;
 }
 
 /* display — только у открытого: иначе авторское flex перебило бы
@@ -3568,13 +3577,14 @@ dialog.modal .toast { top: calc(1rem + env(safe-area-inset-top, 0px)); bottom: a
     height: 4px;
     border-radius: 50%;
     background: currentColor;
-    animation: typingDot 1.2s var(--ease-in-out) infinite;
+    /* Цикл 0,7 с: пульсируют размер и прозрачность, по очереди (п. 192). */
+    animation: typingDot 0.7s linear infinite;
 }
-.typing-dots i:nth-child(2) { animation-delay: 0.15s; }
-.typing-dots i:nth-child(3) { animation-delay: 0.3s; }
+.typing-dots i:nth-child(2) { animation-delay: 140ms; }
+.typing-dots i:nth-child(3) { animation-delay: 280ms; }
 @keyframes typingDot {
-    0%, 60%, 100% { opacity: 0.35; transform: none; }
-    30% { opacity: 1; transform: translateY(-2px); }
+    0%, 80%, 100% { transform: scale(1); opacity: 0.75; }
+    40% { transform: scale(1.5); opacity: 1; }
 }
 .chat-typing { display: none; font-size: var(--fs-sm); }
 .chat-item.is-typing .chat-last { display: none; }
@@ -3627,16 +3637,12 @@ dialog.modal .toast { top: calc(1rem + env(safe-area-inset-top, 0px)); bottom: a
     }
     .chat-header { padding-top: calc(0.75rem + env(safe-area-inset-top, 0px)); }
 
-    .app.is-swiping-back .sidebar {
-        visibility: visible;
-        transform: translateX(calc(-25% * (1 - var(--back, 0))));
-        transition: none;
-    }
-    .app.is-swiping-back .sidebar::after { opacity: calc(0.35 * (1 - var(--back, 0))); transition: none; }
-    .app.is-swiping-back .main-content {
-        transform: translateX(calc(100% * var(--back, 0)));
-        transition: none;
-    }
+    /* Положение при свайпе «назад» задаёт script.js прямо у списка и чата. */
+    .app.is-swiping-back .sidebar { visibility: visible; }
+    .app.is-swiping-back .sidebar::after { opacity: calc(0.35 * var(--dim-progress, 1)); transition: none; }
+    .app.no-screen-transition .sidebar,
+    .app.no-screen-transition .sidebar::after,
+    .app.no-screen-transition .main-content { transition: none !important; }
 
     /* Все окна — шторкой снизу. */
     dialog.modal { margin: auto 0 0; width: 100%; }
@@ -3684,10 +3690,9 @@ dialog.modal .toast { top: calc(1rem + env(safe-area-inset-top, 0px)); bottom: a
     pointer-events: none;
     transition: opacity 120ms var(--ease-out);
 }
-.message-dim.is-shown { opacity: 0.35; transition-duration: 150ms; }
+.message-dim.is-shown { opacity: var(--dim, 0.6); transition-duration: 150ms; }
 .message.is-lifted {
     z-index: 5;
-    transform: scale(1.02);
     box-shadow: var(--sh-2, 0 8px 24px rgb(0 0 0 / 0.25));
     transition: transform 150ms var(--ease-out), box-shadow 150ms var(--ease-out);
 }
@@ -3787,3 +3792,205 @@ dialog.modal .toast { top: calc(1rem + env(safe-area-inset-top, 0px)); bottom: a
 @media (hover: hover) and (pointer: fine) {
     .share-chat:hover { background: var(--accent-soft); }
 }
+
+/* Клавиатура открыта (script.js, setupKeyboardInsets) — отступ под
+   «полоской Домой» не нужен: её закрывает клавиатура. */
+body.keyboard-visible .message-input-container { padding-bottom: 0.75rem; }
+
+/* Остаток знаков — когда до предела меньше 100; «×2» — сообщение уйдёт
+   двумя частями. */
+.message-counter {
+    align-self: flex-end;
+    margin-bottom: 0.625rem;
+    font-size: var(--fs-xs);
+    font-variant-numeric: tabular-nums;
+    color: var(--text-3);
+}
+.composer-btn { position: relative; }
+.composer-btn[data-parts]:not([data-parts=""])::after {
+    content: attr(data-parts);
+    position: absolute;
+    top: -0.375rem;
+    right: -0.375rem;
+    min-width: 1.25rem;
+    padding: 0 0.25rem;
+    border-radius: var(--r-pill);
+    background: var(--layer-4);
+    color: var(--text);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    line-height: 1.25rem;
+    text-align: center;
+    box-shadow: 0 0 0 1px var(--border-2);
+}
+.status.is-connecting { color: var(--text-2); }
+
+/* «↓»: снизу и из 0.7 — на место за 280 мс (п. 177). */
+.jump-down {
+    transform: translateY(80px) scale(0.7);
+    transition: opacity 200ms var(--ease-out), transform 200ms var(--ease-out), visibility 0s 200ms;
+}
+.jump-down.is-visible {
+    transform: none;
+    transition: opacity 280ms cubic-bezier(0.25, 0.46, 0.45, 0.94), transform 280ms cubic-bezier(0.25, 0.46, 0.45, 0.94), visibility 0s;
+}
+
+/* Плавающая дата — только пока крутят и 500 мс после (п. 180). */
+.day-separator span { transition: opacity 150ms var(--ease-out); }
+.day-separator.is-stuck span { opacity: 0; }
+.chat-messages.is-scrolling .day-separator.is-stuck span { opacity: 1; transition: none; }
+
+/* Отметки: галочки отдельно — вторая въезжает (п. 182). */
+.message-status,
+.message-status .tick { display: inline-block; }
+.message-status { transform-origin: 50% 60%; }
+
+/* Удаляемое — не нажимается (п. 183). */
+.message.is-removing { pointer-events: none; transform-origin: 50% 50%; }
+
+/* Свайп-ответ: кольцо дорисовывается к порогу (п. 186). */
+.swipe-reply-icon .swipe-ring {
+    position: absolute;
+    inset: -0.375rem;
+    width: calc(100% + 0.75rem);
+    height: calc(100% + 0.75rem);
+    transform: rotate(-90deg);
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+}
+/* Пункт меню под пальцем (п. 187). */
+.menu-item.is-pointed { background: var(--accent-soft); }
+
+/* Свайп строки в списке — «В архив» (п. 188). */
+.chats-list { position: relative; }
+.chat-item.is-swiping { position: relative; z-index: 1; background: var(--layer-2); }
+.chat-swipe-under {
+    position: absolute;
+    right: 0.75rem;
+    left: 0.75rem;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    padding-right: 1.25rem;
+    border-radius: var(--r-lg);
+    background: var(--control);
+    color: var(--text-2);
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    transition: background var(--dur-2) var(--ease), color var(--dur-2) var(--ease);
+}
+.chat-swipe-under.is-ready { background: var(--accent); color: var(--accent-ink); }
+.chat-swipe-under .icon { width: 1.125rem; height: 1.125rem; }
+
+/* Тост смахивают — без выделения текста под пальцем (п. 191). */
+.toast { touch-action: none; }
+
+/* Системный тик на iPhone (п. 189): переключатель вне экрана. */
+.ios-haptic { position: fixed; left: -100px; top: 0; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+
+/* «Печатает»: старая подпись уходит поверх (п. 192). */
+.status-ghost { position: absolute; pointer-events: none; }
+
+/* Значок бота вместо буквы. */
+.is-bot-avatar .icon { width: 55%; height: 55%; }
+
+/* Черновик в списке (п. 194). */
+.chat-draft-label { color: var(--text); font-weight: 600; }
+
+/* Ссылки в сообщениях (п. 197). */
+.message-link { color: inherit; text-decoration: underline; text-underline-offset: 2px; word-break: break-all; }
+
+/* Выбор нескольких (п. 198). */
+.chat-messages.is-selecting .message[data-message-id] { cursor: pointer; }
+.chat-messages.is-selecting .message.is-selected { outline: 2px solid var(--accent); outline-offset: 2px; }
+.selection-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem 1.5rem calc(0.75rem + env(safe-area-inset-bottom, 0px));
+    background: var(--layer-2);
+    border-top: 1px solid var(--border);
+}
+.selection-bar[hidden] { display: none; }
+.selection-count { flex: 1; font-size: var(--fs-sm); color: var(--text-2); font-variant-numeric: tabular-nums; }
+.message-input-container.is-covered { display: none; }
+
+/* Без звука на время (п. 199). */
+.mute-for { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: -0.5rem 0 1rem; }
+.mute-for[hidden] { display: none; }
+.chat-badge.is-marked { min-width: 0.75rem; width: 0.75rem; height: 0.75rem; padding: 0; }
+
+/* Поиск в чате (п. 200). */
+.chat-search {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 1rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--layer-2);
+}
+.chat-search[hidden] { display: none; }
+.chat-search input {
+    flex: 1;
+    min-width: 0;
+    height: 2.25rem;
+    padding: 0 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    background: var(--field);
+    color: var(--text);
+    font: inherit;
+}
+.chat-search-count { font-size: var(--fs-xs); color: var(--text-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.chat-search .icon-up { transform: rotate(90deg); }
+.chat-search .icon-down { transform: rotate(-90deg); }
+
+/* Размытая миниатюра до расшифровки фото (п. 196). */
+.attachment-skeleton { position: relative; overflow: hidden; }
+.attachment-thumb {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    filter: blur(8px);
+    transform: scale(1.1);
+}
+
+/* Картинка в пузыре — радиус пузыря минус отступ (22 − 12), тени слоями (п. 206). */
+.message .message-image,
+.message .message-video { border-radius: 10px; }
+.context-menu,
+.toast { box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12), 0 4px 12px rgba(0, 0, 0, 0.16), 0 16px 40px rgba(0, 0, 0, 0.2); }
+
+/* Короткие списки «пружинят»: невидимый блок на 1px выше области
+   прокрутки — прокрутка есть всегда, и на iPhone под пальцем появляется
+   привычная пружинка. Потягивание вниз страницу не перезагружает:
+   overscroll-behavior остаётся contain (п. 208). */
+.chats-list,
+.chat-messages { position: relative; }
+.chats-list::before,
+.chat-messages::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 1px;
+    height: calc(100% + 1px);
+    pointer-events: none;
+}
+
+/* Экран приватности: свёрнутое приложение закрыто плашкой (п. 207). */
+.privacy-cover {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: grid;
+    place-items: center;
+    background: var(--bg);
+}
+.privacy-cover[hidden] { display: none; }
+.privacy-cover .icon { width: 4rem; height: 4rem; color: var(--text); }

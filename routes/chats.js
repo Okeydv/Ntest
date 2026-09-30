@@ -21,7 +21,9 @@ module.exports = function registerChatRoutes(app, ctx) {
         try {
             const chats = await dbAll(`
                 SELECT c.id, c.name, c.avatar, c.is_bot, c.room_id, r.kind, me.role AS my_role,
-                       c.pin_position, c.muted, c.archived_at IS NOT NULL AS archived,
+                       c.pin_position, (c.muted AND (c.muted_until IS NULL OR c.muted_until > now())) AS muted,
+                       CASE WHEN c.muted AND c.muted_until > now() THEN c.muted_until END AS muted_until,
+                       c.marked_unread, c.archived_at IS NOT NULL AS archived,
                        -- Аватар собеседника — у личного чата.
                        CASE WHEN r.kind = 'direct' THEN (SELECT u.avatar FROM room_participants o JOIN users u ON u.id = o.user_id
                             WHERE o.room_id = c.room_id AND o.user_id <> c.user_id LIMIT 1) END AS peer_avatar,
@@ -891,16 +893,25 @@ module.exports = function registerChatRoutes(app, ctx) {
     // В архив уходит и закреплённый — тогда он открепляется.
     app.post('/api/chats/:chatId/flags', async (req, res) => {
         if (!req.session.userId) return res.status(401).json({ success: false, message: 'Не авторизован' });
-        const { muted, archived } = req.body || {};
+        // mutedFor — на сколько секунд заглушить (1 ч, 8 ч, 1 день, 3 дня);
+        // без него — навсегда. markedUnread — «Отметить непрочитанным».
+        const { muted, archived, mutedFor, markedUnread } = req.body || {};
+        const MUTE_FOR = [3600, 8 * 3600, 86400, 3 * 86400];
         if ((muted !== undefined && typeof muted !== 'boolean') || (archived !== undefined && typeof archived !== 'boolean')
-            || (muted === undefined && archived === undefined)) {
+            || (markedUnread !== undefined && typeof markedUnread !== 'boolean')
+            || (mutedFor !== undefined && mutedFor !== null && !MUTE_FOR.includes(mutedFor))
+            || (muted === undefined && archived === undefined && markedUnread === undefined)) {
             return res.status(400).json(BAD_FIELDS);
         }
         const userId = req.session.userId;
         try {
             const chat = await dbGet('SELECT id, pin_position FROM chats WHERE id = $1 AND user_id = $2', [req.params.chatId, userId]);
             if (!chat) return res.status(404).json({ success: false, message: 'Чат не найден' });
-            if (muted !== undefined) await dbRun('UPDATE chats SET muted = $1 WHERE id = $2', [muted, chat.id]);
+            if (muted !== undefined) {
+                await dbRun(`UPDATE chats SET muted = $1, muted_until = CASE WHEN $1 AND $2::int IS NOT NULL
+                             THEN now() + make_interval(secs => $2::int) END WHERE id = $3`, [muted, muted ? mutedFor || null : null, chat.id]);
+            }
+            if (markedUnread !== undefined) await dbRun('UPDATE chats SET marked_unread = $1 WHERE id = $2', [markedUnread, chat.id]);
             if (archived !== undefined) {
                 await dbRun('UPDATE chats SET archived_at = CASE WHEN $1 THEN now() END, pin_position = CASE WHEN $1 THEN NULL ELSE pin_position END WHERE id = $2',
                     [archived, chat.id]);
@@ -1010,7 +1021,7 @@ module.exports = function registerChatRoutes(app, ctx) {
                          SELECT LEAST($3::int, COALESCE((SELECT max(m.id) FROM messages m WHERE ${SCOPE}), 0)) AS capped
                          FROM chats c WHERE c.id = $1 AND c.user_id = $2
                      )
-                     UPDATE chats c SET ${column} = GREATEST(c.${column}, t.capped)${also}
+                     UPDATE chats c SET ${column} = GREATEST(c.${column}, t.capped)${also}${kind === 'read' ? ', marked_unread = FALSE' : ''}
                      FROM t WHERE c.id = $1 AND c.user_id = $2
                      RETURNING c.room_id, (SELECT COUNT(*) FROM messages m WHERE ${SCOPE} AND m.id > c.last_read_id
                          AND m.deleted = 0 AND m.message_type <> 'system'

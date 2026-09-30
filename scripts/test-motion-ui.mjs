@@ -282,7 +282,7 @@ check('шапка полупрозрачная с размытием, лента
     /rgba?\(.*,\s*0\.\d+\)|\/ 0\.\d+\)|color-mix/.test(look.headerBg) && look.blur.includes('blur') && look.topPad >= look.headerH, JSON.stringify(look));
 check('хвостик у последнего своего, чужой пузырь без рамки, узор фона', look.tail && look.tail !== 'none'
     && look.receivedBorder === '0px' && look.pattern, JSON.stringify(look));
-check('строка состояния — цвет шапки', ['#14141f', '#ffffff'].includes(look.themeColor), look.themeColor);
+check('строка состояния — цвет шапки', ['#121212', '#ffffff'].includes(look.themeColor), look.themeColor);
 check('«1 день» в системной строке не рвётся', await alice.evaluate(() =>
     systemLineText('bob включил(а) исчезающие сообщения: 1 день').includes('1 день')));
 
@@ -383,14 +383,15 @@ const back = await phone.evaluate(async () => {
     const mid = [];
     for (const x of [90, 140, 200]) {
         area.dispatchEvent(new TouchEvent('touchmove', { touches: [at(x, 404)], changedTouches: [at(x, 404)], bubbles: true }));
-        mid.push(getComputedStyle(document.getElementById('app')).getPropertyValue('--back'));
+        // Положение — transform прямо у чата (в процентах ширины).
+        mid.push(parseFloat(/translateX\(([\d.]+)%\)/.exec(area.style.transform)?.[1] || '0') / 100);
     }
     const swiping = document.getElementById('app').classList.contains('is-swiping-back');
     area.dispatchEvent(new TouchEvent('touchend', { changedTouches: [at(200, 404)], bubbles: true }));
     await new Promise(r => setTimeout(r, 500));
     return { mid, swiping, open: document.getElementById('app').classList.contains('is-chat-open') };
 });
-check('свайп вправо — чат идёт за пальцем, дальше 35% — назад к списку', back.swiping && Number(back.mid[2]) > 0.35 && !back.open,
+check('свайп вправо — чат идёт за пальцем, дальше 30% — назад к списку', back.swiping && back.mid[0] < back.mid[1] && back.mid[2] > 0.3 && !back.open,
     JSON.stringify(back));
 
 const select = await phone.evaluate(() => ({

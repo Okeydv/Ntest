@@ -13,7 +13,7 @@
 //   - срок исчезающих сообщений — радиокнопками;
 //   - подключение устройства на телефоне — окном снизу экрана, с пометкой,
 //     что название браузера определил сервер;
-//   - «Соединение…» — жёлтая плашка с кружком загрузки; заготовки пузырей
+//   - обрыв — «Подключение…» в шапке открытого чата; заготовки пузырей
 //     и при подгрузке старой истории.
 //
 // Требует поднятых Postgres, key-server и server.js на 3006 и ЧИСТОЙ базы.
@@ -198,7 +198,7 @@ await alice.keyboard.press('Escape');
 
 /* ------------------------- соединение и история ------------------------- */
 
-// Переподключение — через 4 с, чтобы плашка (она ждёт 1,5 с) успела показаться.
+// Переподключение — через 4 с, чтобы «Подключение…» (ждёт 400 мс) успело показаться.
 await alice.evaluate(() => {
     socket.io.reconnectionDelay(4000);
     socket.io.reconnectionDelayMax(4000);
@@ -208,12 +208,13 @@ await alice.waitForTimeout(2200);
 const banner = await alice.evaluate(() => {
     const el = document.getElementById('connection-status');
     return { shown: !el.hidden, text: el.textContent.trim(), bg: getComputedStyle(el).backgroundColor,
-        spinner: Boolean(el.querySelector('.connection-spinner')) };
+        spinner: Boolean(el.querySelector('.connection-spinner')), header: document.getElementById('chat-status').textContent };
 });
-check('«Соединение…» — жёлтая плашка с кружком загрузки',
-    banner.shown && banner.text === 'Соединение…' && banner.bg === 'rgb(245, 165, 36)' && banner.spinner, JSON.stringify(banner));
+// Чат открыт — состояние соединения в шапке вместо «в сети» (п. 171).
+check('обрыв — «Подключение…» в шапке открытого чата', banner.header === 'Подключение…', JSON.stringify(banner));
 await alice.waitForTimeout(4000);
-check('переподключились — плашка ушла', await alice.evaluate(() => document.getElementById('connection-status').hidden));
+check('переподключились — в шапке снова статус собеседника', await alice.evaluate(() =>
+    document.getElementById('connection-status').hidden && !/Подключение|Обновление|Ожидание/.test(document.getElementById('chat-status').textContent)));
 
 await alice.route('**/api/messages/*?limit=*&before=*', async route => { await new Promise(r => setTimeout(r, 800)); await route.continue(); });
 const skeleton = await alice.evaluate(async () => {

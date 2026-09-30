@@ -19,7 +19,7 @@ import {
     createSenderKey, senderKeyDistribution, encryptGroup,
     importDistribution, distributionKey, decryptGroup, parseGroupHeader, GROUP_VERSION,
 } from './group.js';
-import { NEWER_VERSION_MARK } from './attachments.js';
+import { NEWER_VERSION_MARK, decodePayload } from './attachments.js';
 
 // Пул одноразовых prekeys. Каждый входящий первый контакт съедает один,
 // поэтому пул пополняется заранее: пустой пул не ломает связь, но первое
@@ -271,6 +271,33 @@ export const pending = {
 // «Не доставлено: Пётр — нет ключей» у своих сообщений. Знает об этом
 // только отправитель — пометка живёт у него на устройстве.
 const MAX_NOTES = 500;
+/**
+ * Поиск по расшифрованному на этом устройстве: сервер по зашифрованному
+ * искать не может. Возвращает id сообщений чата, где встречается запрос,
+ * от новых к старым.
+ */
+export async function searchChat(chat, query) {
+    const needle = String(query || '').trim().toLocaleLowerCase();
+    if (!needle) return [];
+    const ids = (await store.conversations.load(conversationOfChat(chat))).map(Number).sort((a, b) => b - a);
+    const found = [];
+    for (const id of ids) {
+        const raw = await store.plaintext.load(id);
+        if (typeof raw !== 'string') continue;
+        const p = decodePayload(raw);
+        const text = p && p.t === 'text' ? p.body : p && p.t === 'file' ? p.name : '';
+        if (text && text.toLocaleLowerCase().includes(needle)) found.push(id);
+    }
+    return found;
+}
+
+// Черновики — в той же базе, что расшифрованная переписка: на сервер не
+// уходят, стираются вместе с ней при выходе.
+export const drafts = {
+    load: async () => (await store.meta.get('drafts')) || {},
+    save: all => store.meta.set('drafts', all),
+};
+
 export async function rememberUndelivered(messageId, names) {
     const notes = (await store.meta.get('undelivered')) || {};
     notes[messageId] = names;

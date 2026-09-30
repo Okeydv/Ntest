@@ -181,10 +181,12 @@ check('стрелка вверх — предыдущее сообщение', (
 await page.keyboard.press('Enter');
 const menuOpen = () => page.evaluate(() => document.getElementById('message-menu').matches(':popover-open'));
 check('Enter открывает меню сообщения', await menuOpen());
-check('фокус на первом пункте', await activeId(page) === 'reply-message-btn', await activeId(page));
+check('фокус на первом пункте — «Копировать»', await activeId(page) === 'copy-message-btn', await activeId(page));
 await page.keyboard.press('ArrowDown');
 const second = await activeId(page);
-check('стрелки ходят по пунктам, скрытые пропускаются', second === 'delete-message-btn', second);
+await page.keyboard.press('ArrowDown');
+const third = await activeId(page);
+check('стрелки ходят по пунктам, скрытые пропускаются', second === 'reply-message-btn' && third === 'select-message-btn', `${second} ${third}`);
 await page.keyboard.press('Escape');
 await page.waitForTimeout(150);   // toggle приходит асинхронно
 check('Esc закрывает меню', !(await menuOpen()));
@@ -203,7 +205,7 @@ check('правый клик открывает меню у точки клик�
     JSON.stringify(menuBox));
 const visibleItems = await page.evaluate(() =>
     [...document.querySelectorAll('#message-menu .menu-item[id]')].filter(b => b.offsetParent !== null).map(b => b.id));
-check('у чужого сообщения нет «Редактировать» и «Удалить»', JSON.stringify(visibleItems) === '["reply-message-btn"]',
+check('у чужого сообщения нет «Редактировать» и «Удалить»', JSON.stringify(visibleItems) === '["copy-message-btn","reply-message-btn","select-message-btn"]',
     JSON.stringify(visibleItems));
 await page.mouse.click(5, 300);
 check('клик мимо закрывает меню', !(await menuOpen()));
@@ -404,9 +406,18 @@ await page.locator('.chat-item', { hasText: 'Меню' }).click();
 await page.waitForTimeout(900);
 check('история при открытии чата не анимируется', await page.evaluate(() =>
     document.querySelectorAll('#chat-messages .message').length > 0 && document.querySelectorAll('#chat-messages .is-new').length === 0));
+// Своё новое внизу — одним движением: лента сдвигается, пузырь вылетает из
+// поля (Element.animate, а не класс is-new).
+await page.evaluate(() => {
+    window.__animated = [];
+    const animate = Element.prototype.animate;
+    Element.prototype.animate = function (...args) { window.__animated.push(this.className); return animate.apply(this, args); };
+});
 await send(page, 'свежее');
-check('а новое сообщение — да', await page.evaluate(() =>
-    [...document.querySelectorAll('#chat-messages .message')].at(-1).classList.contains('is-new')));
+// Лента короче экрана — сдвигать нечего, анимируется само своё сообщение
+// (вылетает из поля ввода); длинная — ещё и день сдвигается (test-feed-window).
+check('а новое сообщение — да', await page.evaluate(() => window.__animated.some(c => c.includes('message sent'))),
+    await page.evaluate(() => JSON.stringify(window.__animated.slice(0, 6))));
 const fresh = page.locator('#chat-messages .message', { hasText: 'свежее' });
 const freshBox = await fresh.boundingBox();
 await page.mouse.click(freshBox.x + 30, freshBox.y + 12, { button: 'right' });
@@ -452,7 +463,7 @@ const botBox = await botReply.boundingBox();
 await page.mouse.click(botBox.x + 20, botBox.y + 10, { button: 'right' });
 const botMenu = await page.evaluate(() =>
     [...document.querySelectorAll('#message-menu .menu-item[id]')].filter(b => b.offsetParent !== null).map(b => b.id));
-check('у ответа бота нет «Редактировать» и «Удалить»', JSON.stringify(botMenu) === '["reply-message-btn"]', JSON.stringify(botMenu));
+check('у ответа бота нет «Редактировать» и «Удалить»', JSON.stringify(botMenu) === '["copy-message-btn","reply-message-btn","select-message-btn"]', JSON.stringify(botMenu));
 await page.keyboard.press('Escape');
 
 /* ------------------------- отчёт об ошибке ------------------------- */

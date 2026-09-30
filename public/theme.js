@@ -19,6 +19,6 @@
     // теме, а тема Nyxo могла быть выбрана вручную и не совпадать с ней.
     var metas = document.querySelectorAll('meta[name="theme-color"]');
     for (var i = 0; i < metas.length; i++) {
-        metas[i].setAttribute('content', theme === 'light' ? '#f4f4f7' : '#08080e');
+        metas[i].setAttribute('content', theme === 'light' ? '#f5f5f5' : '#0a0a0a');
     }
 })();

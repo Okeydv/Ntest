@@ -33,6 +33,16 @@ const ALL_STORES = [STORE_META, STORE_IDENTITY, STORE_SIGNED_PREKEYS,
 
 let dbPromise = null;
 
+/*
+ * Смена схемы (DB_VERSION) ждёт, пока все вкладки закроют базу. Раньше
+ * старая вкладка держала её открытой, новая висела на открытии — и
+ * шифрование зависало без объяснений. Теперь:
+ *   - новая вкладка, которую не пускают, говорит об этом странице
+ *     (событие nyxo-db-blocked → тост «Закройте другие вкладки Nyxo»);
+ *   - старая, получив versionchange, сразу закрывает базу и просит
+ *     перезагрузиться (событие nyxo-db-outdated): её код знает только
+ *     прежнюю схему.
+ */
 function openDb() {
     if (dbPromise) return dbPromise;
     dbPromise = new Promise((resolve, reject) => {
@@ -43,8 +53,22 @@ function openDb() {
                 if (!db.objectStoreNames.contains(name)) db.createObjectStore(name);
             }
         };
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
+        request.onblocked = () => {
+            globalThis.dispatchEvent?.(new Event('nyxo-db-blocked'));
+        };
+        request.onsuccess = () => {
+            const db = request.result;
+            db.onversionchange = () => {
+                db.close();
+                dbPromise = null;
+                globalThis.dispatchEvent?.(new Event('nyxo-db-outdated'));
+            };
+            resolve(db);
+        };
+        request.onerror = () => {
+            dbPromise = null;
+            reject(request.error);
+        };
     });
     return dbPromise;
 }

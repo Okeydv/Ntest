@@ -113,15 +113,18 @@ const race = await createRoom(carol, 'Встречные');
 await join(dave, race.code);
 await openRoom(carol.page, race.roomId);
 await openRoom(dave.page, race.roomId);
-// Сокеты отключены: каждый пишет первым, не видя сообщения другого.
-await carol.page.evaluate(() => socket.disconnect());
-await dave.page.evaluate(() => socket.disconnect());
+// Каждый пишет первым, не видя сообщения другого: новые сообщения по
+// сокету не принимаются. Сокет не отключаем — без него сообщение ждало бы
+// сети в очереди (п. 170), а тут сеть есть.
+await carol.page.evaluate(() => socket.off('newMessage'));
+await dave.page.evaluate(() => socket.off('newMessage'));
 await send(carol.page, 'Кэрол первая');
 await send(dave.page, 'Дейв первый');
 const types = (await db.query(
     `SELECT e.envelope_type FROM message_envelopes e JOIN messages m ON m.id = e.message_id WHERE m.room_id = $1`,
     [race.roomId])).rows.map(r => Number(r.envelope_type));
 check('оба начали сессию сами (два prekey-сообщения)', types.length === 2 && types.every(t => t === 1), JSON.stringify(types));
+// openRoom перезагружает страницу — обработчики сокета возвращаются.
 await openRoom(carol.page, race.roomId);
 await openRoom(dave.page, race.roomId);
 check('Кэрол прочитала первое Дейва', (await texts(carol.page)).includes('Дейв первый'));

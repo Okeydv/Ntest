@@ -57,6 +57,8 @@ function validFile(p) {
 }
 
 const validSide = n => Number.isInteger(n) && n > 0 && n <= 30000;
+// Миниатюра ~40px — JPEG в data: URL, до ~4 КБ. Другое — отбрасывается.
+const validThumb = t => typeof t === 'string' && t.length <= 6000 && /^data:image\/jpeg;base64,[A-Za-z0-9+/]+=*$/.test(t);
 
 /**
  * Разобрать расшифрованную строку.
@@ -82,9 +84,10 @@ export function decodePayload(str) {
                 if (!validFile(parsed)) return { t: 'invalid' };
                 // Размеры картинки — только подсказка для места под неё:
                 // странные просто отбрасываются.
-                const { w, h, ...rest } = parsed;
+                const { w, h, thumb, doc, ...rest } = parsed;
                 const sized = validSide(w) && validSide(h) ? { w, h } : {};
-                return { ...rest, ...sized, name: attachmentName(parsed.mime, parsed.name) };
+                const extra = { ...(validThumb(thumb) ? { thumb } : {}), ...(doc === true ? { doc: true } : {}) };
+                return { ...rest, ...sized, ...extra, name: attachmentName(parsed.mime, parsed.name) };
             }
             return { t: 'invalid' };
         }
@@ -98,6 +101,7 @@ export function payloadPreview(p) {
     if (p.t === 'text') return p.body;
     if (p.t === 'newer') return 'Сообщение из новой версии Nyxo';
     if (p.t === 'file') {
+        if (p.doc) return `Файл: ${p.name}`;
         if (IMAGE_TYPES.has(p.mime)) return 'Фото';
         if (VIDEO_TYPES.has(p.mime)) return 'Видео';
         return `Файл: ${p.name}`;
@@ -169,6 +173,7 @@ export async function prepareAttachment(file) {
     }
 
     let blob = new Blob([bytes], { type: detected });
+    let animated = false;
     if (CONVERT_TO_JPEG.has(detected)) {
         try {
             blob = await redraw(blob, 'image/jpeg');
@@ -183,6 +188,7 @@ export async function prepareAttachment(file) {
         } catch {
             throw new Error('не удалось удалить метаданные из изображения');
         }
+        animated = cleaned.animated;
         if (cleaned.orientation === 1) {
             blob = new Blob([cleaned.bytes], { type: detected });
         } else if (cleaned.animated) {
@@ -217,7 +223,56 @@ export async function prepareAttachment(file) {
     }
 
     const mime = blob.type || detected;
-    return { blob, mime, name: attachmentName(mime, file.name) };
+    return { blob, mime, animated, name: attachmentName(mime, file.name) };
+}
+
+/*
+ * Фото уменьшаются перед отправкой: по умолчанию до 1280px по длинной
+ * стороне, «высокое качество» — до 2560, «без сжатия» — как есть. Раньше
+ * фото уходило целиком, по 4–10 МБ. GIF и анимации не трогаются.
+ * Стороны отличаются больше чем в 20 раз (скриншот длинной страницы) —
+ * уходит файлом: в ленте такая картинка превратилась бы в полоску.
+ */
+export const PHOTO_LIMITS = { normal: 1280, high: 2560, original: Infinity };
+const PHOTO_QUALITY = 0.85;
+
+async function downscale(blob, limit, type) {
+    const bitmap = await createImageBitmap(blob);
+    try {
+        const scale = limit / Math.max(bitmap.width, bitmap.height);
+        if (scale >= 1) return null;
+        const w = Math.max(1, Math.round(bitmap.width * scale));
+        const h = Math.max(1, Math.round(bitmap.height * scale));
+        const canvas = new OffscreenCanvas(w, h);
+        const g = canvas.getContext('2d');
+        g.imageSmoothingQuality = 'high';
+        g.drawImage(bitmap, 0, 0, w, h);
+        return await canvas.convertToBlob({ type, quality: PHOTO_QUALITY });
+    } finally {
+        bitmap.close();
+    }
+}
+
+// Миниатюра ~40px — едет внутри зашифрованного сообщения, получатель
+// показывает её размытой сразу, пока само фото качается и расшифровывается.
+async function tinyThumb(blob) {
+    try {
+        const bitmap = await createImageBitmap(blob);
+        try {
+            const scale = 40 / Math.max(bitmap.width, bitmap.height);
+            const w = Math.max(1, Math.round(bitmap.width * Math.min(1, scale)));
+            const h = Math.max(1, Math.round(bitmap.height * Math.min(1, scale)));
+            const canvas = new OffscreenCanvas(w, h);
+            canvas.getContext('2d').drawImage(bitmap, 0, 0, w, h);
+            const jpeg = new Uint8Array(await (await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.5 })).arrayBuffer());
+            const url = `data:image/jpeg;base64,${btoa(String.fromCharCode(...jpeg))}`;
+            return validThumb(url) ? url : null;
+        } finally {
+            bitmap.close();
+        }
+    } catch {
+        return null;
+    }
 }
 
 /* ========================================================================
@@ -231,10 +286,27 @@ export async function prepareAttachment(file) {
  * повториться с тем же ключом. Подменить шифротекст на сервере нельзя:
  * GCM-тег проверяется ключом, который сервер не видит.
  */
-export async function encryptAttachment(file) {
-    const { blob, mime, name } = await prepareAttachment(file);
+export async function encryptAttachment(file, { quality = 'normal' } = {}) {
+    const prepared = await prepareAttachment(file);
+    let { blob } = prepared;
+    const { mime, name, animated } = prepared;
+    let size = IMAGE_TYPES.has(mime) ? await imageSize(blob) : null;
+    const extra = {};
+    if (size && Math.max(size.w, size.h) > 20 * Math.min(size.w, size.h)) {
+        extra.doc = true;
+    } else if (size) {
+        const limit = PHOTO_LIMITS[quality] || PHOTO_LIMITS.normal;
+        if (mime !== 'image/gif' && !animated && Math.max(size.w, size.h) > limit) {
+            const smaller = await downscale(blob, limit, mime === 'image/png' ? 'image/png' : mime).catch(() => null);
+            if (smaller && smaller.type === mime) {
+                blob = smaller;
+                size = await imageSize(blob) || size;
+            }
+        }
+        const thumb = await tinyThumb(blob);
+        if (thumb) extra.thumb = thumb;
+    }
     const plain = new Uint8Array(await blob.arrayBuffer());
-    const size = IMAGE_TYPES.has(mime) ? await imageSize(blob) : null;
 
     const key = await subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
     const iv = crypto.getRandomValues(new Uint8Array(12));
@@ -250,6 +322,7 @@ export async function encryptAttachment(file) {
             mime,
             size: plain.length,
             ...(size || {}),
+            ...extra,
         },
     };
 }
@@ -300,7 +373,7 @@ export async function openAttachment(p) {
         throw new Error('вложение повреждено или подменено');
     }
 
-    const kind = IMAGE_TYPES.has(p.mime) ? 'image' : VIDEO_TYPES.has(p.mime) ? 'video' : 'file';
+    const kind = p.doc ? 'file' : IMAGE_TYPES.has(p.mime) ? 'image' : VIDEO_TYPES.has(p.mime) ? 'video' : 'file';
     const type = kind === 'file' ? 'application/octet-stream' : p.mime;
     const result = { url: URL.createObjectURL(new Blob([plain], { type })), kind };
     urlCache.set(p.blob, result);

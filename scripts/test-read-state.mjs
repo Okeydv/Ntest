@@ -124,13 +124,14 @@ await bob.evaluate(() => {
     socket.io.engine.close();
 });
 await bob.waitForTimeout(2000);
-check('обрыв виден: «Нет соединения»', await bob.isVisible('#connection-status'));
+// Чат открыт — состояние соединения в шапке (п. 171).
+check('обрыв виден: «Подключение…» в шапке', await bob.evaluate(() => document.getElementById('chat-status').textContent) === 'Подключение…');
 const doomedId = (await db.query(
     "SELECT max(id) FROM messages WHERE room_id = $1 AND message_type <> 'system' AND user_id = (SELECT user_id FROM chats WHERE id = $2)",
     [room.roomId, room.chatId])).rows[0].max;
 await send(alice, 'пока Боба не было');
 await alice.evaluate(id => api(`/api/messages/${id}`, { method: 'DELETE' }), doomedId);
-await bob.waitForFunction(() => document.getElementById('connection-status').hidden, null, { timeout: 10000 }).catch(() => {});
+await bob.waitForFunction(() => socket.connected && connectionState === 'ok', null, { timeout: 10000 }).catch(() => {});
 await bob.waitForTimeout(2500);
 const afterReconnect = await bob.evaluate(id => ({
     texts: [...document.querySelectorAll('#chat-messages .message-text')].map(t => t.textContent),

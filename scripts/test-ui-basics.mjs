@@ -152,7 +152,9 @@ await bob.page.setViewportSize({ width: 1280, height: 720 });
 const contrast = await alice.page.evaluate(() => {
     const bubble = [...document.querySelectorAll('#chat-messages .message.sent')].at(-1);
     const meta = bubble.querySelector('.message-meta');
-    const stops = [...getComputedStyle(bubble).backgroundImage.matchAll(/rgba?\(([^)]+)\)/g)]
+    // Градиент — самая светлая точка; сплошной фон — его цвет.
+    const source = getComputedStyle(bubble).backgroundImage !== 'none' ? getComputedStyle(bubble).backgroundImage : getComputedStyle(bubble).backgroundColor;
+    const stops = [...source.matchAll(/rgba?\(([^)]+)\)/g)]
         .map(m => m[1].split(',').map(Number).slice(0, 3));
     const ink = getComputedStyle(meta).color.match(/\d+/g).map(Number);
     const alpha = Number(getComputedStyle(meta).opacity);
@@ -167,7 +169,7 @@ const contrast = await alice.page.evaluate(() => {
     };
     return { stops: stops.length, min: Math.min(...stops.map(ratio)) };
 });
-check('время на своих сообщениях — контраст не ниже 4,5:1', contrast.stops >= 2 && contrast.min >= 4.5,
+check('время на своих сообщениях — контраст не ниже 4,5:1', contrast.stops >= 1 && contrast.min >= 4.5,
     `${contrast.min.toFixed(2)}:1`);
 
 await openRoom(alice);
@@ -225,7 +227,7 @@ await alice.page.locator('[data-theme-toggle]:visible').first().click();
 await alice.page.waitForFunction(t => document.documentElement.dataset.theme !== t, before.theme);
 const after = await themeColors();
 // В приложении строка состояния — цвета шапки.
-const expectColor = t => t === 'light' ? '#ffffff' : '#14141f';
+const expectColor = t => t === 'light' ? '#ffffff' : '#121212';
 check('ручная смена темы красит и строку состояния',
     before.theme !== after.theme && after.colors.length === 2 && after.colors.every(c => c === expectColor(after.theme))
     && before.colors.every(c => c === expectColor(before.theme)), JSON.stringify({ before, after }));
@@ -340,8 +342,11 @@ const swipe = await phone.evaluate(() => {
     };
 });
 check('свайп влево по сообщению — ответ на него', swipe.reply && swipe.text.length > 0 && !swipe.menu, JSON.stringify(swipe));
-check('пузырь идёт за пальцем без перехода, дальше 64px — с сопротивлением, значок ответа на пороге',
-    swipe.transition === 'none' && swipe.during[1] === 'translateX(-35px)' && swipe.during[3] === 'translateX(-69.2px)'
+// До порога 48px — за пальцем, дальше — плавное сопротивление:
+// 48 + (1 − 1 / (0,004·(dx − 48) + 1))·100 (п. 186): при 90px — 62,4.
+const shiftOf = t => -parseFloat(/-?[\d.]+/.exec(t || '0')[0]);
+check('пузырь идёт за пальцем без перехода, дальше 48px — с сопротивлением, значок ответа на пороге',
+    swipe.transition === 'none' && swipe.during[1] === 'translateX(-35px)' && Math.abs(shiftOf(swipe.during[3]) - 62.38) < 0.1
     && swipe.iconState && swipe.iconState.opacity === '1' && swipe.iconState.ready, JSON.stringify(swipe));
 await phone.click('#cancel-reply-btn');
 const inline = await phone.evaluate(() => {

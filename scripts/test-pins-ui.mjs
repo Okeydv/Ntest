@@ -5,7 +5,7 @@
 //   - список: булавка и слово «закреплён» для экранного диктора, черта
 //     между закреплёнными и остальными; новое сообщение не поднимает чат
 //     выше закреплённых;
-//   - меню строки: правая кнопка, клавиша меню; «Выше»/«Ниже», Alt+↑/↓,
+//   - меню строки: правая кнопка, клавиша меню; «Выше»/«Ниже», Alt+Shift+↑/↓,
 //     перетаскивание;
 //   - второе устройство того же аккаунта видит изменения сразу;
 //   - «Без звука»: серый счётчик, в заголовке вкладки не считается;
@@ -80,16 +80,16 @@ check('второе устройство видит закреплённые б�
 // Правая кнопка — меню строки.
 await alice.locator('.chat-item', { hasText: 'Один' }).click({ button: 'right' });
 const menu = await alice.evaluate(() => [...document.querySelectorAll('#chat-item-menu .menu-item')].filter(b => !b.hidden).map(b => b.textContent.trim()));
-check('меню строки: открепить, выше, ниже, без звука, в архив', menu.join('|') === 'Открепить|Выше|Ниже|Без звука|В архив', menu.join('|'));
+check('меню строки: открепить, выше, ниже, без звука, непрочитанным, в архив', menu.join('|') === 'Открепить|Выше|Ниже|Без звука|Отметить непрочитанным|В архив', menu.join('|'));
 await alice.click('#chat-item-menu [data-action="up"]');
 await alice.waitForTimeout(700);
 check('«Выше» переставляет', (await names(alice)).slice(0, 2).join() === 'Один*,Три*', (await names(alice)).join(' '));
 
-// Клавиатура: Alt+↓.
+// Клавиатура: Alt+Shift+↓.
 await alice.locator('.chat-item', { hasText: 'Один' }).focus();
-await alice.keyboard.press('Alt+ArrowDown');
+await alice.keyboard.press('Alt+Shift+ArrowDown');
 await alice.waitForTimeout(700);
-check('Alt+↓ переставляет, фокус остаётся на чате', (await names(alice)).slice(0, 2).join() === 'Три*,Один*'
+check('Alt+Shift+↓ переставляет, фокус остаётся на чате', (await names(alice)).slice(0, 2).join() === 'Три*,Один*'
     && await alice.evaluate(() => document.activeElement.querySelector('.chat-name')?.textContent) === 'Один');
 await alice.keyboard.press('Shift+F10');
 check('Shift+F10 открывает меню строки, фокус — на первом пункте', await alice.evaluate(() =>
@@ -115,6 +115,8 @@ check('чат с новым сообщением встаёт первым по�
 
 await alice.click('#chat-menu-btn');
 await alice.click('#mute-chat-btn');
+// «Без звука» спрашивает, на сколько (п. 199).
+await alice.click('#mute-for [data-mute-for=""]');
 await alice.waitForTimeout(700);
 const muted = await alice.evaluate(() => ({
     mark: document.querySelector('.chat-item.active .chat-marks [aria-label="без звука"]') !== null,

@@ -247,18 +247,22 @@ ivy.page.on('request', r => { if (/\/api\/messages\/\d+\?/.test(r.url())) histor
 await ivy.page.setViewportSize({ width: 1000, height: 420 });
 await ivy.page.goto(BASE, { waitUntil: 'networkidle' });
 await sleep(1200);
-await ivy.page.evaluate(() => { historyPageSize = 5; });
+await ivy.page.evaluate(() => { historyPageSize = 5; historyOpenSize = 5; });
 await ivy.page.locator(`.chat-item[data-room-id="${ivyRoom.roomId}"]`).click();
-await waitText(ivy.page, 'страница 12');
+await waitText(ivy.page, 'страница 1');
 const firstLoad = await ivy.page.evaluate(() => document.querySelectorAll('#chat-messages .message').length);
-check('чат открывается с последней страницы, а не со всей истории',
-    historyRequests[0] === '?limit=5' && firstLoad < 12, `${historyRequests.join(' ')}; сообщений ${firstLoad}`);
+check('чат открывается срезом у непрочитанного, а не всей историей',
+    /^\?around=\d+&limit=5$/.test(historyRequests[0]) && firstLoad < 12, `${historyRequests.join(' ')}; сообщений ${firstLoad}`);
 check('удалённое, пока устройства не было, стёрто и за пределами страницы',
     !hasText(await local(ivy.page), 'прочитаю и после выхода'));
 
-for (let i = 0; i < 6 && await ivy.page.evaluate(() => historyPaging.hasMore); i++) {
-    await ivy.page.evaluate(() => { document.getElementById('chat-messages').scrollTop = 0; });
-    await sleep(900);
+// Окно открылось у непрочитанного: листаем и вверх, и вниз, пока есть что.
+for (let i = 0; i < 12 && await ivy.page.evaluate(() => historyPaging.hasMore || historyPaging.hasNewer); i++) {
+    await ivy.page.evaluate(() => {
+        const list = document.getElementById('chat-messages');
+        list.scrollTop = historyPaging.hasMore ? 0 : list.scrollHeight;
+    });
+    await sleep(1200);
 }
 const shown = await ivy.page.evaluate(() => ({
     texts: [...document.querySelectorAll('#chat-messages .message-text')].map(t => t.textContent),
@@ -268,7 +272,7 @@ const shown = await ivy.page.evaluate(() => ({
 const expected = Array.from({ length: 12 }, (_, i) => `страница ${i + 1}`);
 check('листая вверх, догрузили всё: по порядку, без повторов, всё расшифровано',
     !shown.more && JSON.stringify(shown.texts.filter(t => t.startsWith('страница'))) === JSON.stringify(expected)
-    && historyRequests.slice(1).every(q => /^\?limit=5&before=\d+$/.test(q)), JSON.stringify(shown));
+    && historyRequests.slice(1).every(q => /^\?limit=5&(before|after)=\d+$/.test(q)), JSON.stringify(shown));
 check('страницы одного дня — под одним разделителем', shown.separators === 1, String(shown.separators));
 const listPreview = await ivy.page.evaluate(id =>
     document.querySelector(`.chat-item[data-room-id="${id}"] .chat-last`)?.textContent, ivyRoom.roomId);

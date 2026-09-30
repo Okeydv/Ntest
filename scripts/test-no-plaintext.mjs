@@ -159,8 +159,9 @@ check('пометка остаётся после перезагрузки', awa
 
 /* ------------------------- ответ потерялся ------------------------- */
 
-// Сервер сообщение принял, а ответ до клиента не дошёл. «Повторить» уходит
-// с тем же id — сервер отдаёт сохранённое, второго сообщения нет.
+// Сервер сообщение принял, а ответ до клиента не дошёл. Это обрыв сети:
+// сообщение ждёт с часиками и досылается само (п. 170) — с тем же id,
+// сервер отдаёт сохранённое, второго сообщения нет.
 await openRoom(alice, 'Втроём');
 const mark = Number((await db.query('SELECT max(id) FROM messages')).rows[0].max);
 let dropped = false;
@@ -171,8 +172,12 @@ await alice.route('**/api/messages/encrypted', async route => {
     await route.abort('connectionreset');
 });
 await send(alice, 'дойду один раз');
-check('ответ потерялся — предлагают повторить', (await alice.textContent('#toast .toast-action').catch(() => '')) === 'Повторить');
-await alice.click('#toast .toast-action');
+check('ответ потерялся — часики, а не «Не отправлено»', await alice.evaluate(() => {
+    const b = [...document.querySelectorAll('#chat-messages .message.sent')].at(-1);
+    return b.classList.contains('is-sending') && !b.classList.contains('is-failed');
+}));
+// Досылка — как на connect/online.
+await alice.evaluate(() => flushPending());
 await alice.waitForTimeout(1500);
 await alice.unroute('**/api/messages/encrypted');
 const copies = Number((await db.query('SELECT count(*) FROM messages WHERE id > $1 AND encrypted', [mark])).rows[0].count);
