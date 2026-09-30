@@ -15,8 +15,19 @@
 
 const SHARE_CACHE = 'nyxo-share';
 
-self.addEventListener('install', () => {
+self.addEventListener('install', event => {
     // Без skipWaiting: новая версия ждёт согласия (см. выше).
+    //
+    // Через service worker идёт только POST /share, всё остальное — прямо
+    // в сеть (Static Routing API). Иначе каждый запрос страницы ждал бы
+    // запуска service worker'а, а запрос с keepalive, отправленный при
+    // закрытии страницы (отложенное удаление сообщения), Chrome терял.
+    if (event.addRoutes) {
+        event.waitUntil(event.addRoutes([
+            { condition: { urlPattern: new URLPattern({ pathname: '/share' }), requestMethod: 'post' }, source: 'fetch-event' },
+            { condition: { urlPattern: new URLPattern({}) }, source: 'network' },
+        ]).catch(() => {}));
+    }
 });
 
 self.addEventListener('activate', event => {
